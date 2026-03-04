@@ -68,13 +68,23 @@ export function WelcomeOverlay() {
           name: selectedPath.replace(/^.*[\\/]/, ''),
         })
       } catch {
-        // folder might already exist
+        // folder might already exist (UNIQUE constraint)
       }
     }
 
-    // Mark onboarding complete
-    await completeStep('onboarding')
-    await addXp('tour-step')
+    // Mark onboarding complete — set the boolean directly
+    try {
+      await api.updateTour({ onboardingComplete: true })
+      await completeStep('onboarding')
+    } catch {
+      // continue anyway
+    }
+
+    try {
+      await addXp('tour-step')
+    } catch {
+      // XP award failed, non-critical
+    }
   }, [selectedPath, completeStep, addXp, dispatch])
 
   if (!tour || tour.onboardingComplete) return null

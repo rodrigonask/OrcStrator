@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import type { FolderConfig } from '@shared/types'
 import { useApp } from '../context/AppContext'
+import { api } from '../api'
 import { InstanceItem } from './InstanceItem'
 
 interface FolderGroupProps {
@@ -32,20 +33,34 @@ export function FolderGroup({ folder }: FolderGroupProps) {
     closeContextMenu()
   }, [dispatch, folder.id, closeContextMenu])
 
-  const handleAddInstance = useCallback(() => {
-    dispatch({ type: 'ADD_INSTANCE', folderId: folder.id })
+  const handleAddInstance = useCallback(async () => {
     closeContextMenu()
-  }, [dispatch, folder.id, closeContextMenu])
+    try {
+      const instance = await api.createInstance({
+        folderId: folder.id,
+        name: folder.displayName || folder.name,
+        cwd: folder.path,
+      })
+      dispatch({ type: 'ADD_INSTANCE', payload: instance })
+    } catch (err) {
+      console.error('Failed to create instance:', err)
+    }
+  }, [dispatch, folder, closeContextMenu])
 
   const handlePipeline = useCallback(() => {
-    dispatch({ type: 'SET_VIEW', view: 'pipeline' })
+    dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
     dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: folder.id })
     closeContextMenu()
   }, [dispatch, folder.id, closeContextMenu])
 
-  const handleRemove = useCallback(() => {
+  const handleRemove = useCallback(async () => {
     if (confirm(`Remove folder "${folder.displayName || folder.name}"?`)) {
-      dispatch({ type: 'REMOVE_FOLDER', folderId: folder.id })
+      try {
+        await api.deleteFolder(folder.id)
+        dispatch({ type: 'REMOVE_FOLDER', folderId: folder.id })
+      } catch (err) {
+        console.error('Failed to remove folder:', err)
+      }
     }
     closeContextMenu()
   }, [dispatch, folder, closeContextMenu])

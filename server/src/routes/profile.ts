@@ -113,8 +113,9 @@ export default async function profileRoutes(app: FastifyInstance): Promise<void>
   // Complete a tour step
   app.post('/tour/complete-step', async (request) => {
     const { step } = request.body as { step: string }
+    if (!step) return db.prepare('SELECT * FROM tour_state WHERE id = 1').get()
     const row = db.prepare('SELECT completed_steps FROM tour_state WHERE id = 1').get() as { completed_steps: string }
-    const steps: string[] = JSON.parse(row.completed_steps || '[]')
+    const steps: string[] = JSON.parse(row.completed_steps || '[]').filter(Boolean)
 
     if (!steps.includes(step)) {
       steps.push(step)
@@ -130,8 +131,9 @@ export default async function profileRoutes(app: FastifyInstance): Promise<void>
   // Dismiss a hint
   app.post('/tour/dismiss-hint', async (request) => {
     const { hint } = request.body as { hint: string }
+    if (!hint) return db.prepare('SELECT * FROM tour_state WHERE id = 1').get()
     const row = db.prepare('SELECT dismissed_hints FROM tour_state WHERE id = 1').get() as { dismissed_hints: string }
-    const hints: string[] = JSON.parse(row.dismissed_hints || '[]')
+    const hints: string[] = JSON.parse(row.dismissed_hints || '[]').filter(Boolean)
 
     if (!hints.includes(hint)) {
       hints.push(hint)

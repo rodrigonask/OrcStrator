@@ -22,6 +22,7 @@ interface State {
   unreadCounts: Record<string, number>
   sidebarCollapsed: boolean
   showFolderBrowser: boolean
+  editingFolderId: string | null
   view: 'chat' | 'pipeline'
   activePipelineId: string | null
   connected: boolean
@@ -47,6 +48,7 @@ const initialState: State = {
   unreadCounts: {},
   sidebarCollapsed: false,
   showFolderBrowser: false,
+  editingFolderId: null,
   view: 'chat',
   activePipelineId: null,
   connected: false,
@@ -58,7 +60,7 @@ const initialState: State = {
 type Action =
   | { type: 'SET_STATE'; payload: { folders: FolderConfig[]; instances: InstanceConfig[]; settings: AppSettings } }
   | { type: 'ADD_FOLDER'; payload: FolderConfig }
-  | { type: 'REMOVE_FOLDER'; payload: string }
+  | { type: 'REMOVE_FOLDER'; payload?: string; folderId?: string }
   | { type: 'UPDATE_FOLDER'; payload: { id: string; updates: Partial<FolderConfig> } }
   | { type: 'REORDER_FOLDERS'; payload: string[] }
   | { type: 'ADD_INSTANCE'; payload: InstanceConfig }
@@ -78,8 +80,12 @@ type Action =
   | { type: 'SET_CONNECTED'; payload: boolean }
   | { type: 'SET_USAGE'; payload: UsageData | null }
   | { type: 'UPDATE_SETTINGS'; payload: Partial<AppSettings> }
+  | { type: 'TOGGLE_FOLDER'; folderId: string }
   | { type: 'OPEN_FOLDER_BROWSER' }
   | { type: 'CLOSE_FOLDER_BROWSER' }
+  | { type: 'OPEN_PROJECT_EDIT'; folderId: string }
+  | { type: 'CLOSE_PROJECT_EDIT' }
+  | { type: 'SET_PIPELINE_PROJECT'; projectId: string | null }
 
 // === Reducer ===
 
@@ -96,12 +102,14 @@ function reducer(state: State, action: Action): State {
     case 'ADD_FOLDER':
       return { ...state, folders: [...state.folders, action.payload] }
 
-    case 'REMOVE_FOLDER':
+    case 'REMOVE_FOLDER': {
+      const fid = action.payload || action.folderId || ''
       return {
         ...state,
-        folders: state.folders.filter((f) => f.id !== action.payload),
-        instances: state.instances.filter((i) => i.folderId !== action.payload),
+        folders: state.folders.filter((f) => f.id !== fid),
+        instances: state.instances.filter((i) => i.folderId !== fid),
       }
+    }
 
     case 'UPDATE_FOLDER':
       return {
@@ -218,11 +226,28 @@ function reducer(state: State, action: Action): State {
     case 'UPDATE_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.payload } }
 
+    case 'TOGGLE_FOLDER':
+      return {
+        ...state,
+        folders: state.folders.map((f) =>
+          f.id === action.folderId ? { ...f, expanded: !f.expanded } : f
+        ),
+      }
+
     case 'OPEN_FOLDER_BROWSER':
       return { ...state, showFolderBrowser: true }
 
     case 'CLOSE_FOLDER_BROWSER':
       return { ...state, showFolderBrowser: false }
+
+    case 'OPEN_PROJECT_EDIT':
+      return { ...state, editingFolderId: action.folderId }
+
+    case 'CLOSE_PROJECT_EDIT':
+      return { ...state, editingFolderId: null }
+
+    case 'SET_PIPELINE_PROJECT':
+      return { ...state, activePipelineId: action.projectId }
 
     default:
       return state
