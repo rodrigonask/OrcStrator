@@ -183,6 +183,7 @@ export interface TourState {
 export type XpEventType =
   | 'tour-step' | 'challenge' | 'agent-created' | 'skill-created'
   | 'message-sent' | 'session-complete'
+  | 'lesson-completed' | 'knowledge-base-created' | 'first-pipeline-task'
 
 // === WEBSOCKET MESSAGES ===
 

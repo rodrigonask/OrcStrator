@@ -5,6 +5,7 @@ import { PipelineProvider } from './context/PipelineContext'
 import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/ChatView'
 import { PipelineBoard } from './components/pipeline/PipelineBoard'
+import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
 import { api } from './api'
 
 function AppContent() {
@@ -24,6 +25,7 @@ function AppContent() {
           </div>
         )}
       </main>
+      <WelcomeOverlay />
     </div>
   )
 }

@@ -167,6 +167,7 @@ body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
+  background: var(--bg-primary);
 }
 
 .main-content {
@@ -175,6 +176,7 @@ body {
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  background: var(--bg-primary);
   min-width: 0;
 }
 
@@ -392,6 +394,32 @@ body {
 .folder-status.active { background: var(--success); }
 .folder-status.paused { background: var(--warning); }
 .folder-status.archived { background: var(--text-muted); }
+
+.folder-add-btn {
+  display: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent);
+  color: white;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background var(--transition-fast);
+}
+
+.folder-add-btn:hover {
+  background: var(--accent-hover);
+}
+
+.folder-header:hover .folder-add-btn {
+  display: flex;
+}
 
 .folder-chevron {
   color: var(--text-muted);
@@ -2338,6 +2366,96 @@ body {
   justify-content: center;
   flex-shrink: 0;
   font-size: 16px;
+}
+
+/* === Welcome Wizard (multi-step) === */
+.welcome-card-wide {
+  width: 560px;
+  max-width: 90vw;
+  padding: 40px 36px 24px;
+}
+
+.welcome-wizard-step {
+  animation: wizard-fade-in 300ms ease;
+}
+
+@keyframes wizard-fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.welcome-wizard-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.welcome-wizard-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.welcome-folder-browser {
+  text-align: left;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.welcome-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.welcome-steps {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.welcome-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  transition: all 200ms ease;
+}
+
+.welcome-step-dot.active {
+  background: var(--accent);
+}
+
+.welcome-step-dot.current {
+  width: 24px;
+}
+
+.welcome-step-title {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  text-align: center;
+}
+
+.welcome-overlay.exiting {
+  opacity: 0;
+  transition: opacity 300ms ease;
+}
+
+.folder-list-item.selected {
+  background: var(--accent-muted);
+  color: var(--accent-text);
+}
+
+/* === Level Tier Header === */
+.level-tier-header {
+  user-select: none;
 }
 
 /* === Context Menu === */

@@ -42,6 +42,10 @@ export function FolderGroup({ folder }: FolderGroupProps) {
         cwd: folder.path,
       })
       dispatch({ type: 'ADD_INSTANCE', payload: instance })
+      dispatch({ type: 'SELECT_INSTANCE', payload: instance.id })
+      if (!folder.expanded) {
+        dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
+      }
     } catch (err) {
       console.error('Failed to create instance:', err)
     }
@@ -80,6 +84,13 @@ export function FolderGroup({ folder }: FolderGroupProps) {
           {folder.client && <div className="folder-client">{folder.client}</div>}
         </div>
         <div className={`folder-status ${statusClass}`} />
+        <button
+          className="folder-add-btn"
+          title="Add Instance"
+          onClick={(e) => { e.stopPropagation(); handleAddInstance() }}
+        >
+          +
+        </button>
         <span className={`folder-chevron ${expanded ? 'expanded' : ''}`}>&#9654;</span>
       </div>
 

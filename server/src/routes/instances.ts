@@ -28,7 +28,8 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
       now
     )
 
-    const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(id)
+    const row = db.prepare('SELECT * FROM instances WHERE id = ?').get(id) as Record<string, unknown>
+    const instance = rowToInstance(row)
     broadcastEvent({ type: 'instance:created', payload: instance })
     reply.code(201)
     return instance
@@ -60,7 +61,8 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     params.push(id)
     db.prepare(`UPDATE instances SET ${sets.join(', ')} WHERE id = ?`).run(...params)
 
-    const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(id)
+    const row = db.prepare('SELECT * FROM instances WHERE id = ?').get(id) as Record<string, unknown>
+    const instance = rowToInstance(row)
     broadcastEvent({ type: 'instance:updated', payload: instance })
     return instance
   })
@@ -157,4 +159,19 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const message = getLastAssistantMessage(instance.cwd as string, instance.session_id as string)
     return { message }
   })
+}
+
+function rowToInstance(r: Record<string, unknown>) {
+  return {
+    id: r.id as string,
+    folderId: r.folder_id as string,
+    name: r.name as string,
+    cwd: r.cwd as string,
+    sessionId: r.session_id as string | undefined,
+    state: (r.state as string) || 'idle',
+    agentId: r.agent_id as string | undefined,
+    idleRestartMinutes: r.idle_restart_minutes as number,
+    sortOrder: r.sort_order as number,
+    createdAt: r.created_at as number,
+  }
 }
