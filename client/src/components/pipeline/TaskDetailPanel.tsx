@@ -1,0 +1,236 @@
+import { useState, useCallback } from 'react'
+import type { PipelineTask, PipelineColumn } from '@shared/types'
+import { PIPELINE_COLUMNS } from '@shared/constants'
+import { usePipeline } from '../../context/PipelineContext'
+
+interface TaskDetailPanelProps {
+  task: PipelineTask
+  onClose: () => void
+}
+
+const PRIORITY_LABELS: Record<number, string> = {
+  1: 'Urgent',
+  2: 'High',
+  3: 'Medium',
+  4: 'Low',
+}
+
+export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
+  const { dispatch } = usePipeline()
+  const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description)
+  const [priority, setPriority] = useState(task.priority)
+  const [labelInput, setLabelInput] = useState('')
+  const [labels, setLabels] = useState<string[]>([...task.labels])
+
+  const handleSave = useCallback(() => {
+    dispatch({
+      type: 'UPDATE_TASK',
+      taskId: task.id,
+      updates: { title, description, priority, labels },
+    })
+    onClose()
+  }, [dispatch, task.id, title, description, priority, labels, onClose])
+
+  const handleMove = useCallback((column: PipelineColumn) => {
+    dispatch({ type: 'MOVE_TASK', taskId: task.id, column })
+    onClose()
+  }, [dispatch, task.id, onClose])
+
+  const handleClaim = useCallback((agent: string) => {
+    dispatch({ type: 'CLAIM_TASK', taskId: task.id, agent })
+  }, [dispatch, task.id])
+
+  const handleBlock = useCallback(() => {
+    const isBlocked = task.labels.includes('blocked')
+    if (isBlocked) {
+      setLabels(l => l.filter(lb => lb !== 'blocked'))
+      dispatch({ type: 'UNBLOCK_TASK', taskId: task.id })
+    } else {
+      setLabels(l => [...l, 'blocked'])
+      dispatch({ type: 'BLOCK_TASK', taskId: task.id, reason: 'Manually blocked' })
+    }
+  }, [dispatch, task.id, task.labels])
+
+  const handleDelete = useCallback(() => {
+    if (confirm(`Delete task "${task.title}"?`)) {
+      dispatch({ type: 'DELETE_TASK', taskId: task.id })
+      onClose()
+    }
+  }, [dispatch, task.id, task.title, onClose])
+
+  const addLabel = useCallback(() => {
+    const trimmed = labelInput.trim()
+    if (trimmed && !labels.includes(trimmed)) {
+      setLabels(l => [...l, trimmed])
+    }
+    setLabelInput('')
+  }, [labelInput, labels])
+
+  const removeLabel = useCallback((label: string) => {
+    setLabels(l => l.filter(lb => lb !== label))
+  }, [])
+
+  const isBlocked = labels.includes('blocked')
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts)
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  return (
+    <div className="task-detail-overlay">
+      <div className="task-detail-backdrop" onClick={onClose} />
+      <div className="task-detail-panel">
+        <div className="task-detail-header">
+          <span className="modal-title">Task Detail</span>
+          <button className="modal-close" onClick={onClose}>x</button>
+        </div>
+
+        <div className="task-detail-body">
+          {/* Title */}
+          <div className="task-detail-section">
+            <input
+              className="task-detail-title-input"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Task title"
+            />
+          </div>
+
+          {/* Description */}
+          <div className="task-detail-section">
+            <div className="task-detail-section-label">Description</div>
+            <textarea
+              className="task-detail-description"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Task description (markdown)"
+            />
+          </div>
+
+          {/* Meta */}
+          <div className="task-detail-section">
+            <div className="task-detail-meta">
+              <span className="task-detail-meta-label">Column</span>
+              <span className="task-detail-meta-value">{task.column}</span>
+
+              <span className="task-detail-meta-label">Priority</span>
+              <select
+                className="form-select"
+                value={priority}
+                onChange={e => setPriority(Number(e.target.value) as 1 | 2 | 3 | 4)}
+                style={{ maxWidth: 140 }}
+              >
+                {[1, 2, 3, 4].map(p => (
+                  <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
+                ))}
+              </select>
+
+              <span className="task-detail-meta-label">Agent</span>
+              <span className="task-detail-meta-value">
+                {task.assignedAgent || 'Unassigned'}
+              </span>
+
+              <span className="task-detail-meta-label">Created</span>
+              <span className="task-detail-meta-value">{formatTime(task.createdAt)}</span>
+            </div>
+          </div>
+
+          {/* Labels */}
+          <div className="task-detail-section">
+            <div className="task-detail-section-label">Labels</div>
+            <div className="label-input-container">
+              {labels.map(label => (
+                <span key={label} className="label-tag">
+                  {label}
+                  <button className="label-tag-remove" onClick={() => removeLabel(label)}>x</button>
+                </span>
+              ))}
+              <input
+                className="label-input"
+                placeholder="Add label..."
+                value={labelInput}
+                onChange={e => setLabelInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); addLabel() }
+                  if (e.key === 'Backspace' && !labelInput && labels.length > 0) {
+                    setLabels(l => l.slice(0, -1))
+                  }
+                }}
+              />
+            </div>
+          </div>
+
+          {/* History */}
+          <div className="task-detail-section">
+            <div className="task-detail-section-label">History</div>
+            <div className="task-history">
+              {task.history.map((entry, i) => (
+                <div key={i} className="task-history-item">
+                  <div className="task-history-dot" />
+                  <span className="task-history-time">{formatTime(entry.timestamp)}</span>
+                  <span>
+                    <strong>{entry.agent || 'system'}</strong>{' '}
+                    {entry.action}
+                    {entry.from && entry.to && ` from ${entry.from} to ${entry.to}`}
+                    {entry.note && ` - ${entry.note}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="task-detail-actions">
+          <button className="btn btn-primary btn-sm" onClick={handleSave}>
+            Save Changes
+          </button>
+
+          {/* Move dropdown */}
+          <select
+            className="form-select"
+            value=""
+            onChange={e => {
+              if (e.target.value) handleMove(e.target.value as PipelineColumn)
+            }}
+            style={{ maxWidth: 130, fontSize: 12, padding: '4px 8px' }}
+          >
+            <option value="">Move to...</option>
+            {PIPELINE_COLUMNS.filter(c => c !== task.column).map(col => (
+              <option key={col} value={col}>{col}</option>
+            ))}
+          </select>
+
+          {/* Claim */}
+          <select
+            className="form-select"
+            value=""
+            onChange={e => {
+              if (e.target.value) handleClaim(e.target.value)
+            }}
+            style={{ maxWidth: 130, fontSize: 12, padding: '4px 8px' }}
+          >
+            <option value="">Claim as...</option>
+            <option value="planner">Planner</option>
+            <option value="builder">Builder</option>
+            <option value="tester">Tester</option>
+            <option value="promoter">Promoter</option>
+          </select>
+
+          <button
+            className={`btn btn-sm ${isBlocked ? 'btn-primary' : ''}`}
+            onClick={handleBlock}
+          >
+            {isBlocked ? 'Unblock' : 'Block'}
+          </button>
+
+          <button className="btn btn-sm btn-danger" onClick={handleDelete}>
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
