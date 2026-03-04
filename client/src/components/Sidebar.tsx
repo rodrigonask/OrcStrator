@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { ConnectionStatus } from './ConnectionStatus'
 import { FolderGroup } from './FolderGroup'
+import { FolderBrowserModal } from './FolderBrowserModal'
 import { SettingsModal } from './SettingsModal'
 import { LevelBar } from './tour/LevelBar'
 
@@ -79,6 +80,22 @@ export function Sidebar() {
       </aside>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+
+      {state.showFolderBrowser && (
+        <FolderBrowserModal
+          rootFolder={state.settings.rootFolder}
+          onClose={() => dispatch({ type: 'CLOSE_FOLDER_BROWSER' })}
+          onSelect={async (path) => {
+            dispatch({ type: 'CLOSE_FOLDER_BROWSER' })
+            try {
+              const folder = await (await import('../api')).api.createFolder({ path, name: path.replace(/^.*[\\/]/, '') })
+              dispatch({ type: 'ADD_FOLDER', payload: folder })
+            } catch (err) {
+              console.error('Failed to create folder:', err)
+            }
+          }}
+        />
+      )}
     </>
   )
 }

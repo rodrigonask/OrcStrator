@@ -21,6 +21,7 @@ interface State {
   streamingContent: Record<string, string>
   unreadCounts: Record<string, number>
   sidebarCollapsed: boolean
+  showFolderBrowser: boolean
   view: 'chat' | 'pipeline'
   activePipelineId: string | null
   connected: boolean
@@ -45,6 +46,7 @@ const initialState: State = {
   streamingContent: {},
   unreadCounts: {},
   sidebarCollapsed: false,
+  showFolderBrowser: false,
   view: 'chat',
   activePipelineId: null,
   connected: false,
@@ -75,6 +77,9 @@ type Action =
   | { type: 'INCREMENT_UNREAD'; payload: string }
   | { type: 'SET_CONNECTED'; payload: boolean }
   | { type: 'SET_USAGE'; payload: UsageData | null }
+  | { type: 'UPDATE_SETTINGS'; payload: Partial<AppSettings> }
+  | { type: 'OPEN_FOLDER_BROWSER' }
+  | { type: 'CLOSE_FOLDER_BROWSER' }
 
 // === Reducer ===
 
@@ -209,6 +214,15 @@ function reducer(state: State, action: Action): State {
 
     case 'SET_USAGE':
       return { ...state, usage: action.payload }
+
+    case 'UPDATE_SETTINGS':
+      return { ...state, settings: { ...state.settings, ...action.payload } }
+
+    case 'OPEN_FOLDER_BROWSER':
+      return { ...state, showFolderBrowser: true }
+
+    case 'CLOSE_FOLDER_BROWSER':
+      return { ...state, showFolderBrowser: false }
 
     default:
       return state

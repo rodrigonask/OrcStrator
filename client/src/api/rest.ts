@@ -122,12 +122,12 @@ export const rest = {
   // Profile / Gamification
   getProfile: () => get<AccountProfile>('/api/profile'),
   updateProfile: (data: Partial<AccountProfile>) => put<AccountProfile>('/api/profile', data),
-  addXp: (event: XpEventType, detail?: string) =>
-    post<AccountProfile>('/api/profile/xp', { event, detail }),
+  addXp: (eventType: XpEventType, multiplier?: number) =>
+    post<{ xpAdded: number; leveledUp: boolean; profile: AccountProfile }>('/api/profile/xp', { eventType, multiplier }),
   getTour: () => get<TourState>('/api/tour'),
   updateTour: (data: Partial<TourState>) => put<TourState>('/api/tour', data),
-  completeStep: (stepId: string) => post<TourState>('/api/tour/complete-step', { stepId }),
-  dismissHint: (hintId: string) => post<TourState>('/api/tour/dismiss-hint', { hintId }),
+  completeStep: (step: string) => post<TourState>('/api/tour/complete-step', { step }),
+  dismissHint: (hint: string) => post<TourState>('/api/tour/dismiss-hint', { hint }),
 
   // Agents
   getAgents: () => get<AgentConfig[]>('/api/agents'),
@@ -144,15 +144,15 @@ export const rest = {
 
   // File browser
   browsePath: (dirPath: string) =>
-    get<{ entries: Array<{ name: string; type: 'file' | 'directory'; path: string }> }>(
-      `/api/browse?path=${encodeURIComponent(dirPath)}`
+    get<{ dir: string; items: Array<{ name: string; path: string; isDirectory: boolean; isFile: boolean }> }>(
+      `/api/fs/browse?dir=${encodeURIComponent(dirPath)}`
     ),
   getSubfolders: (dirPath: string) =>
-    get<{ folders: Array<{ name: string; path: string }> }>(
-      `/api/browse/subfolders?path=${encodeURIComponent(dirPath)}`
+    get<{ dir: string; folders: Array<{ name: string; path: string }> }>(
+      `/api/fs/subfolders?dir=${encodeURIComponent(dirPath)}`
     ),
   checkClaudeMd: (dirPath: string) =>
-    get<{ exists: boolean; content?: string }>(
-      `/api/browse/claude-md?path=${encodeURIComponent(dirPath)}`
+    get<{ exists: boolean; path: string; content: string | null }>(
+      `/api/fs/claude-md?dir=${encodeURIComponent(dirPath)}`
     ),
 }

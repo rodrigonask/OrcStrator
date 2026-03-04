@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useGame } from '../../context/GameContext'
+import { useApp } from '../../context/AppContext'
 import { api } from '../../api'
 
 interface FolderEntry {
@@ -12,6 +13,7 @@ const ROOT_PATH = isWindows ? 'C:\\' : '/'
 
 export function WelcomeOverlay() {
   const { tour, completeStep, addXp } = useGame()
+  const { dispatch } = useApp()
   const [step, setStep] = useState(0)
   const [exiting, setExiting] = useState(false)
   const [selectedPath, setSelectedPath] = useState('')
@@ -50,8 +52,16 @@ export function WelcomeOverlay() {
   const handleFinish = useCallback(async () => {
     setExiting(true)
 
-    // Create folder if selected
+    // Save selected path as rootFolder in settings
     if (selectedPath) {
+      try {
+        await api.updateSettings({ rootFolder: selectedPath })
+        dispatch({ type: 'UPDATE_SETTINGS', payload: { rootFolder: selectedPath } })
+      } catch {
+        // settings update failed, continue anyway
+      }
+
+      // Also create it as a folder entry
       try {
         await api.createFolder({
           path: selectedPath,
@@ -65,7 +75,7 @@ export function WelcomeOverlay() {
     // Mark onboarding complete
     await completeStep('onboarding')
     await addXp('tour-step')
-  }, [selectedPath, completeStep, addXp])
+  }, [selectedPath, completeStep, addXp, dispatch])
 
   if (!tour || tour.onboardingComplete) return null
 

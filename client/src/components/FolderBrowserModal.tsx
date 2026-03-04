@@ -3,6 +3,7 @@ import { api } from '../api'
 import { useApp } from '../context/AppContext'
 
 interface FolderBrowserModalProps {
+  rootFolder?: string
   onClose: () => void
   onSelect: (path: string) => void
 }
@@ -12,12 +13,118 @@ interface DirectoryEntry {
   path: string
 }
 
-export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProps) {
+export function FolderBrowserModal({ rootFolder, onClose, onSelect }: FolderBrowserModalProps) {
   const { state } = useApp()
-  const [currentPath, setCurrentPath] = useState(state.settings.rootFolder || '/')
+  const effectiveRoot = rootFolder || state.settings.rootFolder
+
+  // If rootFolder is set, show simple subfolder picker
+  if (effectiveRoot) {
+    return (
+      <RootScopedBrowser
+        rootFolder={effectiveRoot}
+        onClose={onClose}
+        onSelect={onSelect}
+      />
+    )
+  }
+
+  // Fallback: full browser (no rootFolder configured)
+  return (
+    <FullBrowser
+      initialPath="/"
+      onClose={onClose}
+      onSelect={onSelect}
+    />
+  )
+}
+
+// Simple flat list of subfolders under rootFolder
+function RootScopedBrowser({
+  rootFolder,
+  onClose,
+  onSelect,
+}: {
+  rootFolder: string
+  onClose: () => void
+  onSelect: (path: string) => void
+}) {
+  const [entries, setEntries] = useState<DirectoryEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    api.getSubfolders(rootFolder)
+      .then(result => setEntries(result.folders))
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
+      .finally(() => setLoading(false))
+  }, [rootFolder])
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-panel" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">Add Project Folder</span>
+          <button className="modal-close" onClick={onClose}>x</button>
+        </div>
+        <div className="modal-body folder-browser">
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Showing subfolders of: <strong>{rootFolder}</strong>
+          </div>
+
+          {error && <div className="message-error">{error}</div>}
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>
+              Loading...
+            </div>
+          ) : (
+            <div className="folder-list">
+              {entries.map(entry => (
+                <div
+                  key={entry.path}
+                  className="folder-list-item"
+                  onClick={() => onSelect(entry.path)}
+                >
+                  <span className="folder-list-icon">{'\uD83D\uDCC2'}</span>
+                  <span>{entry.name}</span>
+                </div>
+              ))}
+              {entries.length === 0 && (
+                <div className="folder-list-item" style={{ color: 'var(--text-muted)', cursor: 'default' }}>
+                  No subfolders found in {rootFolder}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Full browser with navigation (fallback when no rootFolder)
+function FullBrowser({
+  initialPath,
+  onClose,
+  onSelect,
+}: {
+  initialPath: string
+  onClose: () => void
+  onSelect: (path: string) => void
+}) {
+  const [currentPath, setCurrentPath] = useState(initialPath)
   const [entries, setEntries] = useState<DirectoryEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const isWindows = currentPath.includes('\\') || /^[A-Z]:/i.test(currentPath)
+  const atRoot = isWindows
+    ? /^[A-Za-z]:\\?$/.test(currentPath)
+    : currentPath === '/'
 
   const loadDirectory = useCallback(async (path: string) => {
     setLoading(true)
@@ -37,20 +144,17 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
     loadDirectory(currentPath)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const breadcrumbs = currentPath.split(/[\\/]/).filter(Boolean)
-  const isWindows = currentPath.includes('\\') || /^[A-Z]:/i.test(currentPath)
-  const sep = isWindows ? '\\' : '/'
-  const buildPath = (index: number) => {
-    if (isWindows) {
-      return breadcrumbs.slice(0, index + 1).join('\\')
-    }
-    return '/' + breadcrumbs.slice(0, index + 1).join('/')
-  }
-
   const handleSelect = useCallback(() => {
     onSelect(currentPath)
     onClose()
   }, [currentPath, onSelect, onClose])
+
+  const sep = isWindows ? '\\' : '/'
+  const breadcrumbs = currentPath.split(/[\\/]/).filter(Boolean)
+  const buildPath = (index: number) => {
+    if (isWindows) return breadcrumbs.slice(0, index + 1).join('\\')
+    return '/' + breadcrumbs.slice(0, index + 1).join('/')
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -63,27 +167,21 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
           {/* Breadcrumb */}
           <div className="folder-breadcrumb">
             {!isWindows && (
-              <button
-                className="folder-breadcrumb-item"
-                onClick={() => loadDirectory('/')}
-              >
+              <button className="folder-breadcrumb-item" onClick={() => loadDirectory('/')}>
                 /
               </button>
             )}
             {breadcrumbs.map((part, i) => (
               <span key={i}>
                 <span className="folder-breadcrumb-sep">{sep}</span>
-                <button
-                  className="folder-breadcrumb-item"
-                  onClick={() => loadDirectory(buildPath(i))}
-                >
+                <button className="folder-breadcrumb-item" onClick={() => loadDirectory(buildPath(i))}>
                   {part}
                 </button>
               </span>
             ))}
           </div>
 
-          {/* Current path display */}
+          {/* Editable path */}
           <div className="form-group" style={{ display: 'flex', gap: 6 }}>
             <input
               className="form-input"
@@ -100,32 +198,23 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
           {/* Directory listing */}
           {error && <div className="message-error">{error}</div>}
           {loading ? (
-            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>
-              Loading...
-            </div>
+            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>Loading...</div>
           ) : (
             <div className="folder-list">
-              {(() => {
-                const atRoot = isWindows
-                  ? /^[A-Za-z]:\\?$/.test(currentPath)
-                  : currentPath === '/'
-                if (atRoot) return null
-                return (
-                  <div
-                    className="folder-list-item"
-                    onClick={() => {
-                      let parent = currentPath.replace(/[\\/][^\\/]+[\\/]?$/, '')
-                      // Fix bare drive letter: C: → C:\
-                      if (isWindows && /^[A-Za-z]:$/.test(parent)) parent += '\\'
-                      if (!parent) parent = '/'
-                      loadDirectory(parent)
-                    }}
-                  >
-                    <span className="folder-list-icon">..</span>
-                    <span>Parent directory</span>
-                  </div>
-                )
-              })()}
+              {!atRoot && (
+                <div
+                  className="folder-list-item"
+                  onClick={() => {
+                    let parent = currentPath.replace(/[\\/][^\\/]+[\\/]?$/, '')
+                    if (isWindows && /^[A-Za-z]:$/.test(parent)) parent += '\\'
+                    if (!parent) parent = '/'
+                    loadDirectory(parent)
+                  }}
+                >
+                  <span className="folder-list-icon">..</span>
+                  <span>Parent directory</span>
+                </div>
+              )}
               {entries.map(entry => (
                 <div
                   key={entry.path}

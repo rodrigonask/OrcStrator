@@ -9,9 +9,9 @@ interface GameContextValue {
   currentLevel: (typeof LEVELS)[number] | null
   nextLevel: (typeof LEVELS)[number] | null
   xpProgress: number // 0-1 progress toward next level
-  addXp: (event: XpEventType, detail?: string) => Promise<void>
-  completeStep: (stepId: string) => Promise<void>
-  dismissHint: (hintId: string) => Promise<void>
+  addXp: (eventType: XpEventType, multiplier?: number) => Promise<void>
+  completeStep: (step: string) => Promise<void>
+  dismissHint: (hint: string) => Promise<void>
   isStepCompleted: (stepId: string) => boolean
   isHintDismissed: (hintId: string) => boolean
   loading: boolean
@@ -62,27 +62,27 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         ? 1
         : 0
 
-  const addXp = useCallback(async (event: XpEventType, detail?: string) => {
+  const addXp = useCallback(async (eventType: XpEventType, multiplier?: number) => {
     try {
-      const updated = await api.addXp(event, detail)
-      setProfile(updated)
+      const result = await api.addXp(eventType, multiplier)
+      if (result.profile) setProfile(result.profile)
     } catch (err) {
       console.error('Failed to add XP:', err)
     }
   }, [])
 
-  const completeStep = useCallback(async (stepId: string) => {
+  const completeStep = useCallback(async (step: string) => {
     try {
-      const updated = await api.completeStep(stepId)
+      const updated = await api.completeStep(step)
       setTour(updated)
     } catch (err) {
       console.error('Failed to complete step:', err)
     }
   }, [])
 
-  const dismissHint = useCallback(async (hintId: string) => {
+  const dismissHint = useCallback(async (hint: string) => {
     try {
-      const updated = await api.dismissHint(hintId)
+      const updated = await api.dismissHint(hint)
       setTour(updated)
     } catch (err) {
       console.error('Failed to dismiss hint:', err)
