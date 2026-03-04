@@ -23,9 +23,9 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
     setLoading(true)
     setError(null)
     try {
-      const dirs = await api.listDirectories(path)
-      setEntries(dirs)
-      setCurrentPath(path)
+      const result = await api.getSubfolders(path)
+      setEntries(result.folders)
+      setCurrentPath(result.dir)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load directory')
     } finally {
@@ -37,8 +37,15 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
     loadDirectory(currentPath)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const breadcrumbs = currentPath.split('/').filter(Boolean)
-  const buildPath = (index: number) => '/' + breadcrumbs.slice(0, index + 1).join('/')
+  const breadcrumbs = currentPath.split(/[\\/]/).filter(Boolean)
+  const isWindows = currentPath.includes('\\') || /^[A-Z]:/i.test(currentPath)
+  const sep = isWindows ? '\\' : '/'
+  const buildPath = (index: number) => {
+    if (isWindows) {
+      return breadcrumbs.slice(0, index + 1).join('\\')
+    }
+    return '/' + breadcrumbs.slice(0, index + 1).join('/')
+  }
 
   const handleSelect = useCallback(() => {
     onSelect(currentPath)
@@ -55,15 +62,17 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
         <div className="modal-body folder-browser">
           {/* Breadcrumb */}
           <div className="folder-breadcrumb">
-            <button
-              className="folder-breadcrumb-item"
-              onClick={() => loadDirectory('/')}
-            >
-              /
-            </button>
+            {!isWindows && (
+              <button
+                className="folder-breadcrumb-item"
+                onClick={() => loadDirectory('/')}
+              >
+                /
+              </button>
+            )}
             {breadcrumbs.map((part, i) => (
               <span key={i}>
-                <span className="folder-breadcrumb-sep">/</span>
+                <span className="folder-breadcrumb-sep">{sep}</span>
                 <button
                   className="folder-breadcrumb-item"
                   onClick={() => loadDirectory(buildPath(i))}
@@ -75,13 +84,17 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
           </div>
 
           {/* Current path display */}
-          <div className="form-group">
+          <div className="form-group" style={{ display: 'flex', gap: 6 }}>
             <input
               className="form-input"
               value={currentPath}
-              readOnly
-              style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
+              onChange={e => setCurrentPath(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') loadDirectory(currentPath) }}
+              style={{ fontFamily: 'var(--font-mono)', fontSize: 12, flex: 1 }}
             />
+            <button className="btn" onClick={() => loadDirectory(currentPath)} style={{ padding: '4px 12px', fontSize: 12 }}>
+              Go
+            </button>
           </div>
 
           {/* Directory listing */}
@@ -92,25 +105,34 @@ export function FolderBrowserModal({ onClose, onSelect }: FolderBrowserModalProp
             </div>
           ) : (
             <div className="folder-list">
-              {currentPath !== '/' && (
-                <div
-                  className="folder-list-item"
-                  onClick={() => {
-                    const parent = currentPath.split('/').slice(0, -1).join('/') || '/'
-                    loadDirectory(parent)
-                  }}
-                >
-                  <span className="folder-list-icon">..</span>
-                  <span>Parent directory</span>
-                </div>
-              )}
+              {(() => {
+                const atRoot = isWindows
+                  ? /^[A-Za-z]:\\?$/.test(currentPath)
+                  : currentPath === '/'
+                if (atRoot) return null
+                return (
+                  <div
+                    className="folder-list-item"
+                    onClick={() => {
+                      let parent = currentPath.replace(/[\\/][^\\/]+[\\/]?$/, '')
+                      // Fix bare drive letter: C: → C:\
+                      if (isWindows && /^[A-Za-z]:$/.test(parent)) parent += '\\'
+                      if (!parent) parent = '/'
+                      loadDirectory(parent)
+                    }}
+                  >
+                    <span className="folder-list-icon">..</span>
+                    <span>Parent directory</span>
+                  </div>
+                )
+              })()}
               {entries.map(entry => (
                 <div
                   key={entry.path}
                   className="folder-list-item"
                   onClick={() => loadDirectory(entry.path)}
                 >
-                  <span className="folder-list-icon">\uD83D\uDCC2</span>
+                  <span className="folder-list-icon">{'\uD83D\uDCC2'}</span>
                   <span>{entry.name}</span>
                 </div>
               ))}
