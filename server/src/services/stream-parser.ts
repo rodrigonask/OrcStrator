@@ -98,6 +98,7 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
     }
 
     if (eventType === 'result') {
+      indexToToolId.clear()
       return {
         type: 'result',
         instanceId,
@@ -109,22 +110,8 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
       }
     }
 
-    if (eventType === 'assistant') {
-      const message = data.message as Record<string, unknown> | undefined
-      if (message) {
-        const contentBlocks = message.content as Array<Record<string, unknown>> | undefined
-        if (contentBlocks) {
-          const textParts = contentBlocks
-            .filter(b => b.type === 'text')
-            .map(b => b.text as string)
-            .join('')
-          if (textParts) {
-            return { type: 'text-delta', instanceId, text: textParts }
-          }
-        }
-      }
-      return null
-    }
+    // 'assistant' events contain the full accumulated text, but content_block_delta
+    // already streams it incrementally — emitting both causes repeated text.
 
     if (eventType === 'error') {
       const errorObj = data.error as Record<string, unknown> | undefined

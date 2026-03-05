@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
 import { api } from '../api'
 import { useApp } from './AppContext'
 import type { PipelineTask, PipelineColumn, PipelineEvent } from '@shared/types'
@@ -61,26 +61,39 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
     fetchTasks()
   }, [fetchTasks])
 
-  // Subscribe to pipeline WS events
+  // Subscribe to pipeline WS events with incremental updates
   useEffect(() => {
     const unsub = api.onPipelineUpdated((payload: PipelineEvent) => {
-      if (payload.projectId === activePipelineId) {
-        // Refetch all tasks on any pipeline event for simplicity
+      if (payload.projectId !== activePipelineId) return
+
+      if (payload.action === 'moved' && payload.newColumn) {
+        // Incremental: just update the column field locally
+        setTasks(prev => prev.map(t =>
+          t.id === payload.taskId ? { ...t, column: payload.newColumn! } : t
+        ))
+      } else if (payload.action === 'deleted') {
+        // Incremental: remove the task locally
+        setTasks(prev => prev.filter(t => t.id !== payload.taskId))
+      } else {
+        // created, updated, claimed, blocked, unblocked -- need full data, refetch
         fetchTasks()
       }
     })
     return unsub
   }, [activePipelineId, fetchTasks])
 
-  // Group tasks by column
-  const tasksByColumn = tasks.reduce<Record<PipelineColumn, PipelineTask[]>>(
-    (acc, task) => {
-      if (acc[task.column]) {
-        acc[task.column].push(task)
-      }
-      return acc
-    },
-    { ...emptyByColumn, backlog: [], spec: [], build: [], qa: [], staging: [], ship: [], done: [] }
+  // Group tasks by column (memoized to avoid recomputing on unrelated renders)
+  const tasksByColumn = useMemo(() =>
+    tasks.reduce<Record<PipelineColumn, PipelineTask[]>>(
+      (acc, task) => {
+        if (acc[task.column]) {
+          acc[task.column].push(task)
+        }
+        return acc
+      },
+      { backlog: [], spec: [], build: [], qa: [], staging: [], ship: [], done: [] }
+    ),
+    [tasks]
   )
 
   const createTask = useCallback(
@@ -176,20 +189,23 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
     [activePipelineId]
   )
 
-  const value: PipelineContextValue = {
-    tasks,
-    loading,
-    error,
-    tasksByColumn,
-    createTask,
-    updateTask,
-    deleteTask,
-    moveTask,
-    claimTask,
-    blockTask,
-    unblockTask,
-    refresh: fetchTasks,
-  }
+  const value = useMemo<PipelineContextValue>(
+    () => ({
+      tasks,
+      loading,
+      error,
+      tasksByColumn,
+      createTask,
+      updateTask,
+      deleteTask,
+      moveTask,
+      claimTask,
+      blockTask,
+      unblockTask,
+      refresh: fetchTasks,
+    }),
+    [tasks, loading, error, tasksByColumn, createTask, updateTask, deleteTask, moveTask, claimTask, blockTask, unblockTask, fetchTasks]
+  )
 
   return <PipelineContext.Provider value={value}>{children}</PipelineContext.Provider>
 }

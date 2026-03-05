@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react'
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api } from '../api'
 import type {
   FolderConfig,
@@ -332,7 +332,7 @@ interface AppContextValue {
   dispatch: React.Dispatch<Action>
   selectInstance: (id: string | null) => void
   deleteInstance: (id: string) => Promise<void>
-  sendMessage: (instanceId: string, text: string, images?: string[]) => Promise<void>
+  sendMessage: (instanceId: string, text: string, images?: string[], flags?: string[]) => Promise<void>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -426,13 +426,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // Ref to avoid selectInstance depending on state.messages (which changes on every stream delta)
+  const messagesRef = useRef(state.messages)
+  messagesRef.current = state.messages
+
   // Select instance and fetch history
   const selectInstance = useCallback(
     (id: string | null) => {
       dispatch({ type: 'SELECT_INSTANCE', payload: id })
       if (id) {
         dispatch({ type: 'CLEAR_UNREAD', payload: id })
-        if (!state.messages[id]) {
+        if (!messagesRef.current[id]) {
           api.getHistory(id).then((data) => {
             const messages = (data as any).messages ?? data
             dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages } })
@@ -442,12 +446,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [state.messages]
+    [] // dispatch is stable from useReducer; messagesRef is a ref
   )
 
   // Send a message to an instance
   const sendMessage = useCallback(
-    async (instanceId: string, text: string, images?: string[]) => {
+    async (instanceId: string, text: string, images?: string[], flags?: string[]) => {
       // Add user message locally
       const userMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -465,7 +469,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
 
       // Send to API
-      await api.sendMessage(instanceId, { text, images })
+      await api.sendMessage(instanceId, { text, images, flags })
     },
     []
   )
@@ -475,7 +479,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'REMOVE_INSTANCE', payload: id })
   }, [])
 
-  const value: AppContextValue = { state, dispatch, selectInstance, deleteInstance, sendMessage }
+  const value = useMemo<AppContextValue>(
+    () => ({ state, dispatch, selectInstance, deleteInstance, sendMessage }),
+    [state, dispatch, selectInstance, deleteInstance, sendMessage]
+  )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

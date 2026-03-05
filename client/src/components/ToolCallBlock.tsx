@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 
 interface ToolCallBlockProps {
   toolName: string
@@ -18,7 +18,7 @@ export function ToolCallBlock(props: ToolCallBlockProps) {
 function GenericToolCallBlock({ toolName, input, output, isError, isRunning }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(true)
 
-  const summary = (() => {
+  const summary = useMemo(() => {
     try {
       const parsed = JSON.parse(input)
       const keys = Object.keys(parsed)
@@ -28,7 +28,7 @@ function GenericToolCallBlock({ toolName, input, output, isError, isRunning }: T
     } catch {
       return input.slice(0, 50)
     }
-  })()
+  }, [input])
 
   const statusClass = isRunning ? 'running' : isError ? 'error' : 'success'
 
@@ -57,13 +57,14 @@ function GenericToolCallBlock({ toolName, input, output, isError, isRunning }: T
 }
 
 function BashBlock({ input, output, isError, isRunning }: Omit<ToolCallBlockProps, 'toolName'>) {
-  let command = input
-  let description: string | undefined
-  try {
-    const parsed = JSON.parse(input)
-    command = parsed.command ?? input
-    description = parsed.description
-  } catch {}
+  const { command, description } = useMemo(() => {
+    try {
+      const parsed = JSON.parse(input)
+      return { command: parsed.command ?? input, description: parsed.description as string | undefined }
+    } catch {
+      return { command: input, description: undefined }
+    }
+  }, [input])
 
   const statusClass = isRunning ? 'running' : isError ? 'error' : 'success'
 
