@@ -4122,12 +4122,12 @@ body {
 
 /* Orchestrator status line in folder header */
 .orchestrator-status-line {
-  font-size: 16px;
+  font-size: 11px;
   color: var(--warning);
   margin-top: 1px;
 }
 .orchestrator-status-line.idle {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 /* Launch Team button */
