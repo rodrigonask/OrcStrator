@@ -202,9 +202,11 @@ function reducer(state: State, action: Action): State {
     case 'ADD_MESSAGE': {
       const instId = action.payload.instanceId
       const existing = state.messages[instId] || []
+      const updated = [...existing, action.payload]
+      const capped = updated.length > 200 ? updated.slice(-200) : updated
       return {
         ...state,
-        messages: { ...state.messages, [instId]: [...existing, action.payload] },
+        messages: { ...state.messages, [instId]: capped },
       }
     }
 
@@ -445,7 +447,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           } else if (event.type === 'tool-complete') {
             dispatch({ type: 'TOOL_COMPLETE', payload: { instanceId, toolId: event.toolId, output: event.output, isError: event.isError } })
           } else if (event.type === 'raw-line') {
-            dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
+            if (stateRef.current.terminalPanelOpen) {
+              dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
+            }
           }
         }
       })
@@ -511,6 +515,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   instancesRef.current = state.instances
   const selectedIdRef = useRef(state.selectedInstanceId)
   selectedIdRef.current = state.selectedInstanceId
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   // Restore selected instance from URL on initial load (runs once after instances load)
   const restoredFromUrl = useRef(false)

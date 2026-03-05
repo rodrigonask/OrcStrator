@@ -29,6 +29,10 @@ export const api = {
   // Connection management
   connect: () => wsClient.connect(),
   disconnect: () => wsClient.disconnect(),
+
+  // Terminal opt-in streaming
+  subscribeTerminal: (instanceId: string) => wsClient.subscribeTerminal(instanceId),
+  unsubscribeTerminal: (instanceId: string) => wsClient.unsubscribeTerminal(instanceId),
 }
 
 export { rest } from './rest'
