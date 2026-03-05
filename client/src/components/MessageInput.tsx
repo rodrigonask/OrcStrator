@@ -26,7 +26,7 @@ export function MessageInput() {
     setText('')
     setImages([])
     setPlanMode(false)
-  }, [instanceId, text, planMode, images])
+  }, [instanceId, text, planMode, images, sendMessage])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {

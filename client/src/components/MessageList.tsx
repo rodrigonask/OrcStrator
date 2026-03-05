@@ -8,7 +8,7 @@ export function MessageList() {
   const { state } = useApp()
   const instanceId = state.selectedInstanceId
   const messages: ChatMessage[] = instanceId ? (state.messages[instanceId] || []) : []
-  const scrollRef = useAutoScroll(messages)
+  const scrollRef = useAutoScroll([messages])
 
   // Build a map of toolId -> result for the current message set
   const toolResults = useMemo(() => {
