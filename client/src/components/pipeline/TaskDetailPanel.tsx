@@ -11,7 +11,7 @@ marked.setOptions({ breaks: true })
 
 function AgentLabel({ agentId }: { agentId?: string | null }) {
   const { state, dispatch } = useApp()
-  if (!agentId || agentId === 'system') return <strong>system</strong>
+  if (!agentId || agentId === 'system') return <span className="orc-label">The Orc</span>
   if (agentId === 'human') return <strong>human</strong>
   const instance = state.instances.find(i => i.id === agentId)
   const label = instance ? instance.name : agentId.slice(0, 8) + '...'
