@@ -17,6 +17,7 @@ async function withLock<T>(projectId: string, fn: () => T): Promise<T> {
     return fn()
   } finally {
     resolve!()
+    if (locks.get(projectId) === next) locks.delete(projectId)
   }
 }
 

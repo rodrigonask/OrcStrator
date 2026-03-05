@@ -52,9 +52,15 @@ export function Sidebar() {
         </div>
 
         <div className="sidebar-folders">
-          {state.folders.map(folder => (
-            <FolderGroup key={folder.id} folder={folder} />
-          ))}
+          {[...state.folders]
+            .sort((a, b) => {
+              if (a.stealthMode && !b.stealthMode) return -1
+              if (!a.stealthMode && b.stealthMode) return 1
+              return a.sortOrder - b.sortOrder
+            })
+            .map(folder => (
+              <FolderGroup key={folder.id} folder={folder} />
+            ))}
         </div>
 
         <div className="sidebar-add-folder">

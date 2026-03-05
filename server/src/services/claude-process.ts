@@ -140,7 +140,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
           const msgId = crypto.randomUUID()
           const content = raw.message.content.map((b: Record<string, unknown>) => {
             if (b.type === 'text') return { type: 'text', text: b.text }
-            if (b.type === 'tool_use') return { type: 'tool-use', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
+            if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
             return b
           })
           db.prepare(`
@@ -265,6 +265,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   })
 
   child.on('error', (err) => {
+    if (batchTimer) { clearTimeout(batchTimer); batchTimer = null }
     console.error(`[claude-process] Spawn error for ${instanceId}:`, err.message)
     processes.delete(instanceId)
     const t = processTimeouts.get(instanceId)

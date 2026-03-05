@@ -15,6 +15,10 @@ export default async function orchestratorRoutes(app: FastifyInstance): Promise<
     }
 
     db.prepare('UPDATE folders SET orchestrator_active = 1 WHERE id = ?').run(folderId)
+
+    // Auto-enroll any existing instances in this folder that have a role but aren't managed yet
+    db.prepare(`UPDATE instances SET orchestrator_managed = 1 WHERE folder_id = ? AND agent_role IS NOT NULL AND orchestrator_managed = 0`).run(folderId)
+
     broadcastEvent({ type: 'folder:updated', payload: { id: folderId, orchestratorActive: true } })
 
     // Immediately try to assign work

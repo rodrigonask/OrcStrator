@@ -24,6 +24,7 @@ class OrchestratorService {
   private lockSweepTimer: ReturnType<typeof setInterval> | null = null
 
   start(): void {
+    if (this.safetyPollTimer) return
     this.safetyPollTimer = setInterval(() => this.safetySweep(), SAFETY_POLL_MS)
     this.lockSweepTimer = setInterval(() => this.timeoutSweep(), LOCK_SWEEP_MS)
     console.log('[orchestrator] Started — event-driven + 60s safety poll + 2min lock sweep')
@@ -220,15 +221,34 @@ class OrchestratorService {
 
     console.log(`[orchestrator] Assigning "${task.title}" → instance ${instanceId} (${role})`)
 
+    // Extract images from task attachments
+    let taskImages: Array<{ base64: string; mediaType: string }> | undefined
+    const rawAttachments = JSON.parse((task.attachments as string) || '[]') as Array<{ dataUrl: string; name: string }>
+    if (rawAttachments.length > 0) {
+      taskImages = rawAttachments
+        .filter(a => typeof a.dataUrl === 'string' && a.dataUrl.includes(','))
+        .map(a => {
+          const [header, base64] = a.dataUrl.split(',')
+          const mediaType = header.replace('data:', '').replace(';base64', '')
+          return { base64, mediaType }
+        })
+      if (taskImages.length === 0) taskImages = undefined
+    }
+
     // Save orchestrator prompt as a user message so it's visible in the session
     const msgId = crypto.randomUUID()
-    const msgContent = [{ type: 'text', text: prompt }]
+    const msgContent: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }]
+    if (taskImages) {
+      for (const img of taskImages) {
+        msgContent.push({ type: 'image', base64: img.base64, mediaType: img.mediaType })
+      }
+    }
     db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(msgId, instanceId, 'user', JSON.stringify(msgContent), now)
     broadcastEvent({ type: 'message:added', payload: { instanceId, message: { id: msgId, instanceId, role: 'user', content: msgContent, createdAt: now } } })
 
     try {
-      sendMessage({ instanceId, text: prompt, cwd, sessionId, flags: globalFlags, agentPrompt })
+      sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt })
     } catch (err) {
       console.error(`[orchestrator] sendMessage failed for ${instanceId}:`, err)
       for (const t of tasksToLock) {
@@ -258,6 +278,11 @@ class OrchestratorService {
 
     if (primaryTask.description) {
       assignment += `\n${primaryTask.description as string}\n`
+    }
+
+    const rawAttachmentsForNote = JSON.parse((primaryTask.attachments as string) || '[]') as Array<{ name: string }>
+    if (rawAttachmentsForNote.length > 0) {
+      assignment += `\nAttachments: ${rawAttachmentsForNote.length} screenshot(s) included with this message.\n`
     }
 
     const dependsOn = JSON.parse((primaryTask.depends_on as string) || '[]') as string[]

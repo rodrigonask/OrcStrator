@@ -113,6 +113,13 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
       }
     }
 
+    // Stealth mode: prepend no-memory instruction if folder has stealth_mode enabled
+    const folderRow = db.prepare('SELECT stealth_mode FROM folders WHERE id = (SELECT folder_id FROM instances WHERE id = ?)').get(id) as { stealth_mode: number } | undefined
+    if (folderRow?.stealth_mode) {
+      const stealthNote = 'STEALTH MODE: Do not use the Memory tool. Do not create or update any CLAUDE.md memory files. Do not persist any context between conversations.'
+      agentPrompt = agentPrompt ? `${stealthNote}\n\n${agentPrompt}` : stealthNote
+    }
+
     // Detect media types and preprocess images (compress, tile, stitch as needed)
     let processedImages: Array<{ base64: string; mediaType: string }> | undefined
     let imageTextPrefix = ''

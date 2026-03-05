@@ -23,6 +23,7 @@ function rowToFolder(r: Record<string, unknown>): FolderConfig {
     sortOrder: r.sort_order as number,
     createdAt: r.created_at as number,
     orchestratorActive: Boolean(r.orchestrator_active),
+    stealthMode: Boolean(r.stealth_mode),
   }
 }
 
@@ -73,10 +74,11 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
       emoji: 'emoji', client: 'client', projectType: 'project_type',
       color: 'color', status: 'status', repoUrl: 'repo_url',
       notes: 'notes', expanded: 'expanded', sortOrder: 'sort_order',
-      orchestratorActive: 'orchestrator_active'
+      orchestratorActive: 'orchestrator_active',
+      stealthMode: 'stealth_mode'
     }
 
-    const boolFields = new Set(['expanded', 'orchestratorActive'])
+    const boolFields = new Set(['expanded', 'orchestratorActive', 'stealthMode'])
     for (const [jsKey, dbKey] of Object.entries(fieldMap)) {
       if (body[jsKey] !== undefined) {
         sets.push(`${dbKey} = ?`)

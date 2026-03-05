@@ -110,8 +110,26 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
       }
     }
 
-    // 'assistant' events contain the full accumulated text, but content_block_delta
-    // already streams it incrementally — emitting both causes repeated text.
+    // 'assistant' events contain the full message including tool_use blocks.
+    // content_block_start/delta events are NOT emitted by claude CLI stream-json format,
+    // so we extract tool calls from assistant events to populate the ActivityBubble.
+    if (eventType === 'assistant') {
+      const message = data.message as Record<string, unknown> | undefined
+      const contentBlocks = message?.content as Array<Record<string, unknown>> | undefined
+      if (!contentBlocks) return null
+
+      const events: ClaudeStreamEvent[] = []
+      for (const block of contentBlocks) {
+        if (block.type === 'tool_use') {
+          const toolId = block.id as string
+          events.push({ type: 'tool-start', instanceId, toolId, toolName: block.name as string })
+          if (block.input) {
+            events.push({ type: 'tool-input-delta', instanceId, toolId, input: JSON.stringify(block.input) })
+          }
+        }
+      }
+      return events.length > 0 ? (events.length === 1 ? events[0] : events) : null
+    }
 
     if (eventType === 'error') {
       const errorObj = data.error as Record<string, unknown> | undefined

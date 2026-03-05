@@ -4,7 +4,7 @@ import fastifyWebsocket from '@fastify/websocket'
 import fastifyStatic from '@fastify/static'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { initDb, db } from './db.js'
+import { initDb, db, closeDb } from './db.js'
 import { registerWebSocket } from './ws/handler.js'
 import { killAll, setOrchestratorCallback } from './services/claude-process.js'
 import { orchestrator } from './services/orchestrator.js'
@@ -35,6 +35,12 @@ async function main(): Promise<void> {
   const resetCount = db.prepare("UPDATE instances SET state = 'idle' WHERE state = 'running'").run().changes
   if (resetCount > 0) {
     console.log(`[startup] Reset ${resetCount} stale running instances to idle`)
+  }
+
+  // Release stale task locks — locked tasks from the previous session would never be claimed
+  const unlockCount = db.prepare("UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IS NOT NULL").run().changes
+  if (unlockCount > 0) {
+    console.log(`[startup] Released ${unlockCount} stale task locks`)
   }
 
   // Resume usage polling if tokens are already stored from a previous session
@@ -105,6 +111,7 @@ async function main(): Promise<void> {
     orchestrator.stop()
     killAll()
     await app.close()
+    closeDb()
     process.exit(0)
   }
 

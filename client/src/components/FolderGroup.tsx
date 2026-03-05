@@ -147,15 +147,23 @@ export function FolderGroup({ folder }: FolderGroupProps) {
     : 'all-idle'
 
   return (
-    <div className="folder-group">
+    <div className={`folder-group${folder.stealthMode ? ' stealth' : ''}`}>
       <div className="folder-header" onClick={toggleExpanded} onContextMenu={handleContextMenu}>
         <div
           className="folder-color-bar"
-          style={{ backgroundColor: folder.color || '#7c3aed' }}
+          style={{ backgroundColor: folder.stealthMode ? '#374151' : (folder.color || '#7c3aed') }}
         />
-        <span className="folder-emoji">{folder.emoji || '\uD83D\uDCC1'}</span>
+        <span className="folder-emoji">{folder.emoji || (folder.stealthMode ? '👻' : '\uD83D\uDCC1')}</span>
         <div className="folder-info">
-          <div className="folder-name">{folder.displayName || folder.name}</div>
+          <div className="folder-name">
+            {folder.displayName || folder.name}
+            {folder.stealthMode && (
+              <span
+                className="stealth-tooltip-icon"
+                title="Conversations in this folder do not save memory or persist context between sessions."
+              >👻</span>
+            )}
+          </div>
           {folder.client && <div className="folder-client">{folder.client}</div>}
           {isOrchestratorActive && orchStatus && (
             <div className="orchestrator-status-line">

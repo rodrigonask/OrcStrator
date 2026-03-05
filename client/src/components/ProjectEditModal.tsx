@@ -42,6 +42,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
   const [status, setStatus] = useState<'active' | 'paused' | 'archived'>(folder.status || 'active')
   const [repoUrl, setRepoUrl] = useState(folder.repoUrl || '')
   const [notes, setNotes] = useState(folder.notes || '')
+  const [stealthMode, setStealthMode] = useState(folder.stealthMode || false)
 
   const handleSave = useCallback(() => {
     const updated: Partial<FolderConfig> = {
@@ -53,11 +54,12 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
       status,
       repoUrl,
       notes,
+      stealthMode,
     }
     dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: updated } })
     api.updateFolder(folder.id, updated)
     onClose()
-  }, [dispatch, folder.id, displayName, emoji, client, projectType, color, status, repoUrl, notes, onClose])
+  }, [dispatch, folder.id, displayName, emoji, client, projectType, color, status, repoUrl, notes, stealthMode, onClose])
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -181,6 +183,18 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
               value={notes}
               onChange={e => setNotes(e.target.value)}
             />
+          </div>
+
+          {/* Stealth Mode */}
+          <div className="form-group">
+            <label className="stealth-toggle">
+              <input
+                type="checkbox"
+                checked={stealthMode}
+                onChange={e => setStealthMode(e.target.checked)}
+              />
+              <span>👻 Stealth Mode — conversations do not save memory or persist context</span>
+            </label>
           </div>
         </div>
         <div className="modal-footer">

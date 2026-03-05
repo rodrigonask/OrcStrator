@@ -28,6 +28,7 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       sortOrder: r.sort_order as number,
       createdAt: r.created_at as number,
       orchestratorActive: Boolean(r.orchestrator_active),
+      stealthMode: Boolean(r.stealth_mode),
     }))
 
     const instances: InstanceConfig[] = instanceRows.map(r => ({

@@ -16,6 +16,7 @@ export interface FolderConfig {
   sortOrder: number
   createdAt: number
   orchestratorActive?: boolean
+  stealthMode?: boolean
 }
 
 export interface InstanceConfig {

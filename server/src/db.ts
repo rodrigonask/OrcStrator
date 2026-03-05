@@ -235,6 +235,15 @@ function migration006(): void {
   setSchemaVersion(6)
 }
 
+function migration007(): void {
+  try {
+    db.prepare('ALTER TABLE folders ADD COLUMN stealth_mode INTEGER DEFAULT 0').run()
+  } catch {
+    // column already exists
+  }
+  setSchemaVersion(7)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -261,6 +270,10 @@ function runMigrations(): void {
   if (currentVersion < 6) {
     migration006()
   }
+
+  if (currentVersion < 7) {
+    migration007()
+  }
 }
 
 function initDb(): void {
@@ -270,5 +283,7 @@ function initDb(): void {
   db.pragma('foreign_keys = ON')
   runMigrations()
 }
+
+export function closeDb(): void { db.close() }
 
 export { db, initDb }
