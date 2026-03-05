@@ -36,9 +36,11 @@ export function FolderGroup({ folder }: FolderGroupProps) {
   const handleAddInstance = useCallback(async () => {
     closeContextMenu()
     try {
+      const baseName = folder.displayName || folder.name
+      const instanceName = instances.length > 0 ? `${baseName} #${instances.length + 1}` : baseName
       const instance = await api.createInstance({
         folderId: folder.id,
-        name: folder.displayName || folder.name,
+        name: instanceName,
         cwd: folder.path,
       })
       dispatch({ type: 'ADD_INSTANCE', payload: instance })
@@ -96,8 +98,8 @@ export function FolderGroup({ folder }: FolderGroupProps) {
 
       {expanded && (
         <div className="folder-instances">
-          {instances.map(inst => (
-            <InstanceItem key={inst.id} instance={inst} />
+          {instances.map((inst, idx) => (
+            <InstanceItem key={inst.id} instance={inst} index={idx + 1} total={instances.length} />
           ))}
           {instances.length === 0 && (
             <div className="instance-item" style={{ opacity: 0.5, cursor: 'default' }}>

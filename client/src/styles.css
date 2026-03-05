@@ -250,8 +250,26 @@ body {
 .collapsed .sidebar-usage,
 .collapsed .sidebar-folders,
 .collapsed .sidebar-add-folder,
-.collapsed .sidebar-footer-text {
+.collapsed .sidebar-footer-text,
+.collapsed .level-bar {
   display: none;
+}
+
+.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 12px 8px;
+}
+
+.collapsed .sidebar-header-left {
+  display: none;
+}
+
+.collapsed .sidebar-footer {
+  justify-content: center;
+}
+
+.collapsed .settings-btn {
+  justify-content: center;
 }
 
 .sidebar-collapse-btn {
