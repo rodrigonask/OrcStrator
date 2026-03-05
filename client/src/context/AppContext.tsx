@@ -561,9 +561,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (urlId && state.instances.some(i => i.id === urlId)) {
       dispatch({ type: 'SELECT_INSTANCE', payload: urlId })
       dispatch({ type: 'CLEAR_UNREAD', payload: urlId })
-      api.getHistory(urlId).then((data) => {
+      api.getHistory(urlId, { limit: 50 }).then((data) => {
         const messages = (data as any).messages ?? data
-        dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages } })
+        const hasMore = (data as any).hasMore ?? false
+        dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages, hasMore } })
       }).catch(() => {})
     }
   }, [state.instances, state.selectedInstanceId])
@@ -609,9 +610,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: 'SELECT_INSTANCE', payload: instances[next].id })
       dispatch({ type: 'CLEAR_UNREAD', payload: instances[next].id })
       if (!messagesRef.current[instances[next].id]) {
-        api.getHistory(instances[next].id).then((data) => {
+        api.getHistory(instances[next].id, { limit: 50 }).then((data) => {
           const messages = (data as any).messages ?? data
-          dispatch({ type: 'SET_MESSAGES', payload: { instanceId: instances[next].id, messages } })
+          const hasMore = (data as any).hasMore ?? false
+          dispatch({ type: 'SET_MESSAGES', payload: { instanceId: instances[next].id, messages, hasMore } })
         }).catch(() => {})
       }
     }
@@ -632,9 +634,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (id) {
         dispatch({ type: 'CLEAR_UNREAD', payload: id })
         if (!messagesRef.current[id]) {
-          api.getHistory(id).then((data) => {
+          api.getHistory(id, { limit: 50 }).then((data) => {
             const messages = (data as any).messages ?? data
-            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages } })
+            const hasMore = (data as any).hasMore ?? false
+            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
           }).catch((err) => {
             console.error('Failed to fetch history:', err)
           })
@@ -674,9 +677,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'REMOVE_INSTANCE', payload: id })
   }, [])
 
+  const loadOlderMessages = useCallback(async (instanceId: string) => {
+    const currentMsgs = stateRef.current.messages[instanceId]
+    if (!currentMsgs || currentMsgs.length === 0) return
+    const earliest = currentMsgs[0].createdAt
+    const data = await api.getHistory(instanceId, { limit: 50, before: earliest })
+    const messages = (data as any).messages ?? data
+    const hasMore = (data as any).hasMore ?? false
+    if (messages.length > 0) {
+      dispatch({ type: 'PREPEND_MESSAGES', payload: { instanceId, messages, hasMore } })
+    }
+  }, [])
+
   const value = useMemo<AppContextValue>(
-    () => ({ state, dispatch, selectInstance, deleteInstance, sendMessage }),
-    [state, dispatch, selectInstance, deleteInstance, sendMessage]
+    () => ({ state, dispatch, selectInstance, deleteInstance, sendMessage, loadOlderMessages }),
+    [state, dispatch, selectInstance, deleteInstance, sendMessage, loadOlderMessages]
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
