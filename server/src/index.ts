@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { initDb, db, closeDb } from './db.js'
 import { registerWebSocket } from './ws/handler.js'
 import { killAll, setOrchestratorCallback } from './services/claude-process.js'
-import { orchestrator } from './services/orchestrator.js'
+import { orchestrator, type ResumeSnapshot } from './services/orchestrator.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
 import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
 
@@ -30,6 +30,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 async function main(): Promise<void> {
   // Initialize database
   initDb()
+
+  // Snapshot running instances BEFORE any resets — session IDs are wiped by the reset below
+  const staleRunning = db.prepare(
+    "SELECT id, session_id, folder_id FROM instances WHERE state = 'running' AND session_id IS NOT NULL"
+  ).all() as { id: string; session_id: string; folder_id: string }[]
+
+  const resumeSnapshots: ResumeSnapshot[] = staleRunning.map(i => {
+    const tasks = db.prepare(
+      "SELECT id FROM pipeline_tasks WHERE locked_by = ?"
+    ).all(i.id) as { id: string }[]
+    return {
+      instanceId: i.id,
+      sessionId: i.session_id,
+      folderId: i.folder_id,
+      lockedTaskIds: tasks.map(t => t.id)
+    }
+  }).filter(s => s.lockedTaskIds.length > 0)
 
   // Reset stale running instances — on restart no Claude processes exist
   const resetCount = db.prepare("UPDATE instances SET state = 'idle' WHERE state = 'running'").run().changes
@@ -55,7 +72,11 @@ async function main(): Promise<void> {
     fetchUsage().catch(() => {})
   })
   orchestrator.start()
-  orchestrator.triggerAll()
+  if (resumeSnapshots.length > 0) {
+    orchestrator.resumeStaleInstances(resumeSnapshots)
+  } else {
+    orchestrator.triggerAll()
+  }
 
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 * 20 }) // 20MB to support screenshot attachments
 

@@ -5,12 +5,21 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 
-const LOCK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+const LOCK_TIMEOUT_MS = 20 * 60 * 1000 // 20 minutes (was 10)
+
+export const serverStartTime = Date.now()
 const SAFETY_POLL_MS = 60 * 1000        // 60 seconds
 const LOCK_SWEEP_MS = 2 * 60 * 1000    // 2 minutes
 const MAX_RETRIES = 3
 
 const MASTER_PROMPTS_DIR = 'C:/Agents/.claude/agents'
+
+export interface ResumeSnapshot {
+  instanceId: string
+  sessionId: string
+  folderId: string
+  lockedTaskIds: string[]
+}
 
 const ROLE_COLUMNS: Record<string, string[]> = {
   planner: ['backlog', 'spec'],
@@ -27,6 +36,9 @@ class OrchestratorService {
     if (this.safetyPollTimer) return
     this.safetyPollTimer = setInterval(() => this.safetySweep(), SAFETY_POLL_MS)
     this.lockSweepTimer = setInterval(() => this.timeoutSweep(), LOCK_SWEEP_MS)
+    setInterval(() => {
+      try { db.prepare('VACUUM').run() } catch {}
+    }, 6 * 60 * 60 * 1000)
     console.log('[orchestrator] Started — event-driven + 60s safety poll + 2min lock sweep')
   }
 
@@ -47,6 +59,25 @@ class OrchestratorService {
       this.assignWork(instance.folder_id as string)
     } catch (err) {
       console.error('[orchestrator] onProcessExit error:', err)
+    }
+    this.pruneMessages(instanceId)
+  }
+
+  private pruneMessages(instanceId: string): void {
+    try {
+      const KEEP = 300
+      db.prepare(`
+        DELETE FROM messages
+        WHERE instance_id = ?
+          AND id NOT IN (
+            SELECT id FROM messages
+            WHERE instance_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+          )
+      `).run(instanceId, instanceId, KEEP)
+    } catch (err) {
+      console.error('[orchestrator] pruneMessages error:', err)
     }
   }
 
@@ -88,6 +119,21 @@ class OrchestratorService {
 
       for (const [, tasks] of groupedTasks) {
         const rep = tasks[0]
+
+        // Task was locked before this server boot — the server was offline, not the agent's fault
+        const lockedBeforeStart = (rep.locked_at as number) < serverStartTime
+        if (lockedBeforeStart) {
+          for (const t of tasks) {
+            const history = JSON.parse((t.history as string) || '[]')
+            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'server was offline — timeout not counted as agent failure' })
+            db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, history = ?, updated_at = ? WHERE id = ?`)
+              .run(JSON.stringify(history), Date.now(), t.id)
+          }
+          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'server-restart' } })
+          if (rep.project_id) broadcastEvent({ type: 'pipeline:updated', payload: { projectId: rep.project_id } })
+          continue
+        }
+
         const newRetryCount = ((rep.retry_count as number) || 0) + 1
 
         if (newRetryCount >= MAX_RETRIES) {
@@ -101,7 +147,7 @@ class OrchestratorService {
         } else {
           for (const t of tasks) {
             const history = JSON.parse((t.history as string) || '[]')
-            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'timeout after 10min — the agent ghosted us' })
+            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'timeout after 20min — the agent ghosted us' })
             db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?`)
               .run(newRetryCount, JSON.stringify(history), Date.now(), t.id)
           }
@@ -471,6 +517,74 @@ class OrchestratorService {
   triggerFolder(folderId: string): void {
     this.assignWork(folderId)
     this.broadcastStatus(folderId)
+  }
+
+  // Resume agents whose sessions were alive before server restart
+  resumeStaleInstances(snapshots: ResumeSnapshot[]): void {
+    for (const snap of snapshots) {
+      try {
+        const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(snap.instanceId) as Record<string, unknown> | undefined
+        if (!instance) continue
+
+        const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(snap.folderId) as Record<string, unknown> | undefined
+        if (!folder) continue
+
+        const placeholders = snap.lockedTaskIds.map(() => '?').join(',')
+        const tasks = db.prepare(
+          `SELECT * FROM pipeline_tasks WHERE id IN (${placeholders}) ORDER BY priority ASC, created_at ASC`
+        ).all(...snap.lockedTaskIds) as Record<string, unknown>[]
+        if (tasks.length === 0) continue
+
+        const primaryTask = tasks[0]
+        const now = Date.now()
+
+        // Re-lock tasks to this instance (they were cleared by startup reset)
+        for (const t of tasks) {
+          const history = JSON.parse((t.history as string) || '[]')
+          history.push({ action: 'reassigned', timestamp: now, agent: snap.instanceId, note: 'server restart resume' })
+          db.prepare(
+            "UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, history = ?, updated_at = ? WHERE id = ?"
+          ).run(snap.instanceId, now, JSON.stringify(history), now, t.id)
+        }
+
+        // Mark instance as running so triggerAll() below won't double-assign it
+        db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(snap.instanceId)
+
+        const prompt = this.buildPrompt(tasks, primaryTask, instance, folder)
+        const cwd = (instance.cwd as string) || (folder.path as string)
+
+        const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
+        const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
+
+        let agentPrompt: string | undefined
+        if (instance.agent_id) {
+          const agent = db.prepare('SELECT content FROM agents WHERE id = ?').get(instance.agent_id as string) as { content: string } | undefined
+          agentPrompt = agent?.content
+        }
+
+        console.log(`[orchestrator] Resuming "${primaryTask.title as string}" → instance ${snap.instanceId} (--resume ${snap.sessionId})`)
+
+        try {
+          sendMessage({ instanceId: snap.instanceId, text: prompt, cwd, sessionId: snap.sessionId, flags: globalFlags, agentPrompt })
+        } catch (err) {
+          console.error(`[orchestrator] resumeStaleInstances sendMessage failed for ${snap.instanceId}:`, err)
+          // Rollback: unlock tasks and reset instance to idle so triggerAll can reassign normally
+          for (const t of tasks) {
+            db.prepare('UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE id = ?').run(t.id)
+          }
+          db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(snap.instanceId)
+          continue
+        }
+
+        broadcastEvent({ type: 'orchestrator:assigned', payload: { folderId: snap.folderId, instanceId: snap.instanceId, taskId: primaryTask.id as string, taskTitle: primaryTask.title as string } })
+        broadcastEvent({ type: 'pipeline:updated', payload: { projectId: snap.folderId } })
+      } catch (err) {
+        console.error('[orchestrator] resumeStaleInstances error for', snap.instanceId, err)
+      }
+    }
+
+    // Fresh assignments for any idle agents that had no in-progress work
+    this.triggerAll()
   }
 
   // Trigger assignment for all active folders (used at startup)
