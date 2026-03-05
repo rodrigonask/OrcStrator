@@ -10,7 +10,6 @@ import { FolderGroup } from './FolderGroup'
 import { FolderBrowserModal } from './FolderBrowserModal'
 import { ProjectEditModal } from './ProjectEditModal'
 import { SettingsModal } from './SettingsModal'
-import { LevelBar } from './tour/LevelBar'
 import type { FolderConfig } from '@shared/types'
 
 function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
@@ -51,14 +50,6 @@ export function Sidebar() {
   }, [sortedFolders, dispatch])
 
 
-  const usage = state.usage
-  const primaryBucket = usage?.buckets?.[0]
-  const usagePercent = primaryBucket?.percentage ?? 0
-  const usageLabel = primaryBucket?.label ?? 'Usage'
-  const usageReset = primaryBucket?.resetCountdown
-
-  const usageBarClass = usagePercent >= 90 ? 'danger' : usagePercent >= 70 ? 'warning' : ''
-
   return (
     <>
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -74,20 +65,6 @@ export function Sidebar() {
           >
             {collapsed ? '\u25B6' : '\u25C0'}
           </button>
-        </div>
-
-        <div className="sidebar-usage">
-          <div className="usage-label">
-            <span>{usageLabel}</span>
-            <span>{Math.round(usagePercent)}%</span>
-          </div>
-          <div className="usage-bar-track">
-            <div
-              className={`usage-bar-fill ${usageBarClass}`}
-              style={{ width: `${Math.min(usagePercent, 100)}%` }}
-            />
-          </div>
-          {usageReset && <div className="usage-reset">Resets {usageReset}</div>}
         </div>
 
         <div className="sidebar-folders">
@@ -110,17 +87,6 @@ export function Sidebar() {
           </button>
         </div>
 
-        <LevelBar />
-
-        <div className="sidebar-footer">
-          <button
-            className="settings-btn"
-            onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
-          >
-            <span>&#x2699;</span>
-            <span className="sidebar-footer-text">Settings</span>
-          </button>
-        </div>
       </aside>
 
       {state.showSettings && <SettingsModal onClose={() => dispatch({ type: 'CLOSE_SETTINGS' })} />}
