@@ -1,8 +1,12 @@
-import { useMemo, useState, useCallback, useRef } from 'react'
+import { memo, useMemo, useState, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { ChatMessage, MessageContentBlock } from '@shared/types'
 import { ToolCallBlock } from './ToolCallBlock'
+
+// Configure marked once at module level
+marked.setOptions({ breaks: true })
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -31,7 +35,7 @@ function formatTimestamp(ts: number): string {
   return `${days[date.getDay()]} ${date.getDate()} at ${time}`
 }
 
-export function MessageBubble({ message, toolResults }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, toolResults }: MessageBubbleProps) {
   const { role, content, createdAt } = message
   const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -67,7 +71,7 @@ export function MessageBubble({ message, toolResults }: MessageBubbleProps) {
       )}
     </div>
   )
-}
+})
 
 function ContentBlock({
   block,
@@ -134,12 +138,17 @@ function ContentBlock({
 
 function TextContent({ text }: { text: string }) {
   const html = useMemo(() => {
-    const renderer = new marked.Renderer()
-    marked.setOptions({
-      renderer,
-      breaks: true,
+    const raw = marked.parse(text) as string
+    return DOMPurify.sanitize(raw, {
+      ALLOWED_TAGS: [
+        'p', 'br', 'strong', 'em', 'b', 'i', 'u', 's', 'del',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+        'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+        'hr', 'div', 'span', 'sup', 'sub',
+      ],
+      ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel'],
     })
-    return marked.parse(text) as string
   }, [text])
 
   return (

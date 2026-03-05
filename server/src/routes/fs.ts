@@ -4,28 +4,75 @@ import path from 'path'
 import os from 'os'
 import { db } from '../db.js'
 
+/**
+ * Get the list of allowed root directories: user home, temp dir, and
+ * all registered folder paths from the database.
+ * Every entry is normalized via path.resolve() with path.sep separators.
+ */
+function getAllowedRoots(): string[] {
+  const roots: string[] = [
+    path.resolve(os.homedir()),
+    path.resolve(os.tmpdir()),
+  ]
+
+  try {
+    const folderRows = db.prepare('SELECT path FROM folders').all() as Array<{ path: string }>
+    for (const r of folderRows) {
+      roots.push(path.resolve(r.path))
+    }
+  } catch {
+    // DB may not have 'folders' table yet — allow home/temp only
+  }
+
+  return roots
+}
+
+/**
+ * Check whether `targetPath` is under one of the allowed roots.
+ * Uses path.relative() to detect escapes (e.g. ../../etc/passwd).
+ * Normalizes both sides to handle Windows backslash/forward-slash mismatch.
+ */
+function isPathAllowed(targetPath: string, allowedRoots?: string[]): boolean {
+  const resolved = path.resolve(targetPath)
+  const roots = allowedRoots ?? getAllowedRoots()
+
+  for (const root of roots) {
+    const rel = path.relative(root, resolved)
+    // rel must not start with '..' and must not be absolute (escape)
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return true
+    }
+  }
+  return false
+}
+
 export default async function fsRoutes(app: FastifyInstance): Promise<void> {
   // Browse directory contents
   app.get('/fs/browse', async (request) => {
     const { dir } = request.query as { dir?: string }
     const targetDir = dir || os.homedir()
+    const resolved = path.resolve(targetDir)
 
-    if (!fs.existsSync(targetDir)) {
+    if (!isPathAllowed(resolved)) {
+      throw { statusCode: 403, message: 'Path not in allowed directories' }
+    }
+
+    if (!fs.existsSync(resolved)) {
       throw { statusCode: 404, message: 'Directory not found' }
     }
 
-    const stat = fs.statSync(targetDir)
+    const stat = fs.statSync(resolved)
     if (!stat.isDirectory()) {
       throw { statusCode: 400, message: 'Path is not a directory' }
     }
 
     try {
-      const entries = fs.readdirSync(targetDir, { withFileTypes: true })
+      const entries = fs.readdirSync(resolved, { withFileTypes: true })
       const items = entries
         .filter(e => !e.name.startsWith('.')) // Skip hidden files by default
         .map(e => ({
           name: e.name,
-          path: path.join(targetDir, e.name),
+          path: path.join(resolved, e.name),
           isDirectory: e.isDirectory(),
           isFile: e.isFile()
         }))
@@ -36,7 +83,7 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
           return a.name.localeCompare(b.name)
         })
 
-      return { dir: targetDir, items }
+      return { dir: resolved, items }
     } catch (err) {
       throw { statusCode: 403, message: 'Cannot read directory' }
     }
@@ -46,22 +93,27 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/fs/subfolders', async (request) => {
     const { dir } = request.query as { dir?: string }
     const targetDir = dir || os.homedir()
+    const resolved = path.resolve(targetDir)
 
-    if (!fs.existsSync(targetDir)) {
+    if (!isPathAllowed(resolved)) {
+      throw { statusCode: 403, message: 'Path not in allowed directories' }
+    }
+
+    if (!fs.existsSync(resolved)) {
       throw { statusCode: 404, message: 'Directory not found' }
     }
 
     try {
-      const entries = fs.readdirSync(targetDir, { withFileTypes: true })
+      const entries = fs.readdirSync(resolved, { withFileTypes: true })
       const folders = entries
         .filter(e => e.isDirectory() && !e.name.startsWith('.'))
         .map(e => ({
           name: e.name,
-          path: path.join(targetDir, e.name)
+          path: path.join(resolved, e.name)
         }))
         .sort((a, b) => a.name.localeCompare(b.name))
 
-      return { dir: targetDir, folders }
+      return { dir: resolved, folders }
     } catch {
       throw { statusCode: 403, message: 'Cannot read directory' }
     }
@@ -74,15 +126,17 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
       throw { statusCode: 400, message: 'Missing path parameter' }
     }
 
-    // Security: reject paths with .. traversal
-    if (filePath.includes('..')) {
-      throw { statusCode: 403, message: 'Path traversal not allowed' }
+    const normalizedPath = path.resolve(filePath)
+
+    // Security: validate against allowed roots using path.relative()
+    if (!isPathAllowed(normalizedPath)) {
+      throw { statusCode: 403, message: 'Path not in allowed directories' }
     }
 
     // Security: reject symlinks
     try {
-      const realPath = fs.realpathSync(filePath)
-      if (realPath !== path.resolve(filePath)) {
+      const realPath = fs.realpathSync(normalizedPath)
+      if (realPath !== normalizedPath) {
         throw { statusCode: 403, message: 'Symlinks not allowed' }
       }
     } catch (err: unknown) {
@@ -90,30 +144,12 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
       throw { statusCode: 404, message: 'File not found' }
     }
 
-    // Security: only allow files under home, temp, or registered folder paths
-    const normalizedPath = path.resolve(filePath)
-    const homeDir = os.homedir()
-    const tempDir = os.tmpdir()
-
-    // Get registered folder paths from DB
-    const folderRows = db.prepare('SELECT path FROM folders').all() as Array<{ path: string }>
-    const registeredPaths = folderRows.map(r => path.resolve(r.path))
-
-    const isAllowed =
-      normalizedPath.startsWith(homeDir) ||
-      normalizedPath.startsWith(tempDir) ||
-      registeredPaths.some(p => normalizedPath.startsWith(p))
-
-    if (!isAllowed) {
-      throw { statusCode: 403, message: 'Path not in allowed directories' }
-    }
-
-    if (!fs.existsSync(filePath)) {
+    if (!fs.existsSync(normalizedPath)) {
       throw { statusCode: 404, message: 'File not found' }
     }
 
     // Determine content type
-    const ext = path.extname(filePath).toLowerCase()
+    const ext = path.extname(normalizedPath).toLowerCase()
     const mimeTypes: Record<string, string> = {
       '.png': 'image/png',
       '.jpg': 'image/jpeg',
@@ -126,7 +162,7 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const contentType = mimeTypes[ext] || 'application/octet-stream'
-    const stream = fs.createReadStream(filePath)
+    const stream = fs.createReadStream(normalizedPath)
     reply.type(contentType)
     return reply.send(stream)
   })
@@ -138,7 +174,13 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
       throw { statusCode: 400, message: 'Missing dir parameter' }
     }
 
-    const claudeMdPath = path.join(dir, 'CLAUDE.md')
+    const resolved = path.resolve(dir)
+
+    if (!isPathAllowed(resolved)) {
+      throw { statusCode: 403, message: 'Path not in allowed directories' }
+    }
+
+    const claudeMdPath = path.join(resolved, 'CLAUDE.md')
     const exists = fs.existsSync(claudeMdPath)
 
     let content: string | null = null

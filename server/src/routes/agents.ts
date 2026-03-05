@@ -5,6 +5,7 @@ import type { AgentConfig } from '@nasklaude/shared'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 
 export default async function agentRoutes(app: FastifyInstance): Promise<void> {
   // List all agents
@@ -83,17 +84,45 @@ export default async function agentRoutes(app: FastifyInstance): Promise<void> {
   // Scan for agent markdown files in a directory
   app.post('/agents/scan', async (request) => {
     const { directory } = request.body as { directory: string }
-    if (!directory || !fs.existsSync(directory)) {
+    if (!directory) {
+      return { agents: [] }
+    }
+
+    // Validate directory is under an allowed root
+    const resolved = path.resolve(directory)
+    const allowedRoots = [
+      path.resolve(os.homedir()),
+      path.resolve(os.tmpdir()),
+    ]
+    try {
+      const folderRows = db.prepare('SELECT path FROM folders').all() as Array<{ path: string }>
+      for (const r of folderRows) {
+        allowedRoots.push(path.resolve(r.path))
+      }
+    } catch {
+      // DB may not have 'folders' table yet
+    }
+
+    const isAllowed = allowedRoots.some(root => {
+      const rel = path.relative(root, resolved)
+      return !rel.startsWith('..') && !path.isAbsolute(rel)
+    })
+
+    if (!isAllowed) {
+      throw { statusCode: 403, message: 'Directory not in allowed paths' }
+    }
+
+    if (!fs.existsSync(resolved)) {
       return { agents: [] }
     }
 
     const found: Array<{ name: string; path: string; content: string }> = []
 
     try {
-      const entries = fs.readdirSync(directory, { withFileTypes: true })
+      const entries = fs.readdirSync(resolved, { withFileTypes: true })
       for (const entry of entries) {
         if (entry.isFile() && entry.name.endsWith('.md')) {
-          const filePath = path.join(directory, entry.name)
+          const filePath = path.join(resolved, entry.name)
           const content = fs.readFileSync(filePath, 'utf-8')
           found.push({
             name: entry.name.replace(/\.md$/, ''),

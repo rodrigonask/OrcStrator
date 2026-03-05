@@ -79,7 +79,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // Send message to instance
   app.post('/instances/:id/send', async (request) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { text: string; images?: string[] }
+    const body = request.body as { text: string; images?: string[]; flags?: string[] }
 
     const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!instance) {
@@ -120,7 +120,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
       images: body.images,
       cwd: instance.cwd as string,
       sessionId: instance.session_id as string | undefined,
-      flags: globalFlags,
+      flags: [...globalFlags, ...(body.flags || [])],
       agentPrompt
     })
 

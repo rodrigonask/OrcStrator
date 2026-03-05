@@ -3,7 +3,6 @@ import { createStreamParser } from './stream-parser.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { db } from '../db.js'
 import { sanitizeSession } from './session-sanitizer.js'
-import { ALLOWED_FLAG_PREFIXES } from '@nasklaude/shared'
 import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@nasklaude/shared'
 import crypto from 'crypto'
 
@@ -24,10 +23,18 @@ interface SendMessageOpts {
   agentPrompt?: string
 }
 
+const ALLOWED_FLAGS = new Set([
+  '--dangerously-skip-permissions',
+  '--system-prompt', '--append-system-prompt',
+  '--permission-mode', '--model', '--max-tokens',
+  '--verbose', '--output-format', '--input-format',
+  '--resume', '--session-id', '--no-cache'
+])
+
 function filterFlags(flags: string[]): string[] {
   return flags.filter(flag => {
     const flagName = flag.split('=')[0]
-    return ALLOWED_FLAG_PREFIXES.some(prefix => flagName === prefix || flagName.startsWith(prefix + '='))
+    return ALLOWED_FLAGS.has(flagName)
   })
 }
 
@@ -49,9 +56,12 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   const safeFlags = filterFlags(flags)
   args.push(...safeFlags)
 
-  // Agent system prompt
+  // Agent system prompt — strip null bytes and other control chars (except \n, \r, \t)
   if (agentPrompt) {
-    args.push('--append-system-prompt', agentPrompt)
+    const sanitized = agentPrompt.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    if (sanitized.length > 0) {
+      args.push('--append-system-prompt', sanitized)
+    }
   }
 
   // Environment — delete CLAUDECODE to prevent nested session issues
@@ -59,10 +69,10 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   delete env['CLAUDECODE']
 
   // Spawn the process
-  const child = spawn('claude', args, {
+  const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
+  const child = spawn(cmd, args, {
     cwd,
     env,
-    shell: process.platform === 'win32',
     stdio: ['pipe', 'pipe', 'pipe']
   })
 
@@ -166,7 +176,15 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   // stream-json format: { type: "user", message: { role: "user", content: "..." }, session_id, parent_tool_use_id }
   const messageContent: unknown[] = [{ type: 'text', text }]
   if (images && images.length > 0) {
+    const MAX_IMAGE_SIZE = 2 * 1024 * 1024 // 2MB base64 length
+    const MAX_IMAGES = 5
+    if (images.length > MAX_IMAGES) {
+      throw new Error(`Too many images: ${images.length} exceeds maximum of ${MAX_IMAGES}`)
+    }
     for (const img of images) {
+      if (img.length > MAX_IMAGE_SIZE) {
+        throw new Error(`Image too large: ${img.length} bytes exceeds maximum of ${MAX_IMAGE_SIZE}`)
+      }
       messageContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: img } })
     }
   }

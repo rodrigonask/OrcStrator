@@ -1,11 +1,26 @@
 import type { FastifyInstance } from 'fastify'
 import type { WebSocket } from 'ws'
+import { ALLOWED_ORIGINS } from '../config.js'
 
 const clients = new Set<WebSocket>()
+const MAX_WS_CLIENTS = 50
 let pingInterval: ReturnType<typeof setInterval> | null = null
 
 export function registerWebSocket(app: FastifyInstance): void {
-  app.get('/ws', { websocket: true }, (socket: WebSocket) => {
+  app.get('/ws', { websocket: true }, (socket: WebSocket, request) => {
+    // Origin validation
+    const origin = request.headers.origin
+    if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+      socket.close(1008, 'Origin not allowed')
+      return
+    }
+
+    // Connection limit
+    if (clients.size >= MAX_WS_CLIENTS) {
+      socket.close(1013, 'Too many connections')
+      return
+    }
+
     clients.add(socket)
 
     socket.on('close', () => {

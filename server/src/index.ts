@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { initDb } from './db.js'
 import { registerWebSocket } from './ws/handler.js'
 import { killAll } from './services/claude-process.js'
-import { DEFAULT_PORT } from './config.js'
+import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
 
 // Route modules
 import stateRoutes from './routes/state.js'
@@ -28,11 +28,11 @@ async function main(): Promise<void> {
   // Initialize database
   initDb()
 
-  const app = Fastify({ logger: false })
+  const app = Fastify({ logger: false, bodyLimit: 1024 * 512 })
 
   // Register plugins
   await app.register(fastifyCors, {
-    origin: true,
+    origin: ALLOWED_ORIGINS,
     credentials: true
   })
 
