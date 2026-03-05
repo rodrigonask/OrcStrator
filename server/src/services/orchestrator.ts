@@ -63,6 +63,27 @@ class OrchestratorService {
     this.pruneMessages(instanceId)
   }
 
+  private pruneOldMessages(instanceId: string): void {
+    const KEEP_LAST = 500
+    try {
+      const row = db.prepare('SELECT COUNT(*) as c FROM messages WHERE instance_id = ?').get(instanceId) as { c: number }
+      if (row.c > KEEP_LAST) {
+        const cutoffRow = db.prepare(
+          'SELECT created_at FROM messages WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET ?'
+        ).get(instanceId, KEEP_LAST - 1) as { created_at: number } | undefined
+        if (cutoffRow) {
+          const deleted = db.prepare('DELETE FROM messages WHERE instance_id = ? AND created_at < ?')
+            .run(instanceId, cutoffRow.created_at).changes
+          if (deleted > 0) {
+            console.log(`[orchestrator] Pruned ${deleted} old messages for ${instanceId}`)
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[orchestrator] pruneOldMessages error:', err)
+    }
+  }
+
   private pruneMessages(instanceId: string): void {
     try {
       const KEEP = 300
@@ -292,6 +313,8 @@ class OrchestratorService {
     db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(msgId, instanceId, 'user', JSON.stringify(msgContent), now)
     broadcastEvent({ type: 'message:added', payload: { instanceId, message: { id: msgId, instanceId, role: 'user', content: msgContent, createdAt: now } } })
+
+    this.pruneOldMessages(instanceId)
 
     try {
       sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt })

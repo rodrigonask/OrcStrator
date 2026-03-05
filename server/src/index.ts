@@ -31,6 +31,18 @@ async function main(): Promise<void> {
   // Initialize database
   initDb()
 
+  // WAL checkpoint to keep DB file size bounded
+  const runMaintenance = () => {
+    try {
+      db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').run()
+      console.log('[maintenance] WAL checkpoint complete')
+    } catch (err) {
+      console.error('[maintenance] WAL checkpoint error:', err)
+    }
+  }
+  runMaintenance()
+  setInterval(runMaintenance, 6 * 60 * 60 * 1000)
+
   // Snapshot running instances BEFORE any resets — session IDs are wiped by the reset below
   const staleRunning = db.prepare(
     "SELECT id, session_id, folder_id FROM instances WHERE state = 'running' AND session_id IS NOT NULL"

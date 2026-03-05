@@ -27,6 +27,8 @@ interface State {
   settings: AppSettings
   selectedInstanceId: string | null
   messages: Record<string, ChatMessage[]>
+  messageOrder: string[]  // LRU list of instanceIds with loaded messages
+  hasMore: Record<string, boolean>  // whether more history exists for each instance
   streamingContent: Record<string, string>
   streamingToolCalls: Record<string, StreamingToolCall[]>
   unreadCounts: Record<string, number>
@@ -57,6 +59,8 @@ const initialState: State = {
   },
   selectedInstanceId: null,
   messages: {},
+  messageOrder: [],
+  hasMore: {},
   streamingContent: {},
   streamingToolCalls: {},
   unreadCounts: {},
@@ -85,7 +89,8 @@ type Action =
   | { type: 'UPDATE_INSTANCE'; payload: { id: string; updates: Partial<InstanceConfig> } }
   | { type: 'REORDER_INSTANCES'; payload: { folderId: string; ids: string[] } }
   | { type: 'SELECT_INSTANCE'; payload: string | null }
-  | { type: 'SET_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[] } }
+  | { type: 'SET_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[]; hasMore?: boolean } }
+  | { type: 'PREPEND_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[]; hasMore: boolean } }
   | { type: 'ADD_MESSAGE'; payload: ChatMessage }
   | { type: 'APPEND_STREAMING'; payload: { instanceId: string; text: string } }
   | { type: 'CLEAR_STREAMING'; payload: string }
@@ -193,11 +198,36 @@ function reducer(state: State, action: Action): State {
     case 'SELECT_INSTANCE':
       return { ...state, selectedInstanceId: action.payload }
 
-    case 'SET_MESSAGES':
+    case 'SET_MESSAGES': {
+      const MAX_CACHED_INSTANCES = 3
+      const { instanceId: smId, messages: smMsgs, hasMore: smHasMore } = action.payload
+      const order = state.messageOrder.filter(id => id !== smId)
+      const newOrder = [...order, smId]
+      let newMessages = { ...state.messages, [smId]: smMsgs }
+      let finalOrder = newOrder
+      let newHasMore = smHasMore !== undefined
+        ? { ...state.hasMore, [smId]: smHasMore }
+        : { ...state.hasMore }
+      if (newOrder.length > MAX_CACHED_INSTANCES) {
+        const evict = newOrder[0]
+        const { [evict]: _ev, ...rest } = newMessages
+        const { [evict]: _hm, ...restHM } = newHasMore
+        newMessages = rest
+        newHasMore = restHM
+        finalOrder = newOrder.slice(1)
+      }
+      return { ...state, messages: newMessages, messageOrder: finalOrder, hasMore: newHasMore }
+    }
+
+    case 'PREPEND_MESSAGES': {
+      const { instanceId: pmId, messages: pmMsgs, hasMore: pmHasMore } = action.payload
+      const existing = state.messages[pmId] || []
       return {
         ...state,
-        messages: { ...state.messages, [action.payload.instanceId]: action.payload.messages },
+        messages: { ...state.messages, [pmId]: [...pmMsgs, ...existing] },
+        hasMore: { ...state.hasMore, [pmId]: pmHasMore },
       }
+    }
 
     case 'ADD_MESSAGE': {
       const instId = action.payload.instanceId
@@ -370,6 +400,7 @@ interface AppContextValue {
   selectInstance: (id: string | null) => void
   deleteInstance: (id: string) => Promise<void>
   sendMessage: (instanceId: string, text: string, images?: string[], flags?: string[]) => Promise<void>
+  loadOlderMessages: (instanceId: string) => Promise<void>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -391,9 +422,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (urlInstance && data.instances.some((i: InstanceConfig) => i.id === urlInstance)) {
           dispatch({ type: 'SELECT_INSTANCE', payload: urlInstance })
           dispatch({ type: 'CLEAR_UNREAD', payload: urlInstance })
-          api.getHistory(urlInstance).then((histData) => {
+          api.getHistory(urlInstance, { limit: 50 }).then((histData) => {
             const messages = (histData as any).messages ?? histData
-            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlInstance, messages } })
+            const hasMore = (histData as any).hasMore ?? false
+            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlInstance, messages, hasMore } })
           }).catch(() => {})
         }
       }
@@ -426,9 +458,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // On reconnect, re-fetch history for selected instance to fill any event gap
         if (payload.connected && payload.reconnected && selectedIdRef.current) {
           const id = selectedIdRef.current
-          api.getHistory(id).then((data) => {
+          api.getHistory(id, { limit: 50 }).then((data) => {
             const messages = (data as any).messages ?? data
-            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages } })
+            const hasMore = (data as any).hasMore ?? false
+            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
           }).catch(() => {})
         }
       })
@@ -464,9 +497,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId } },
         })
         // Refresh history to get the final messages
-        api.getHistory(instanceId).then((data) => {
+        api.getHistory(instanceId, { limit: 50 }).then((data) => {
           const messages = (data as any).messages ?? data
-          dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages } })
+          const hasMore = (data as any).hasMore ?? false
+          dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages, hasMore } })
         }).catch(() => {
           // history fetch failed, streaming content already cleared
         })
