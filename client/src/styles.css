@@ -1637,6 +1637,40 @@ body {
   margin-bottom: 6px;
 }
 
+/* Orchestrator POV banner */
+.orchestrator-pov-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.orchestrator-pov-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.orchestrator-pov-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(124, 58, 237, 0.4);
+  background: rgba(124, 58, 237, 0.12);
+  color: #a78bfa;
+  cursor: pointer;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--transition-fast);
+}
+.orchestrator-pov-btn:hover {
+  background: rgba(124, 58, 237, 0.22);
+  color: #c4b5fd;
+}
+
 .message-input-wrapper {
   display: flex;
   align-items: flex-end;
@@ -2770,8 +2804,9 @@ body {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 12px;
-  max-height: 320px;
+  max-height: 300px;
   overflow-y: auto;
+  padding-right: 4px;
 }
 
 .task-comment {
@@ -2812,10 +2847,11 @@ body {
 
 .task-comment-body {
   padding: 8px 10px;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.5;
   color: var(--text-primary);
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
 }
 
 .task-comment-body p { margin: 0 0 6px; }

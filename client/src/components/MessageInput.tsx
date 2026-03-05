@@ -8,7 +8,7 @@ const MODELS = [
 ]
 
 export function MessageInput() {
-  const { state, sendMessage } = useApp()
+  const { state, dispatch, sendMessage } = useApp()
   const [text, setText] = useState('')
   const [planMode, setPlanMode] = useState(false)
   const [model, setModel] = useState('claude-sonnet-4-6')
@@ -116,6 +116,20 @@ export function MessageInput() {
               </div>
             )
           })}
+        </div>
+      )}
+      {isOrchestratorOwned && selectedFolder && (
+        <div className="orchestrator-pov-banner">
+          <span className="orchestrator-pov-label">Managed by Orchestrator</span>
+          <button
+            className="orchestrator-pov-btn"
+            onClick={() => {
+              dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
+              dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: selectedFolder.id })
+            }}
+          >
+            Orchestrator POV
+          </button>
         </div>
       )}
       <div

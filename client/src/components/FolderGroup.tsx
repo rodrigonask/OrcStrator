@@ -181,14 +181,12 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
 
   return (
     <div className={`folder-group${folder.stealthMode ? ' stealth' : ''}`}>
-      <div className="folder-header" onClick={toggleExpanded} onContextMenu={handleContextMenu}>
-        {dragHandleProps && (
-          <span
-            className="folder-drag-handle"
-            onClick={e => e.stopPropagation()}
-            {...(dragHandleProps as React.HTMLAttributes<HTMLSpanElement>)}
-          >⠿</span>
-        )}
+      <div
+        className="folder-header"
+        onClick={toggleExpanded}
+        onContextMenu={handleContextMenu}
+        {...(dragHandleProps as React.HTMLAttributes<HTMLDivElement>)}
+      >
         <div
           className="folder-color-bar"
           style={{ backgroundColor: folder.stealthMode ? '#374151' : (folder.color || '#7c3aed') }}
