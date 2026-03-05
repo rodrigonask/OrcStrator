@@ -10,7 +10,7 @@ import { LevelBar } from './tour/LevelBar'
 export function Sidebar() {
   const { state, dispatch } = useApp()
   const [collapsed, setCollapsed] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
+
 
   const usage = state.usage
   const primaryBucket = usage?.buckets?.[0]
@@ -72,7 +72,7 @@ export function Sidebar() {
         <div className="sidebar-footer">
           <button
             className="settings-btn"
-            onClick={() => setShowSettings(true)}
+            onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
           >
             <span>&#x2699;</span>
             <span className="sidebar-footer-text">Settings</span>
@@ -80,7 +80,7 @@ export function Sidebar() {
         </div>
       </aside>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {state.showSettings && <SettingsModal onClose={() => dispatch({ type: 'CLOSE_SETTINGS' })} />}
 
       {state.editingFolderId && (() => {
         const folder = state.folders.find(f => f.id === state.editingFolderId)

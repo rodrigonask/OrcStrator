@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
+import { formatToolCall } from '../utils/toolFormat'
 
 interface ToolCallBlockProps {
   toolName: string
@@ -6,83 +7,71 @@ interface ToolCallBlockProps {
   output?: string
   isError?: boolean
   isRunning?: boolean
+  defaultExpanded?: boolean
 }
 
-export function ToolCallBlock(props: ToolCallBlockProps) {
-  if (props.toolName === 'Bash') {
-    return <BashBlock {...props} />
-  }
-  return <GenericToolCallBlock {...props} />
+const TOOL_ICONS: Record<string, string> = {
+  Read: '📄',
+  Edit: '✏️',
+  Write: '💾',
+  Bash: '⚡',
+  Grep: '🔍',
+  Glob: '🗂️',
+  WebFetch: '🌐',
+  WebSearch: '🔎',
+  Agent: '🤖',
+  AskUserQuestion: '❓',
+  ExitPlanMode: '📋',
+  EnterPlanMode: '📐',
 }
 
-function GenericToolCallBlock({ toolName, input, output, isError, isRunning }: ToolCallBlockProps) {
-  const [expanded, setExpanded] = useState(true)
+const MAX_OUTPUT_PREVIEW = 400
 
-  const summary = useMemo(() => {
-    try {
-      const parsed = JSON.parse(input)
-      const keys = Object.keys(parsed)
-      if (keys.length === 0) return ''
-      const firstVal = String(parsed[keys[0]])
-      return firstVal.length > 50 ? firstVal.slice(0, 50) + '...' : firstVal
-    } catch {
-      return input.slice(0, 50)
-    }
-  }, [input])
+export function ToolCallBlock({ toolName, input, output, isError, isRunning, defaultExpanded = false }: ToolCallBlockProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const [showFullOutput, setShowFullOutput] = useState(false)
 
+  const label = formatToolCall(toolName, input)
+  const icon = TOOL_ICONS[toolName] ?? '🔧'
   const statusClass = isRunning ? 'running' : isError ? 'error' : 'success'
 
+  const formattedInput = formatJson(input)
+
+  const outputTruncated = output !== undefined && !showFullOutput && output.length > MAX_OUTPUT_PREVIEW
+  const displayOutput = output !== undefined
+    ? (outputTruncated ? output.slice(0, MAX_OUTPUT_PREVIEW) + '…' : output)
+    : undefined
+
   return (
-    <div className="tool-call-block">
+    <div className={`tool-call-block ${isRunning ? 'is-running' : ''} ${isError ? 'is-error' : ''}`}>
       <div className="tool-call-header" onClick={() => setExpanded(e => !e)}>
-        <span className={`tool-call-chevron ${expanded ? 'expanded' : ''}`}>&#9654;</span>
-        <span className="tool-call-name">{toolName}</span>
-        <span className="tool-call-summary">{summary}</span>
-        <span className={`tool-call-status ${statusClass}`} />
+        <span className="tool-call-icon">{icon}</span>
+        {isRunning && <span className="tool-call-running-dot" />}
+        <span className="tool-call-label">{label}</span>
+        <span className={`tool-call-chevron ${expanded ? 'expanded' : ''}`}>›</span>
       </div>
       {expanded && (
         <div className="tool-call-body">
-          <div className="tool-call-section-label">Input</div>
-          <pre className="tool-call-json">{formatJson(input)}</pre>
+          <div className="tool-call-section">
+            <div className="tool-call-section-label">Input</div>
+            <pre className="tool-call-json">{formattedInput}</pre>
+          </div>
           {output !== undefined && (
-            <>
+            <div className="tool-call-section">
               <div className="tool-call-section-label">Output</div>
-              <pre className={`tool-call-output ${isError ? 'error' : ''}`}>{output}</pre>
-            </>
+              <pre className={`tool-call-output ${isError ? 'error' : ''}`}>{displayOutput}</pre>
+              {outputTruncated && (
+                <button className="tool-call-show-more" onClick={e => { e.stopPropagation(); setShowFullOutput(true) }}>
+                  show more
+                </button>
+              )}
+            </div>
           )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function BashBlock({ input, output, isError, isRunning }: Omit<ToolCallBlockProps, 'toolName'>) {
-  const { command, description } = useMemo(() => {
-    try {
-      const parsed = JSON.parse(input)
-      return { command: parsed.command ?? input, description: parsed.description as string | undefined }
-    } catch {
-      return { command: input, description: undefined }
-    }
-  }, [input])
-
-  const statusClass = isRunning ? 'running' : isError ? 'error' : 'success'
-
-  return (
-    <div className="bash-block">
-      <div className="bash-block-header">
-        <span className="bash-block-dollar">$</span>
-        <span className="bash-block-label">bash</span>
-        {description && <span className="bash-block-desc">{description}</span>}
-        <span className={`tool-call-status ${statusClass}`} />
-      </div>
-      <pre className="bash-block-command">{command}</pre>
-      {output !== undefined && (
-        <pre className={`bash-block-output ${isError ? 'error' : ''}`}>{output}</pre>
-      )}
-      {isRunning && output === undefined && (
-        <div className="bash-block-running">
-          <span className="bash-cursor" />
+          {isRunning && output === undefined && (
+            <div className="tool-call-section">
+              <div className="bash-block-running"><span className="bash-cursor" /></div>
+            </div>
+          )}
         </div>
       )}
     </div>

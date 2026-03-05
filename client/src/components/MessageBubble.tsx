@@ -1,9 +1,9 @@
-import { memo, useMemo, useState, useCallback, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { ChatMessage, MessageContentBlock } from '@shared/types'
 import { ToolCallBlock } from './ToolCallBlock'
+import { summarizeToolCalls } from '../utils/toolFormat'
 
 // Configure marked once at module level
 marked.setOptions({ breaks: true })
@@ -25,49 +25,50 @@ function formatTimestamp(ts: number): string {
 
   const todayStr = now.toDateString()
   const dateStr = date.toDateString()
-  if (dateStr === todayStr) return `Today at ${time}`
+  if (dateStr === todayStr) return time
 
   const yesterday = new Date(now)
   yesterday.setDate(now.getDate() - 1)
-  if (dateStr === yesterday.toDateString()) return `Yesterday at ${time}`
+  if (dateStr === yesterday.toDateString()) return `Yesterday ${time}`
 
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  return `${days[date.getDay()]} ${date.getDate()} at ${time}`
+  return `${days[date.getDay()]} ${date.getDate()} ${time}`
 }
 
 export const MessageBubble = memo(function MessageBubble({ message, toolResults }: MessageBubbleProps) {
   const { role, content, createdAt } = message
-  const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null)
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [toolsExpanded, setToolsExpanded] = useState(false)
 
-  const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (hideTimer.current) clearTimeout(hideTimer.current)
-    const rect = e.currentTarget.getBoundingClientRect()
-    setTooltip({ x: rect.left + rect.width / 2, y: rect.top - 8 })
-  }, [])
+  const toolCallBlocks = useMemo(
+    () => content.filter(b => b.type === 'tool-call'),
+    [content]
+  )
+  const summary = useMemo(
+    () => summarizeToolCalls(toolCallBlocks.map(b => ({ toolName: (b as { type: 'tool-call'; toolName: string }).toolName }))),
+    [toolCallBlocks]
+  )
 
-  const handleMouseLeave = useCallback(() => {
-    hideTimer.current = setTimeout(() => setTooltip(null), 80)
-  }, [])
+  const nonToolContent = content.filter(b => b.type !== 'tool-call' && b.type !== 'tool-result')
+  const hasSummary = role === 'assistant' && toolCallBlocks.length > 0
 
   return (
-    <div
-      className={`message-bubble ${role}`}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-    >
+    <div className={`message-bubble ${role}`}>
       {role === 'system' && <div className="message-role-label">System</div>}
-      {content.map((block, i) => (
+      {nonToolContent.map((block, i) => (
         <ContentBlock key={i} block={block} toolResults={toolResults} />
       ))}
-      {tooltip && createdAt && createPortal(
-        <div
-          className="bubble-tooltip"
-          style={{ left: tooltip.x, top: tooltip.y }}
-        >
-          {formatTimestamp(createdAt)}
-        </div>,
-        document.body
+      {hasSummary && (
+        <div className="tool-summary" onClick={() => setToolsExpanded(e => !e)}>
+          <span className="tool-summary-icon">🔧</span>
+          <span className="tool-summary-text">{summary}</span>
+          <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
+        </div>
+      )}
+      {hasSummary && toolsExpanded && toolCallBlocks.map((block, i) => (
+        <ContentBlock key={`tc-${i}`} block={block} toolResults={toolResults} defaultExpanded={false} />
+      ))}
+      {createdAt && (
+        <div className="message-timestamp">{formatTimestamp(createdAt)}</div>
       )}
     </div>
   )
@@ -76,11 +77,14 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
 function ContentBlock({
   block,
   toolResults,
+  defaultExpanded = false,
 }: {
   block: MessageContentBlock
   toolResults: Map<string, { output: string; isError?: boolean }>
+  defaultExpanded?: boolean
 }) {
   if (block.type === 'text') {
+    if (!block.text.trim()) return null
     return <TextContent text={block.text} />
   }
 
@@ -105,6 +109,7 @@ function ContentBlock({
         output={result?.output}
         isError={result?.isError}
         isRunning={!result}
+        defaultExpanded={defaultExpanded}
       />
     )
   }
@@ -136,6 +141,8 @@ function ContentBlock({
   return null
 }
 
+const COLLAPSE_HEIGHT = 280
+
 function TextContent({ text }: { text: string }) {
   const html = useMemo(() => {
     const raw = marked.parse(text) as string
@@ -151,10 +158,32 @@ function TextContent({ text }: { text: string }) {
     })
   }, [text])
 
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [isTall, setIsTall] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    if (contentRef.current) {
+      setIsTall(contentRef.current.scrollHeight > COLLAPSE_HEIGHT)
+    }
+  }, [html])
+
+  const isCollapsed = isTall && !expanded
+
   return (
-    <div
-      className="message-content"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className={`message-content-wrapper${isCollapsed ? ' collapsed' : ''}`}>
+      <div
+        ref={contentRef}
+        className="message-content"
+        style={isCollapsed ? { maxHeight: COLLAPSE_HEIGHT, overflow: 'hidden' } : undefined}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      {isCollapsed && <div className="message-content-fade" />}
+      {isTall && (
+        <button className="view-more-btn" onClick={() => setExpanded(e => !e)}>
+          {expanded ? 'View less ↑' : 'View more... ↓'}
+        </button>
+      )}
+    </div>
   )
 }

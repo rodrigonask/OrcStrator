@@ -38,6 +38,8 @@ interface State {
   connected: boolean
   usage: UsageData | null
   terminalPanelOpen: boolean
+  showSettings: boolean
+  rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
 }
 
 const initialState: State = {
@@ -66,6 +68,8 @@ const initialState: State = {
   connected: false,
   usage: null,
   terminalPanelOpen: false,
+  showSettings: false,
+  rawOutput: {},
 }
 
 // === Actions ===
@@ -105,6 +109,9 @@ type Action =
   | { type: 'SET_PIPELINE_PROJECT'; projectId: string | null }
   | { type: 'TOGGLE_TERMINAL' }
   | { type: 'SET_TERMINAL_OPEN'; payload: boolean }
+  | { type: 'OPEN_SETTINGS' }
+  | { type: 'CLOSE_SETTINGS' }
+  | { type: 'APPEND_RAW_LINE'; payload: { instanceId: string; line: string; isStderr?: boolean } }
 
 // === Reducer ===
 
@@ -288,7 +295,16 @@ function reducer(state: State, action: Action): State {
 
     case 'CLEAR_MESSAGES': {
       const { [action.payload]: _, ...restMessages } = state.messages
-      return { ...state, messages: restMessages }
+      const { [action.payload]: _r, ...restRaw } = state.rawOutput
+      return { ...state, messages: restMessages, rawOutput: restRaw }
+    }
+
+    case 'APPEND_RAW_LINE': {
+      const { instanceId, line, isStderr } = action.payload
+      const current = state.rawOutput[instanceId] || []
+      const entry = { line, isStderr }
+      const next = current.length >= 2000 ? [...current.slice(-1999), entry] : [...current, entry]
+      return { ...state, rawOutput: { ...state.rawOutput, [instanceId]: next } }
     }
 
     case 'TOGGLE_FOLDER':
@@ -319,6 +335,12 @@ function reducer(state: State, action: Action): State {
 
     case 'SET_TERMINAL_OPEN':
       return { ...state, terminalPanelOpen: action.payload }
+
+    case 'OPEN_SETTINGS':
+      return { ...state, showSettings: true }
+
+    case 'CLOSE_SETTINGS':
+      return { ...state, showSettings: false }
 
     default:
       return state
@@ -391,6 +413,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             dispatch({ type: 'TOOL_INPUT_DELTA', payload: { instanceId, toolId: event.toolId, input: event.input } })
           } else if (event.type === 'tool-complete') {
             dispatch({ type: 'TOOL_COMPLETE', payload: { instanceId, toolId: event.toolId, output: event.output, isError: event.isError } })
+          } else if (event.type === 'raw-line') {
+            dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
           }
         }
         dispatch({ type: 'INCREMENT_UNREAD', payload: instanceId })
@@ -421,6 +445,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
     )
 
+    unsubs.push(
+      api.onOrchestratorAssigned((payload: { folderId: string; instanceId: string; taskId: string; taskTitle: string }) => {
+        // Update the assigned instance to running state (server will also broadcast instance:state)
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.instanceId, updates: { state: 'running' } } })
+      })
+    )
+
+    unsubs.push(
+      api.onOrchestratorStatus((payload: { folderId: string; active: boolean; idleAgents: number; pendingTasks: number }) => {
+        dispatch({ type: 'UPDATE_FOLDER', payload: { id: payload.folderId, updates: { orchestratorActive: payload.active } } })
+      })
+    )
+
+    unsubs.push(
+      api.onMessageAdded((payload: { instanceId: string; message: ChatMessage }) => {
+        dispatch({ type: 'ADD_MESSAGE', payload: payload.message })
+        dispatch({ type: 'INCREMENT_UNREAD', payload: payload.instanceId })
+      })
+    )
+
     return () => {
       unsubs.forEach((unsub) => unsub())
     }
@@ -429,6 +473,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Ref to avoid selectInstance depending on state.messages (which changes on every stream delta)
   const messagesRef = useRef(state.messages)
   messagesRef.current = state.messages
+
+  // Refs for keyboard navigation (avoids stale closures)
+  const instancesRef = useRef(state.instances)
+  instancesRef.current = state.instances
+  const selectedIdRef = useRef(state.selectedInstanceId)
+  selectedIdRef.current = state.selectedInstanceId
+
+  // Global Alt+↑/↓ to cycle between instances
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+      const instances = instancesRef.current
+      if (instances.length === 0) return
+      e.preventDefault()
+      const currentId = selectedIdRef.current
+      const idx = instances.findIndex(i => i.id === currentId)
+      let next: number
+      if (e.key === 'ArrowUp') {
+        next = idx <= 0 ? instances.length - 1 : idx - 1
+      } else {
+        next = idx >= instances.length - 1 ? 0 : idx + 1
+      }
+      dispatch({ type: 'SELECT_INSTANCE', payload: instances[next].id })
+      dispatch({ type: 'CLEAR_UNREAD', payload: instances[next].id })
+      if (!messagesRef.current[instances[next].id]) {
+        api.getHistory(instances[next].id).then((data) => {
+          const messages = (data as any).messages ?? data
+          dispatch({ type: 'SET_MESSAGES', payload: { instanceId: instances[next].id, messages } })
+        }).catch(() => {})
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   // Select instance and fetch history
   const selectInstance = useCallback(

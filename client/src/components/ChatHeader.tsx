@@ -7,7 +7,10 @@ export function ChatHeader() {
   const { state, dispatch } = useApp()
   const instanceId = state.selectedInstanceId
   const instance = state.instances.find(i => i.id === instanceId)
+  const folder = instance ? state.folders.find(f => f.id === instance.folderId) : undefined
   const messages: ChatMessage[] = instanceId ? (state.messages[instanceId] || []) : []
+  const agentNames = state.settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const isOrchestratorLocked = instance?.orchestratorManaged && folder?.orchestratorActive
 
   const totalTokens = useMemo(() => {
     let input = 0
@@ -57,6 +60,12 @@ export function ChatHeader() {
         <span className={`chat-state-badge ${instance.state}`}>
           {instance.state}
         </span>
+        {instance.agentRole && (
+          <span className={`role-pill role-${instance.agentRole} compact header-role-pill ${isOrchestratorLocked ? 'locked' : ''}`}>
+            {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
+            {instance.specialization && <span className="role-spec-label">{instance.specialization}</span>}
+          </span>
+        )}
       </div>
       <div className="chat-header-right">
         <span className="chat-token-count">

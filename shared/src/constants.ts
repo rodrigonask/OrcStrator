@@ -109,7 +109,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export const OAUTH = {
   clientId: 'a3e06de4-0807-4612-b15f-7da209a0e252',
   redirectUri: 'https://console.anthropic.com/oauth/callback',
-  scopes: 'org:usage',
+  scopes: 'user:profile',
   authBaseUrl: 'https://claude.ai/oauth/authorize',
   tokenUrl: 'https://console.anthropic.com/v1/oauth/token',
   usageUrl: 'https://api.anthropic.com/api/oauth/usage'

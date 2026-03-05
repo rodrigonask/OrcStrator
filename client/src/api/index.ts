@@ -17,6 +17,14 @@ export const api = {
     wsClient.on('usage:alert', cb),
   onConnection: (cb: (payload: { connected: boolean }) => void) =>
     wsClient.on('connection', cb),
+  onOrchestratorAssigned: (cb: (payload: any) => void) =>
+    wsClient.on('orchestrator:assigned', cb),
+  onOrchestratorLockReleased: (cb: (payload: any) => void) =>
+    wsClient.on('orchestrator:lock-released', cb),
+  onOrchestratorStatus: (cb: (payload: any) => void) =>
+    wsClient.on('orchestrator:status', cb),
+  onMessageAdded: (cb: (payload: any) => void) =>
+    wsClient.on('message:added', cb),
 
   // Connection management
   connect: () => wsClient.connect(),

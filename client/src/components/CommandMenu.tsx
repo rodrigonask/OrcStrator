@@ -22,18 +22,23 @@ export function CommandMenu() {
       description: 'Create a new Claude instance in the selected folder',
       action: () => {
         const folderId = state.folders[0]?.id
-        if (folderId) dispatch({ type: 'ADD_INSTANCE', folderId })
+        if (folderId) {
+          api.createInstance({ folderId }).then(instance => {
+            dispatch({ type: 'ADD_INSTANCE', payload: instance })
+            dispatch({ type: 'SELECT_INSTANCE', payload: instance.id })
+          }).catch(console.error)
+        }
       },
     },
     {
       name: '/pipeline',
       description: 'Switch to the pipeline board view',
-      action: () => dispatch({ type: 'SET_VIEW', view: 'pipeline' }),
+      action: () => dispatch({ type: 'SET_VIEW', payload: 'pipeline' }),
     },
     {
       name: '/chat',
       description: 'Switch back to chat view',
-      action: () => dispatch({ type: 'SET_VIEW', view: 'chat' }),
+      action: () => dispatch({ type: 'SET_VIEW', payload: 'chat' }),
     },
     {
       name: '/settings',
@@ -43,12 +48,12 @@ export function CommandMenu() {
     {
       name: '/pause-all',
       description: 'Pause all running instances',
-      action: () => api.pauseAll(),
+      action: () => state.instances.forEach(i => api.pauseInstance(i.id)),
     },
     {
       name: '/resume-all',
       description: 'Resume all paused instances',
-      action: () => api.resumeAll(),
+      action: () => state.instances.forEach(i => api.resumeInstance(i.id)),
     },
     {
       name: '/refresh-usage',

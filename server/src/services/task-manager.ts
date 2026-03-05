@@ -1,7 +1,8 @@
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import type { PipelineTask, PipelineColumn, TaskHistoryEntry } from '@nasklaude/shared'
+import type { PipelineTask, PipelineColumn, TaskHistoryEntry, TaskAttachment } from '@nasklaude/shared'
 import crypto from 'crypto'
+import { orchestrator } from './orchestrator.js'
 
 // Per-project mutex to serialize writes
 const locks = new Map<string, Promise<void>>()
@@ -32,6 +33,7 @@ function rowToTask(row: Record<string, unknown>): PipelineTask {
     groupId: row.group_id as string | undefined,
     groupIndex: row.group_index as number | undefined,
     groupTotal: row.group_total as number | undefined,
+    attachments: safeJsonParse(row.attachments as string, []),
     dependsOn: safeJsonParse(row.depends_on as string, []),
     createdBy: (row.created_by as string) || 'human',
     history: safeJsonParse(row.history as string, []),
@@ -64,6 +66,7 @@ export async function createTask(params: {
   column?: PipelineColumn
   priority?: 1 | 2 | 3 | 4
   labels?: string[]
+  attachments?: TaskAttachment[]
   groupId?: string
   groupIndex?: number
   groupTotal?: number
@@ -76,8 +79,8 @@ export async function createTask(params: {
     const history: TaskHistoryEntry[] = [{ action: 'created', timestamp: now, agent: params.createdBy || 'human' }]
 
     db.prepare(`
-      INSERT INTO pipeline_tasks (id, project_id, title, description, "column", priority, labels, assigned_agent, group_id, group_index, group_total, depends_on, created_by, history, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO pipeline_tasks (id, project_id, title, description, "column", priority, labels, attachments, assigned_agent, group_id, group_index, group_total, depends_on, created_by, history, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       params.projectId,
@@ -86,6 +89,7 @@ export async function createTask(params: {
       params.column || 'backlog',
       params.priority || 4,
       JSON.stringify(params.labels || []),
+      JSON.stringify(params.attachments || []),
       params.groupId || null,
       params.groupIndex ?? null,
       params.groupTotal ?? null,
@@ -117,12 +121,20 @@ export async function moveTask(taskId: string, column: PipelineColumn, agent?: s
     const completedAt = column === 'done' ? now : null
 
     db.prepare(`
-      UPDATE pipeline_tasks SET "column" = ?, history = ?, updated_at = ?, completed_at = COALESCE(?, completed_at)
+      UPDATE pipeline_tasks SET "column" = ?, history = ?, updated_at = ?, completed_at = COALESCE(?, completed_at),
+        locked_by = NULL, locked_at = NULL
       WHERE id = ?
     `).run(column, JSON.stringify(history), now, completedAt, taskId)
 
     const updated = getTask(taskId)!
     broadcastPipeline(task.projectId, taskId, 'moved', column)
+    // Notify orchestrator so it can immediately assign the next agent (only if enabled)
+    setImmediate(() => {
+      const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(task.projectId) as { orchestrator_active: number } | undefined
+      if (folder?.orchestrator_active) {
+        orchestrator.triggerFolder(task.projectId)
+      }
+    })
     return updated
   })
 }

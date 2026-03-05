@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
-import type { PipelineColumn } from '@shared/types'
+import { useState, useCallback, useRef } from 'react'
+import type { PipelineColumn, TaskAttachment } from '@shared/types'
 import { PIPELINE_COLUMNS } from '@shared/constants'
-import { usePipeline } from '../../context/PipelineContext'
+import { rest } from '../../api/rest'
 
 interface CreateTaskModalProps {
   projectId: string
@@ -9,14 +9,15 @@ interface CreateTaskModalProps {
 }
 
 export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
-  const { createTask } = usePipeline()
-
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [column, setColumn] = useState<PipelineColumn>('backlog')
   const [priority, setPriority] = useState<1 | 2 | 3 | 4>(3)
   const [labelInput, setLabelInput] = useState('')
   const [labels, setLabels] = useState<string[]>([])
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([])
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const addLabel = useCallback(() => {
     const trimmed = labelInput.trim()
@@ -30,22 +31,66 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
     setLabels(l => l.filter(lb => lb !== label))
   }, [])
 
+  const readFileAsDataUrl = (file: File): Promise<TaskAttachment> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve({
+        id: crypto.randomUUID(),
+        name: file.name,
+        dataUrl: reader.result as string,
+      })
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+
+  const addFiles = useCallback(async (files: FileList | File[]) => {
+    const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/') && f.size <= 10 * 1024 * 1024)
+    if (imageFiles.length === 0) return
+    const newAttachments = await Promise.all(imageFiles.map(readFileAsDataUrl))
+    setAttachments(prev => [...prev, ...newAttachments])
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    await addFiles(e.dataTransfer.files)
+  }, [addFiles])
+
+  const handleFileInput = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) await addFiles(e.target.files)
+    e.target.value = ''
+  }, [addFiles])
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id))
+  }, [])
+
   const handleSave = useCallback(async () => {
     if (!title.trim()) return
     try {
-      await createTask({
-        projectId,
+      await rest.createTask(projectId, {
         title: title.trim(),
         description,
         column,
         priority,
         labels,
+        attachments,
       })
     } catch (err) {
       console.error('Failed to create task:', err)
     }
     onClose()
-  }, [createTask, projectId, title, description, column, priority, labels, onClose])
+  }, [projectId, title, description, column, priority, labels, attachments, onClose])
 
   return (
     <div className="modal-overlay create-task-modal" onClick={onClose}>
@@ -76,6 +121,48 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
               value={description}
               onChange={e => setDescription(e.target.value)}
               rows={4}
+            />
+          </div>
+
+          {/* Screenshots drop zone */}
+          <div className="form-group">
+            <label className="form-label">Screenshots</label>
+            <div
+              className={`screenshot-dropzone${isDragOver ? ' screenshot-dropzone--active' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {attachments.length === 0 ? (
+                <span className="screenshot-dropzone-hint">
+                  Drop screenshots here or click to browse
+                </span>
+              ) : (
+                <div className="screenshot-thumbs">
+                  {attachments.map(a => (
+                    <div key={a.id} className="screenshot-thumb">
+                      <img src={a.dataUrl} alt={a.name} />
+                      <button
+                        className="screenshot-thumb-remove"
+                        onClick={e => { e.stopPropagation(); removeAttachment(a.id) }}
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  <div className="screenshot-thumb-add" title="Add more">+</div>
+                </div>
+              )}
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: 'none' }}
+              onChange={handleFileInput}
             />
           </div>
 

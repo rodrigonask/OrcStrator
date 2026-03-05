@@ -18,7 +18,10 @@ function getAllowedRoots(): string[] {
   try {
     const folderRows = db.prepare('SELECT path FROM folders').all() as Array<{ path: string }>
     for (const r of folderRows) {
-      roots.push(path.resolve(r.path))
+      const resolved = path.resolve(r.path)
+      roots.push(resolved)
+      // Also allow the parent so the folder picker can browse up to find new folders
+      roots.push(path.dirname(resolved))
     }
   } catch {
     // DB may not have 'folders' table yet — allow home/temp only

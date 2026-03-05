@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
+import { startPolling } from '../services/usage-monitor.js'
 
 export default async function settingsRoutes(app: FastifyInstance): Promise<void> {
   // Get all settings
@@ -41,6 +42,12 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     }
 
     broadcastEvent({ type: 'settings:updated', payload: settings })
+
+    // If poll interval changed, restart polling with the new interval
+    if ('usagePollMinutes' in body && typeof body.usagePollMinutes === 'number') {
+      startPolling(body.usagePollMinutes)
+    }
+
     return settings
   })
 }

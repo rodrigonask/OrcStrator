@@ -18,6 +18,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [rootFolder, setRootFolder] = useState(settings.rootFolder)
   const [usagePoll, setUsagePoll] = useState(settings.usagePollMinutes)
   const [theme, setTheme] = useState(settings.theme)
+  const defaultNames = { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const [agentNames, setAgentNames] = useState(settings.orchestratorAgentNames || defaultNames)
+  const [allowSpawn, setAllowSpawn] = useState(settings.orchestratorAllowSpawn || false)
 
   const oauthConnected = state.usage?.connected ?? false
 
@@ -49,6 +52,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         rootFolder,
         usagePollMinutes: usagePoll,
         theme,
+        orchestratorAgentNames: agentNames,
+        orchestratorAllowSpawn: allowSpawn,
       },
     })
     api.updateSettings({
@@ -58,6 +63,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       rootFolder,
       usagePollMinutes: usagePoll,
       theme,
+      orchestratorAgentNames: agentNames,
+      orchestratorAllowSpawn: allowSpawn,
     })
     onClose()
   }, [dispatch, settings, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, onClose])
@@ -213,6 +220,35 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               )}
             </div>
           </div>
+        {/* Orchestrator */}
+          <div className="settings-section">
+            <div className="settings-section-title">Orchestrator</div>
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
+              Agent names shown in the UI and injected into prompts.
+            </p>
+            {(['planner', 'builder', 'tester', 'promoter'] as const).map(role => (
+              <div className="form-group" key={role} style={{ marginBottom: 8 }}>
+                <label className="form-label" style={{ textTransform: 'capitalize' }}>{role}</label>
+                <input
+                  className="form-input"
+                  value={agentNames[role]}
+                  onChange={e => setAgentNames(n => ({ ...n, [role]: e.target.value }))}
+                />
+              </div>
+            ))}
+            <div className="settings-toggle" style={{ marginTop: 12, opacity: 0.5 }}>
+              <span className="settings-toggle-label" title="Coming soon — The Orchestrator is not yet trusted with a credit card.">
+                Allow Orchestrator to spawn new agents
+                <br />
+                <em style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Currently disabled. The Orchestrator is not yet trusted with a credit card.</em>
+              </span>
+              <div
+                className={`toggle-switch ${allowSpawn ? 'active' : ''}`}
+                style={{ pointerEvents: 'none', opacity: 0.4 }}
+              />
+            </div>
+          </div>
+
         </div>
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>

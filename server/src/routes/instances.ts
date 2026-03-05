@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { sendMessage, killProcess } from '../services/claude-process.js'
+import { preprocessImages, detectMediaType } from '../services/image-processor.js'
 import { getLastAssistantMessage } from '../services/session-sync.js'
+import { orchestrator } from '../services/orchestrator.js'
 import crypto from 'crypto'
 
 export default async function instanceRoutes(app: FastifyInstance): Promise<void> {
@@ -46,13 +48,16 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const fieldMap: Record<string, string> = {
       name: 'name', cwd: 'cwd', sessionId: 'session_id',
       state: 'state', agentId: 'agent_id',
-      idleRestartMinutes: 'idle_restart_minutes', sortOrder: 'sort_order'
+      idleRestartMinutes: 'idle_restart_minutes', sortOrder: 'sort_order',
+      agentRole: 'agent_role', specialization: 'specialization',
+      orchestratorManaged: 'orchestrator_managed'
     }
 
+    const boolFields = new Set(['orchestratorManaged'])
     for (const [jsKey, dbKey] of Object.entries(fieldMap)) {
       if (body[jsKey] !== undefined) {
         sets.push(`${dbKey} = ?`)
-        params.push(body[jsKey])
+        params.push(boolFields.has(jsKey) ? (body[jsKey] ? 1 : 0) : body[jsKey])
       }
     }
 
@@ -64,6 +69,15 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const row = db.prepare('SELECT * FROM instances WHERE id = ?').get(id) as Record<string, unknown>
     const instance = rowToInstance(row)
     broadcastEvent({ type: 'instance:updated', payload: instance })
+
+    // If role or managed status changed, let the orchestrator try to assign work immediately
+    if (body.agentRole !== undefined || body.orchestratorManaged !== undefined) {
+      const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(row.folder_id as string) as Record<string, unknown> | undefined
+      if (folder?.orchestrator_active) {
+        orchestrator.triggerFolder(row.folder_id as string)
+      }
+    }
+
     return instance
   })
 
@@ -99,13 +113,23 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
       }
     }
 
-    // Save user message to DB
+    // Detect media types and preprocess images (compress, tile, stitch as needed)
+    let processedImages: Array<{ base64: string; mediaType: string }> | undefined
+    let imageTextPrefix = ''
+    if (body.images && body.images.length > 0) {
+      const rawImages = body.images.map(b64 => ({ base64: b64, mediaType: detectMediaType(b64) }))
+      const preprocessed = await preprocessImages(rawImages)
+      processedImages = preprocessed.images
+      imageTextPrefix = preprocessed.textPrefix
+    }
+
+    // Save user message to DB (original images for display)
     const msgId = crypto.randomUUID()
     const now = Date.now()
     const content = [{ type: 'text', text: body.text }]
     if (body.images) {
       for (const img of body.images) {
-        content.push({ type: 'image', base64: img, mediaType: 'image/png' } as unknown as { type: string; text: string })
+        content.push({ type: 'image', base64: img, mediaType: detectMediaType(img) } as unknown as { type: string; text: string })
       }
     }
 
@@ -116,8 +140,8 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
 
     const result = sendMessage({
       instanceId: id,
-      text: body.text,
-      images: body.images,
+      text: imageTextPrefix + body.text,
+      images: processedImages,
       cwd: instance.cwd as string,
       sessionId: instance.session_id as string | undefined,
       flags: [...globalFlags, ...(body.flags || [])],
@@ -173,5 +197,8 @@ function rowToInstance(r: Record<string, unknown>) {
     idleRestartMinutes: r.idle_restart_minutes as number,
     sortOrder: r.sort_order as number,
     createdAt: r.created_at as number,
+    agentRole: r.agent_role as string | undefined,
+    specialization: r.specialization as string | undefined,
+    orchestratorManaged: Boolean(r.orchestrator_managed),
   }
 }

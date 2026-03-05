@@ -3,7 +3,8 @@ import type { ChatMessage } from '@shared/types'
 import { useApp } from '../context/AppContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { MessageBubble } from './MessageBubble'
-import { ToolCallBlock } from './ToolCallBlock'
+import { ActivityBubble } from './ActivityBubble'
+import { formatToolLabel } from '../utils/toolFormat'
 
 function hasVisibleContent(msg: ChatMessage): boolean {
   return msg.content.some(b => b.type !== 'tool-result')
@@ -54,20 +55,26 @@ export function MessageList() {
       ))}
       {showLiveTurn && (
         <div className="message-bubble assistant">
-          {liveToolCalls.map(tc => (
-            <ToolCallBlock
-              key={tc.toolId}
-              toolName={tc.toolName}
-              input={tc.input || '{}'}
-              output={tc.output}
-              isError={tc.isError}
-              isRunning={tc.isRunning}
-            />
-          ))}
+          {liveToolCalls.length > 0 && (() => {
+            const activeTool = [...liveToolCalls].reverse().find(tc => tc.isRunning)
+            const lastTool = liveToolCalls[liveToolCalls.length - 1]
+            const activityLabel = activeTool
+              ? formatToolLabel(activeTool.toolName, activeTool.input || '{}')
+              : lastTool
+                ? formatToolLabel(lastTool.toolName, lastTool.input || '{}')
+                : 'Working...'
+            return (
+              <ActivityBubble
+                toolCalls={liveToolCalls}
+                isRunning={isAgentRunning}
+                activityLabel={activityLabel}
+              />
+            )
+          })()}
           {liveText && (
             <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{liveText}</div>
           )}
-          {!liveText && liveToolCalls.length === 0 && (
+          {!isAgentRunning && !liveText && liveToolCalls.length === 0 && (
             <div className="wave-indicator">
               <span /><span /><span />
             </div>

@@ -1,7 +1,20 @@
-import { useState, useCallback } from 'react'
-import type { PipelineTask, PipelineColumn } from '@shared/types'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import type { PipelineTask, PipelineColumn, TaskComment } from '@shared/types'
 import { PIPELINE_COLUMNS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
+import { rest } from '../../api/rest'
+import { useApp } from '../../context/AppContext'
+
+marked.setOptions({ breaks: true })
+
+function renderMd(text: string): string {
+  return DOMPurify.sanitize(marked.parse(text) as string, {
+    ALLOWED_TAGS: ['p','br','strong','em','code','pre','ul','ol','li','blockquote','h1','h2','h3','h4','h5','h6','a','s','del'],
+    ALLOWED_ATTR: ['href', 'target'],
+  })
+}
 
 interface TaskDetailPanelProps {
   task: PipelineTask
@@ -17,11 +30,28 @@ const PRIORITY_LABELS: Record<number, string> = {
 
 export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const { updateTask, moveTask, claimTask, blockTask, unblockTask, deleteTask } = usePipeline()
+  const { state: appState } = useApp()
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
+  const [editingDesc, setEditingDesc] = useState(false)
   const [priority, setPriority] = useState(task.priority)
   const [labelInput, setLabelInput] = useState('')
   const [labels, setLabels] = useState<string[]>([...task.labels])
+  const [comments, setComments] = useState<TaskComment[]>([])
+  const [commentBody, setCommentBody] = useState('')
+  const [postingComment, setPostingComment] = useState(false)
+  const commentsEndRef = useRef<HTMLDivElement>(null)
+
+  const projectId = appState.activePipelineId || appState.folders[0]?.id || ''
+
+  useEffect(() => {
+    if (!projectId) return
+    rest.getTaskComments(projectId, task.id).then(setComments).catch(() => {})
+  }, [projectId, task.id])
+
+  useEffect(() => {
+    commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [comments])
 
   const handleSave = useCallback(async () => {
     try {
@@ -87,6 +117,20 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     setLabels(l => l.filter(lb => lb !== label))
   }, [])
 
+  const handleAddComment = useCallback(async () => {
+    if (!commentBody.trim() || !projectId) return
+    setPostingComment(true)
+    try {
+      const comment = await rest.addTaskComment(projectId, task.id, { author: 'human', body: commentBody.trim() })
+      setComments(c => [...c, comment])
+      setCommentBody('')
+    } catch (err) {
+      console.error('Failed to post comment:', err)
+    } finally {
+      setPostingComment(false)
+    }
+  }, [commentBody, projectId, task.id])
+
   const isBlocked = labels.includes('blocked')
 
   const formatTime = (ts: number) => {
@@ -116,13 +160,30 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
 
           {/* Description */}
           <div className="task-detail-section">
-            <div className="task-detail-section-label">Description</div>
-            <textarea
-              className="task-detail-description"
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="Task description (markdown)"
-            />
+            <div className="task-detail-section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Description</span>
+              <button
+                className="btn btn-sm"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => setEditingDesc(e => !e)}
+              >
+                {editingDesc ? 'Preview' : 'Edit'}
+              </button>
+            </div>
+            {editingDesc ? (
+              <textarea
+                className="task-detail-description"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Task description (markdown supported)"
+                autoFocus
+              />
+            ) : (
+              <div
+                className="task-detail-description-preview"
+                dangerouslySetInnerHTML={{ __html: description ? renderMd(description) : '<p style="color:var(--text-muted)">No description yet. Click Edit to add one.</p>' }}
+              />
+            )}
           </div>
 
           {/* Meta */}
@@ -175,6 +236,66 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
                   }
                 }}
               />
+            </div>
+          </div>
+
+          {/* Attachments */}
+          {task.attachments && task.attachments.length > 0 && (
+            <div className="task-detail-section">
+              <div className="task-detail-section-label">Screenshots</div>
+              <div className="screenshot-thumbs">
+                {task.attachments.map(a => (
+                  <a key={a.id} href={a.dataUrl} target="_blank" rel="noreferrer" className="screenshot-thumb">
+                    <img src={a.dataUrl} alt={a.name} title={a.name} />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Comments */}
+          <div className="task-detail-section">
+            <div className="task-detail-section-label">Comments</div>
+            <div className="task-comments-list">
+              {comments.length === 0 && (
+                <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '8px 0' }}>No comments yet.</div>
+              )}
+              {comments.map(c => (
+                <div key={c.id} className={`task-comment ${c.author === 'human' ? 'task-comment-human' : 'task-comment-agent'}`}>
+                  <div className="task-comment-header">
+                    <span className={`task-comment-author ${c.author === 'human' ? '' : `role-${c.author}`}`}>{c.author}</span>
+                    <span className="task-comment-time">{formatTime(c.createdAt)}</span>
+                  </div>
+                  <div
+                    className="task-comment-body"
+                    dangerouslySetInnerHTML={{ __html: renderMd(c.body) }}
+                  />
+                </div>
+              ))}
+              <div ref={commentsEndRef} />
+            </div>
+            <div className="task-comment-input-row">
+              <textarea
+                className="task-comment-input"
+                placeholder="Add a comment... (markdown supported)"
+                value={commentBody}
+                onChange={e => setCommentBody(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault()
+                    handleAddComment()
+                  }
+                }}
+                rows={3}
+              />
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleAddComment}
+                disabled={postingComment || !commentBody.trim()}
+                style={{ marginTop: 6, alignSelf: 'flex-end' }}
+              >
+                {postingComment ? 'Posting...' : 'Comment'}
+              </button>
             </div>
           </div>
 

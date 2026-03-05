@@ -4,6 +4,7 @@ import type {
   InstanceConfig,
   ChatMessage,
   PipelineTask,
+  TaskComment,
   AppSettings,
   UsageData,
   AccountProfile,
@@ -66,7 +67,7 @@ export const rest = {
   deleteInstance: (id: string) => del<{ ok: true }>(`/api/instances/${id}`),
 
   // Claude session control
-  sendMessage: (instanceId: string, data: { text?: string; images?: string[] }) =>
+  sendMessage: (instanceId: string, data: { text?: string; images?: string[]; flags?: string[] }) =>
     post<{ ok: true }>(`/api/instances/${instanceId}/send`, data),
   pauseInstance: (instanceId: string) =>
     post<{ ok: true }>(`/api/instances/${instanceId}/pause`),
@@ -107,6 +108,10 @@ export const rest = {
     post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/unblock`),
   getNextTask: (projectId: string, column: PipelineColumn) =>
     get<PipelineTask | null>(`/api/pipelines/${projectId}/next?column=${column}`),
+  getTaskComments: (projectId: string, taskId: string) =>
+    get<TaskComment[]>(`/api/pipelines/${projectId}/tasks/${taskId}/comments`),
+  addTaskComment: (projectId: string, taskId: string, data: { author?: string; body: string }) =>
+    post<TaskComment>(`/api/pipelines/${projectId}/tasks/${taskId}/comments`, data),
 
   // Settings
   getSettings: () => get<AppSettings>('/api/settings'),
@@ -141,6 +146,11 @@ export const rest = {
   getSkills: () => get<SkillConfig[]>('/api/skills'),
   createSkill: (data: Partial<SkillConfig>) => post<SkillConfig>('/api/skills', data),
   deleteSkill: (id: string) => del<{ ok: true }>(`/api/skills/${id}`),
+
+  // Orchestrator
+  activateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/activate`),
+  deactivateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/deactivate`),
+  getOrchestratorStatus: (folderId: string) => get<{ folderId: string; active: boolean; idleAgents: number; runningAgents: number; pendingTasks: number }>(`/api/orchestrator/${folderId}/status`),
 
   // File browser
   browsePath: (dirPath: string) =>

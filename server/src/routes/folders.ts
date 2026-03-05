@@ -20,6 +20,7 @@ function rowToFolder(r: Record<string, unknown>): FolderConfig {
     expanded: Boolean(r.expanded),
     sortOrder: r.sort_order as number,
     createdAt: r.created_at as number,
+    orchestratorActive: Boolean(r.orchestrator_active),
   }
 }
 
@@ -69,17 +70,15 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
       path: 'path', name: 'name', displayName: 'display_name',
       emoji: 'emoji', client: 'client', projectType: 'project_type',
       color: 'color', status: 'status', repoUrl: 'repo_url',
-      notes: 'notes', expanded: 'expanded', sortOrder: 'sort_order'
+      notes: 'notes', expanded: 'expanded', sortOrder: 'sort_order',
+      orchestratorActive: 'orchestrator_active'
     }
 
+    const boolFields = new Set(['expanded', 'orchestratorActive'])
     for (const [jsKey, dbKey] of Object.entries(fieldMap)) {
       if (body[jsKey] !== undefined) {
         sets.push(`${dbKey} = ?`)
-        if (jsKey === 'expanded') {
-          params.push(body[jsKey] ? 1 : 0)
-        } else {
-          params.push(body[jsKey])
-        }
+        params.push(boolFields.has(jsKey) ? (body[jsKey] ? 1 : 0) : body[jsKey])
       }
     }
 

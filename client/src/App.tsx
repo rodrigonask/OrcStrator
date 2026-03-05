@@ -3,6 +3,7 @@ import { AppProvider, useApp } from './context/AppContext'
 import { GameProvider } from './context/GameContext'
 import { PipelineProvider } from './context/PipelineContext'
 import { Sidebar } from './components/Sidebar'
+import { RightSidebar } from './components/RightSidebar'
 import { ChatView } from './components/ChatView'
 import { PipelineBoard } from './components/pipeline/PipelineBoard'
 import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
@@ -25,6 +26,7 @@ function AppContent() {
           </div>
         )}
       </main>
+      <RightSidebar />
       <WelcomeOverlay />
     </div>
   )

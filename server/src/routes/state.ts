@@ -26,7 +26,8 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       notes: r.notes as string | undefined,
       expanded: Boolean(r.expanded),
       sortOrder: r.sort_order as number,
-      createdAt: r.created_at as number
+      createdAt: r.created_at as number,
+      orchestratorActive: Boolean(r.orchestrator_active),
     }))
 
     const instances: InstanceConfig[] = instanceRows.map(r => ({
@@ -39,7 +40,10 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       agentId: r.agent_id as string | undefined,
       idleRestartMinutes: r.idle_restart_minutes as number,
       sortOrder: r.sort_order as number,
-      createdAt: r.created_at as number
+      createdAt: r.created_at as number,
+      agentRole: r.agent_role as InstanceConfig['agentRole'],
+      specialization: r.specialization as string | undefined,
+      orchestratorManaged: Boolean(r.orchestrator_managed),
     }))
 
     const settings: Record<string, unknown> = {}

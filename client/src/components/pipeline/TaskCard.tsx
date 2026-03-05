@@ -1,4 +1,5 @@
 import type { PipelineTask } from '@shared/types'
+import { useCallback } from 'react'
 
 interface TaskCardProps {
   task: PipelineTask
@@ -13,8 +14,24 @@ const PRIORITY_CLASSES: Record<number, string> = {
 }
 
 export function TaskCard({ task, onClick }: TaskCardProps) {
+  const handleDragStart = useCallback((e: React.DragEvent) => {
+    e.dataTransfer.setData('text/plain', task.id)
+    e.dataTransfer.effectAllowed = 'move'
+    ;(e.currentTarget as HTMLElement).classList.add('dragging')
+  }, [task.id])
+
+  const handleDragEnd = useCallback((e: React.DragEvent) => {
+    ;(e.currentTarget as HTMLElement).classList.remove('dragging')
+  }, [])
+
   return (
-    <div className="task-card" onClick={onClick}>
+    <div
+      className="task-card"
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onClick={onClick}
+    >
       <div className="task-card-header">
         <div className={`task-priority-dot ${PRIORITY_CLASSES[task.priority] || 'p4'}`} />
         <div className="task-card-title">{task.title}</div>

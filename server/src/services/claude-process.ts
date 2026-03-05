@@ -6,6 +6,12 @@ import { sanitizeSession } from './session-sanitizer.js'
 import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@nasklaude/shared'
 import crypto from 'crypto'
 
+// Lazily imported to avoid circular dependency at module init time
+let _orchestratorNotify: ((instanceId: string) => void) | null = null
+export function setOrchestratorCallback(fn: (instanceId: string) => void): void {
+  _orchestratorNotify = fn
+}
+
 const processes = new Map<string, ChildProcess>()
 const processTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -15,7 +21,7 @@ const BATCH_INTERVAL_MS = 32
 interface SendMessageOpts {
   instanceId: string
   text: string
-  images?: string[]
+  images?: Array<{ base64: string; mediaType: string }>
   cwd: string
   sessionId?: string
   resume?: boolean
@@ -73,6 +79,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   const child = spawn(cmd, args, {
     cwd,
     env,
+    shell: process.platform === 'win32',
     stdio: ['pipe', 'pipe', 'pipe']
   })
 
@@ -145,6 +152,11 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
         // non-JSON line, ignore
       }
 
+      // Forward raw line to client for terminal stream view
+      if (line.trim()) {
+        enqueueEvent({ type: 'raw-line', instanceId, line })
+      }
+
       const parsed = parseLine(line)
       if (!parsed) continue
       const lineEvents = Array.isArray(parsed) ? parsed : [parsed]
@@ -166,26 +178,23 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     }
   })
 
-  // Stderr — treat as error text
+  // Stderr — forward line-by-line as raw-line events
   let stderrBuffer = ''
   child.stderr?.on('data', (chunk: Buffer) => {
     stderrBuffer += chunk.toString()
+    const lines = stderrBuffer.split('\n')
+    stderrBuffer = lines.pop() || ''
+    for (const line of lines) {
+      if (line.trim()) enqueueEvent({ type: 'raw-line', instanceId, line, isStderr: true })
+    }
   })
 
   // Write user message to stdin as NDJSON, then close
   // stream-json format: { type: "user", message: { role: "user", content: "..." }, session_id, parent_tool_use_id }
   const messageContent: unknown[] = [{ type: 'text', text }]
   if (images && images.length > 0) {
-    const MAX_IMAGE_SIZE = 2 * 1024 * 1024 // 2MB base64 length
-    const MAX_IMAGES = 5
-    if (images.length > MAX_IMAGES) {
-      throw new Error(`Too many images: ${images.length} exceeds maximum of ${MAX_IMAGES}`)
-    }
     for (const img of images) {
-      if (img.length > MAX_IMAGE_SIZE) {
-        throw new Error(`Image too large: ${img.length} bytes exceeds maximum of ${MAX_IMAGE_SIZE}`)
-      }
-      messageContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: img } })
+      messageContent.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.base64 } })
     }
   }
   const inputMessage = {
@@ -243,6 +252,11 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     }
     broadcastEvent({ type: 'claude:process-exit', payload: exitEvent })
     broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+
+    // Notify orchestrator — event-driven dispatch
+    if (_orchestratorNotify) {
+      try { _orchestratorNotify(instanceId) } catch { /* ignore */ }
+    }
 
     // Best-effort session sanitization
     if (resolvedSessionId && cwd) {

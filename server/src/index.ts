@@ -4,9 +4,11 @@ import fastifyWebsocket from '@fastify/websocket'
 import fastifyStatic from '@fastify/static'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { initDb } from './db.js'
+import { initDb, db } from './db.js'
 import { registerWebSocket } from './ws/handler.js'
-import { killAll } from './services/claude-process.js'
+import { killAll, setOrchestratorCallback } from './services/claude-process.js'
+import { orchestrator } from './services/orchestrator.js'
+import { startPolling, fetchUsage } from './services/usage-monitor.js'
 import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
 
 // Route modules
@@ -21,6 +23,7 @@ import profileRoutes from './routes/profile.js'
 import agentRoutes from './routes/agents.js'
 import skillRoutes from './routes/skills.js'
 import fsRoutes from './routes/fs.js'
+import orchestratorRoutes from './routes/orchestrator.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -28,7 +31,20 @@ async function main(): Promise<void> {
   // Initialize database
   initDb()
 
-  const app = Fastify({ logger: false, bodyLimit: 1024 * 512 })
+  // Resume usage polling if tokens are already stored from a previous session
+  const pollRow = db.prepare("SELECT value FROM settings WHERE key = 'usagePollMinutes'").get() as { value: string } | undefined
+  const pollMinutes = pollRow ? (JSON.parse(pollRow.value) as number) : 10
+  startPolling(pollMinutes)
+
+  // Wire orchestrator callback (event-driven dispatch)
+  setOrchestratorCallback((instanceId) => {
+    orchestrator.onProcessExit(instanceId)
+    // Refresh usage meter after each session — credits are consumed at session end
+    fetchUsage().catch(() => {})
+  })
+  orchestrator.start()
+
+  const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 * 20 }) // 20MB to support screenshot attachments
 
   // Register plugins
   await app.register(fastifyCors, {
@@ -54,6 +70,7 @@ async function main(): Promise<void> {
     await api.register(agentRoutes)
     await api.register(skillRoutes)
     await api.register(fsRoutes)
+    await api.register(orchestratorRoutes)
   }, { prefix: '/api' })
 
   // In production, serve the client build as static files
@@ -78,6 +95,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('[server] Shutting down...')
+    orchestrator.stop()
     killAll()
     await app.close()
     process.exit(0)

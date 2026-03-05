@@ -3901,6 +3901,31 @@ body {
 }
 
 /* Folder header orchestrator toggle */
+.pipeline-board-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  padding: 0;
+  filter: grayscale(1);
+  opacity: 0.4;
+}
+.pipeline-board-btn:hover {
+  filter: none;
+  opacity: 1;
+  background: var(--accent-muted, rgba(124, 58, 237, 0.15));
+  color: var(--accent, #7c3aed);
+}
+
 .orchestrator-toggle-btn {
   display: flex;
   align-items: center;

@@ -9,18 +9,19 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@nasklaude/shared": "*",
-    "fastify": "^5",
-    "@fastify/websocket": "^11",
-    "@fastify/static": "^8",
     "@fastify/cors": "^10",
+    "@fastify/static": "^8",
+    "@fastify/websocket": "^11",
+    "@nasklaude/shared": "*",
     "better-sqlite3": "^11",
+    "fastify": "^5",
+    "sharp": "^0.34.5",
     "ws": "^8"
   },
   "devDependencies": {
-    "tsx": "^4",
     "@types/better-sqlite3": "^7",
+    "@types/node": "^22",
     "@types/ws": "^8",
-    "@types/node": "^22"
+    "tsx": "^4"
   }
 }
