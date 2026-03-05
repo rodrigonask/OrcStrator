@@ -56,16 +56,17 @@ export function ChatHeader() {
   return (
     <div className="chat-header">
       <div className="chat-header-left">
-        <span className="chat-instance-name">{instance.name}</span>
-        <span className={`chat-state-badge ${instance.state}`}>
-          {instance.state}
-        </span>
         {instance.agentRole && (
           <span className={`role-pill role-${instance.agentRole} compact header-role-pill ${isOrchestratorLocked ? 'locked' : ''}`}>
             {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
             {instance.specialization && <span className="role-spec-label">{instance.specialization}</span>}
           </span>
         )}
+        {instance.agentRole && <span className="chat-instance-name-sep"> | </span>}
+        <span className="chat-instance-name">{instance.name}</span>
+        <span className={`chat-state-badge ${instance.state}`}>
+          {instance.state}
+        </span>
       </div>
       <div className="chat-header-right">
         <span className="chat-token-count">

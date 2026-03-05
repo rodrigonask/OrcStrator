@@ -181,21 +181,23 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
         <div className="instance-name">
-          {instance.name}
-          {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orchestrator managed">⚡</span>}
+          {instance.agentRole
+            ? (
+              <>
+                <span className={`instance-role-label role-${instance.agentRole}${isOrchestratorLocked ? ' locked' : ''}`}>
+                  {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
+                </span>
+                <span className="instance-name-sep"> | </span>
+                {instance.name}
+                {instance.specialization && <span className="spec-pill compact">{instance.specialization}</span>}
+              </>
+            )
+            : instance.name
+          }
+          {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orc-managed">⚡</span>}
         </div>
         {preview && <div className="instance-preview">{preview}</div>}
       </div>
-      {instance.agentRole && (
-        <div className="instance-role-row">
-          <span className={`role-pill role-${instance.agentRole} compact ${isOrchestratorLocked ? 'locked' : ''}`}>
-            {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
-          </span>
-          {instance.specialization && (
-            <span className="spec-pill compact">{instance.specialization}</span>
-          )}
-        </div>
-      )}
       {unread > 0 && <span className="instance-badge">{unread}</span>}
       <button
         className="instance-close-btn"
@@ -284,7 +286,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
                 className={`context-menu-item ${instance.orchestratorManaged ? '' : ''}`}
                 onClick={() => { handleToggleManaged(); setContextMenu(null) }}
               >
-                {instance.orchestratorManaged ? 'Remove from Orchestrator' : 'Feed to Orchestrator'}
+                {instance.orchestratorManaged ? 'Release from The Orc' : 'Feed to The Orc'}
               </button>
             )}
             <div className="context-menu-separator" />
