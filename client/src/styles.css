@@ -420,6 +420,43 @@ body {
 .folder-status.archived { background: var(--text-muted); }
 .folder-status.all-idle { background: var(--border); }
 
+/* Stealth Mode */
+.folder-group.stealth .folder-header {
+  background: rgba(55, 65, 81, 0.3);
+  border-left: none;
+}
+.folder-group.stealth .folder-header:hover {
+  background: rgba(55, 65, 81, 0.5);
+}
+.folder-group.stealth .folder-name {
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+.folder-group.stealth .folder-color-bar {
+  background: #374151 !important;
+}
+.stealth-tooltip-icon {
+  font-size: 12px;
+  cursor: help;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.stealth-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.stealth-toggle input[type="checkbox"] {
+  margin-top: 2px;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: #6b7280;
+}
+
 .folder-action-group {
   display: flex;
   align-items: center;
@@ -981,10 +1018,10 @@ body {
 
 .message-content-fade {
   position: absolute;
-  bottom: 30px;
+  bottom: 0;
   left: 0;
   right: 0;
-  height: 64px;
+  height: 80px;
   background: linear-gradient(to bottom, transparent, var(--msg-assistant-bg));
   pointer-events: none;
 }
@@ -999,7 +1036,7 @@ body {
   display: block;
   width: 100%;
   text-align: center;
-  padding: 5px 0 2px;
+  padding: 2px 0 2px;
   background: transparent;
   border: none;
   color: var(--accent, #7c3aed);

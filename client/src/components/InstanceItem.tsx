@@ -53,13 +53,17 @@ export function InstanceItem({ instance, folderOrchestratorActive }: InstanceIte
   const handleRoleChange = useCallback(async (role: string) => {
     if (isOrchestratorLocked) return
     const newRole = role === '' ? undefined : role
+    // Auto-enroll in orchestrator if folder's orchestrator is active and a role is being set
+    const autoManage = newRole !== undefined && folderOrchestratorActive && !instance.orchestratorManaged
     try {
-      await api.updateInstance(instance.id, { agentRole: newRole as InstanceConfig['agentRole'] })
-      dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instance.id, updates: { agentRole: newRole as InstanceConfig['agentRole'] } } })
+      const updates: Partial<InstanceConfig> = { agentRole: newRole as InstanceConfig['agentRole'] }
+      if (autoManage) updates.orchestratorManaged = true
+      await api.updateInstance(instance.id, updates)
+      dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instance.id, updates } })
     } catch (err) {
       console.error('Failed to update role:', err)
     }
-  }, [instance.id, isOrchestratorLocked, dispatch])
+  }, [instance.id, instance.orchestratorManaged, isOrchestratorLocked, folderOrchestratorActive, dispatch])
 
   const handleSpecSave = useCallback(async (value: string) => {
     if (value === (instance.specialization || '')) return
@@ -103,20 +107,18 @@ export function InstanceItem({ instance, folderOrchestratorActive }: InstanceIte
           {instance.name}
           {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orchestrator managed">⚡</span>}
         </div>
-
-        {instance.agentRole && (
-          <div className="instance-role-row">
-            <span className={`role-pill role-${instance.agentRole} compact ${isOrchestratorLocked ? 'locked' : ''}`}>
-              {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
-            </span>
-            {instance.specialization && (
-              <span className="spec-pill compact">{instance.specialization}</span>
-            )}
-          </div>
-        )}
-
         {preview && <div className="instance-preview">{preview}</div>}
       </div>
+      {instance.agentRole && (
+        <div className="instance-role-row">
+          <span className={`role-pill role-${instance.agentRole} compact ${isOrchestratorLocked ? 'locked' : ''}`}>
+            {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
+          </span>
+          {instance.specialization && (
+            <span className="spec-pill compact">{instance.specialization}</span>
+          )}
+        </div>
+      )}
       {unread > 0 && <span className="instance-badge">{unread}</span>}
       <button
         className="instance-close-btn"
