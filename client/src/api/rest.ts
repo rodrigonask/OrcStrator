@@ -151,6 +151,8 @@ export const rest = {
   activateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/activate`),
   deactivateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/deactivate`),
   getOrchestratorStatus: (folderId: string) => get<{ folderId: string; active: boolean; idleAgents: number; runningAgents: number; pendingTasks: number }>(`/api/orchestrator/${folderId}/status`),
+  pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
+  releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
 
   // File browser
   browsePath: (dirPath: string) =>

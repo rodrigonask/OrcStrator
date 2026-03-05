@@ -368,6 +368,19 @@ class OrchestratorService {
     this.assignWork(folderId)
     this.broadcastStatus(folderId)
   }
+
+  // Trigger assignment for all active folders (used at startup)
+  triggerAll(): void {
+    try {
+      const folders = db.prepare('SELECT * FROM folders WHERE orchestrator_active = 1').all() as Record<string, unknown>[]
+      for (const folder of folders) {
+        this.assignWork(folder.id as string)
+      }
+      console.log(`[orchestrator] triggerAll — checked ${folders.length} active folders`)
+    } catch (err) {
+      console.error('[orchestrator] triggerAll error:', err)
+    }
+  }
 }
 
 export const orchestrator = new OrchestratorService()

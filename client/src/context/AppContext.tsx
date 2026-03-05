@@ -371,6 +371,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     api.getState().then((data) => {
       if (mounted) {
         dispatch({ type: 'SET_STATE', payload: data })
+        // Restore selected instance from URL
+        const urlInstance = new URLSearchParams(window.location.search).get('instance')
+        if (urlInstance && data.instances.some((i: InstanceConfig) => i.id === urlInstance)) {
+          dispatch({ type: 'SELECT_INSTANCE', payload: urlInstance })
+          dispatch({ type: 'CLEAR_UNREAD', payload: urlInstance })
+          api.getHistory(urlInstance).then((histData) => {
+            const messages = (histData as any).messages ?? histData
+            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlInstance, messages } })
+          }).catch(() => {})
+        }
       }
     }).catch((err) => {
       console.error('Failed to fetch initial state:', err)
@@ -396,8 +406,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const unsubs: Array<() => void> = []
 
     unsubs.push(
-      api.onConnection((payload: { connected: boolean }) => {
+      api.onConnection((payload: { connected: boolean; reconnected?: boolean }) => {
         dispatch({ type: 'SET_CONNECTED', payload: payload.connected })
+        // On reconnect, re-fetch history for selected instance to fill any event gap
+        if (payload.connected && payload.reconnected && selectedIdRef.current) {
+          const id = selectedIdRef.current
+          api.getHistory(id).then((data) => {
+            const messages = (data as any).messages ?? data
+            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages } })
+          }).catch(() => {})
+        }
       })
     )
 
@@ -480,6 +498,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectedIdRef = useRef(state.selectedInstanceId)
   selectedIdRef.current = state.selectedInstanceId
 
+  // Restore selected instance from URL on initial load (runs once after instances load)
+  const restoredFromUrl = useRef(false)
+  useEffect(() => {
+    if (restoredFromUrl.current || state.instances.length === 0 || state.selectedInstanceId !== null) return
+    restoredFromUrl.current = true
+    const urlId = new URLSearchParams(location.search).get('instance')
+    if (urlId && state.instances.some(i => i.id === urlId)) {
+      dispatch({ type: 'SELECT_INSTANCE', payload: urlId })
+      dispatch({ type: 'CLEAR_UNREAD', payload: urlId })
+      api.getHistory(urlId).then((data) => {
+        const messages = (data as any).messages ?? data
+        dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages } })
+      }).catch(() => {})
+    }
+  }, [state.instances, state.selectedInstanceId])
+
+  // Dynamic page title
+  useEffect(() => {
+    const id = state.selectedInstanceId
+    if (!id) { document.title = 'NasKlaude'; return }
+    const instance = state.instances.find(i => i.id === id)
+    if (!instance) { document.title = 'NasKlaude'; return }
+    const folder = state.folders.find(f => f.id === instance.folderId)
+    const parts: string[] = []
+    if (folder) parts.push(folder.displayName || folder.name)
+    if (instance.agentRole) parts.push(instance.agentRole.charAt(0).toUpperCase() + instance.agentRole.slice(1))
+    parts.push(instance.name)
+    const msgs = state.messages[id]
+    if (msgs && msgs.length > 0) {
+      const last = msgs[msgs.length - 1]
+      const textBlock = last.content.find(b => b.type === 'text')
+      if (textBlock && textBlock.type === 'text') {
+        const preview = textBlock.text.replace(/\s+/g, ' ').trim().slice(0, 40)
+        if (preview) parts.push(preview)
+      }
+    }
+    document.title = parts.join(' | ')
+  }, [state.selectedInstanceId, state.instances, state.folders, state.messages])
+
   // Global Alt+↑/↓ to cycle between instances
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -512,6 +569,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectInstance = useCallback(
     (id: string | null) => {
       dispatch({ type: 'SELECT_INSTANCE', payload: id })
+      // Persist selection in URL
+      if (id) {
+        window.history.replaceState(null, '', `?instance=${id}`)
+      } else {
+        window.history.replaceState(null, '', location.pathname)
+      }
       if (id) {
         dispatch({ type: 'CLEAR_UNREAD', payload: id })
         if (!messagesRef.current[id]) {

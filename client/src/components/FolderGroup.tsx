@@ -29,6 +29,7 @@ export function FolderGroup({ folder }: FolderGroupProps) {
   const [showCreateTask, setShowCreateTask] = useState(false)
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [orchStatus, setOrchStatus] = useState<{ idleAgents: number; pendingTasks: number } | null>(null)
+  const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
 
   const instances = state.instances.filter(i => i.folderId === folder.id)
   const expanded = folder.expanded
@@ -111,6 +112,31 @@ export function FolderGroup({ folder }: FolderGroupProps) {
       setOrchStatus({ idleAgents: status.idleAgents, pendingTasks: status.pendingTasks })
     } catch (err) {
       console.error('Failed to activate orchestrator:', err)
+    }
+  }, [folder.id, dispatch])
+
+  const handlePauseAll = useCallback(async () => {
+    closeContextMenu()
+    try {
+      await api.pauseAll(folder.id)
+      dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: { orchestratorActive: false } } })
+      for (const inst of instances) {
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: inst.id, updates: { state: 'idle' } } })
+      }
+    } catch (err) {
+      console.error('Failed to pause all:', err)
+    }
+  }, [folder.id, instances, dispatch, closeContextMenu])
+
+  const handleReleaseAll = useCallback(async () => {
+    setShowReleaseConfirm(false)
+    try {
+      const result = await api.releaseAll(folder.id)
+      for (const id of result.instanceIds) {
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle', sessionId: undefined } } })
+      }
+    } catch (err) {
+      console.error('Failed to release all:', err)
     }
   }, [folder.id, dispatch])
 
@@ -233,6 +259,13 @@ export function FolderGroup({ folder }: FolderGroupProps) {
               Launch a Team
             </button>
             <div className="context-menu-separator" />
+            <button className="context-menu-item" onClick={handlePauseAll}>
+              Pause All
+            </button>
+            <button className="context-menu-item" onClick={() => { setShowReleaseConfirm(true); closeContextMenu() }}>
+              Release All...
+            </button>
+            <div className="context-menu-separator" />
             <button className="context-menu-item danger" onClick={handleRemove}>
               Hide Folder
             </button>
@@ -282,6 +315,29 @@ export function FolderGroup({ folder }: FolderGroupProps) {
           projectId={folder.id}
           onClose={() => setShowCreateTask(false)}
         />
+      )}
+
+      {showReleaseConfirm && (
+        <div className="modal-overlay" onClick={() => setShowReleaseConfirm(false)}>
+          <div className="modal-panel" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title">Release All Sessions</span>
+              <button className="modal-close" onClick={() => setShowReleaseConfirm(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p>This will close {instances.length} session{instances.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
+              {instances.length > 0 && (
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
+                  {instances.map(i => <li key={i.id}>{i.name}</li>)}
+                </ul>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setShowReleaseConfirm(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleReleaseAll}>Release All</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

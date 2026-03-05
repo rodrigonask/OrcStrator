@@ -31,6 +31,12 @@ async function main(): Promise<void> {
   // Initialize database
   initDb()
 
+  // Reset stale running instances — on restart no Claude processes exist
+  const resetCount = db.prepare("UPDATE instances SET state = 'idle' WHERE state = 'running'").run().changes
+  if (resetCount > 0) {
+    console.log(`[startup] Reset ${resetCount} stale running instances to idle`)
+  }
+
   // Resume usage polling if tokens are already stored from a previous session
   const pollRow = db.prepare("SELECT value FROM settings WHERE key = 'usagePollMinutes'").get() as { value: string } | undefined
   const pollMinutes = pollRow ? (JSON.parse(pollRow.value) as number) : 10
@@ -43,6 +49,7 @@ async function main(): Promise<void> {
     fetchUsage().catch(() => {})
   })
   orchestrator.start()
+  orchestrator.triggerAll()
 
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 * 20 }) // 20MB to support screenshot attachments
 

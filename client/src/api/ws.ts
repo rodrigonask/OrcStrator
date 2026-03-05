@@ -6,6 +6,7 @@ class WsClient {
   private reconnectDelay = 1000
   private maxReconnectDelay = 30000
   public connected = false
+  private hasConnectedBefore = false
 
   connect() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -15,7 +16,8 @@ class WsClient {
     this.ws.onopen = () => {
       this.connected = true
       this.reconnectDelay = 1000
-      this.emit('connection', { connected: true })
+      this.emit('connection', { connected: true, reconnected: this.hasConnectedBefore })
+      this.hasConnectedBefore = true
     }
 
     this.ws.onmessage = (event) => {

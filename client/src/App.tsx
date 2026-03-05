@@ -13,6 +13,30 @@ function AppContent() {
   const { state } = useApp()
   useEffect(() => { api.connect() }, [])
 
+  // Dynamic page title
+  useEffect(() => {
+    const instance = state.instances.find(i => i.id === state.selectedInstanceId)
+    if (!instance) {
+      document.title = 'NasKlaude'
+      return
+    }
+    const folder = state.folders.find(f => f.id === instance.folderId)
+    const parts: string[] = []
+    if (folder) parts.push(folder.displayName || folder.name)
+    if (instance.agentRole) parts.push(instance.agentRole.toUpperCase())
+    parts.push(instance.name)
+    const msgs = state.messages[instance.id]
+    if (msgs?.length) {
+      const last = msgs[msgs.length - 1]
+      const textBlock = last.content.find(b => b.type === 'text')
+      if (textBlock && textBlock.type === 'text') {
+        const preview = textBlock.text.replace(/[#*_~`>\n]+/g, ' ').trim().slice(0, 40)
+        if (preview) parts.push(preview)
+      }
+    }
+    document.title = parts.join(' | ')
+  }, [state.selectedInstanceId, state.instances, state.folders, state.messages])
+
   return (
     <div className="app" data-theme={state.settings.theme}>
       <Sidebar />

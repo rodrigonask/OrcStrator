@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import type { FolderConfig } from '@nasklaude/shared'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
+import { killProcess } from '../services/claude-process.js'
+import { orchestrator } from '../services/orchestrator.js'
 import crypto from 'crypto'
 
 function rowToFolder(r: Record<string, unknown>): FolderConfig {
@@ -113,5 +115,48 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     transaction()
     broadcastEvent({ type: 'folders:reordered', payload: { ids } })
     return { ok: true }
+  })
+
+  // Pause all running instances in a folder and deactivate orchestrator
+  app.post('/folders/:id/pause-all', async (request) => {
+    const { id: folderId } = request.params as { id: string }
+    const instances = db.prepare('SELECT * FROM instances WHERE folder_id = ?').all(folderId) as Record<string, unknown>[]
+
+    for (const inst of instances) {
+      killProcess(inst.id as string)
+    }
+
+    db.prepare("UPDATE instances SET state = 'idle' WHERE folder_id = ?").run(folderId)
+    db.prepare('UPDATE folders SET orchestrator_active = 0 WHERE id = ?').run(folderId)
+
+    const idleAgents = instances.length
+    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','spec','build','qa','ship') AND locked_by IS NULL`)
+      .get(folderId) as { count: number }
+
+    broadcastEvent({ type: 'orchestrator:status', payload: { folderId, active: false, idleAgents, pendingTasks: pendingTasks.count } })
+    for (const inst of instances) {
+      broadcastEvent({ type: 'instance:updated', payload: { id: inst.id, state: 'idle' } })
+    }
+
+    return { paused: idleAgents }
+  })
+
+  // Release all sessions in a folder (clears session IDs)
+  app.post('/folders/:id/release-all', async (request) => {
+    const { id: folderId } = request.params as { id: string }
+    const instances = db.prepare('SELECT * FROM instances WHERE folder_id = ?').all(folderId) as Record<string, unknown>[]
+
+    for (const inst of instances) {
+      killProcess(inst.id as string)
+    }
+
+    db.prepare("UPDATE instances SET state = 'idle', session_id = NULL WHERE folder_id = ?").run(folderId)
+
+    const instanceIds = instances.map(i => i.id as string)
+    for (const inst of instances) {
+      broadcastEvent({ type: 'instance:updated', payload: { id: inst.id, state: 'idle', sessionId: null } })
+    }
+
+    return { released: instances.length, instanceIds }
   })
 }

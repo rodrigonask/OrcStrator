@@ -156,6 +156,21 @@ export function InstanceItem({ instance, folderOrchestratorActive }: InstanceIte
               className="context-menu-item"
               onClick={() => {
                 setContextMenu(null)
+                const name = window.prompt('Rename session:', instance.name)
+                if (name !== null && name.trim() && name.trim() !== instance.name) {
+                  const trimmed = name.trim()
+                  api.updateInstance(instance.id, { name: trimmed })
+                    .then(() => dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instance.id, updates: { name: trimmed } } }))
+                    .catch(err => console.error('Failed to rename session:', err))
+                }
+              }}
+            >
+              Rename...
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                setContextMenu(null)
                 const spec = window.prompt('Specialization:', instance.specialization || '')
                 if (spec !== null) handleSpecSave(spec.trim())
               }}

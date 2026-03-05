@@ -8,8 +8,16 @@ import { TaskCard } from './TaskCard'
 import { TaskDetailPanel } from './TaskDetailPanel'
 import { CreateTaskModal } from './CreateTaskModal'
 
+const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
+  backlog: 'planner',
+  spec: 'planner',
+  build: 'builder',
+  qa: 'tester',
+  ship: 'promoter',
+}
+
 export function PipelineBoard() {
-  const { state: appState, dispatch: appDispatch } = useApp()
+  const { state: appState, dispatch: appDispatch, selectInstance } = useApp()
   const pipeline = usePipeline()
   const [selectedTask, setSelectedTask] = useState<PipelineTask | null>(null)
   const [showCreate, setShowCreate] = useState(false)
@@ -122,6 +130,28 @@ export function PipelineBoard() {
                   </span>
                 )}
                 <span className="pipeline-column-count">{colTasks.length}</span>
+                {COLUMN_TO_ROLE[col] && (() => {
+                  const role = COLUMN_TO_ROLE[col]!
+                  const match = appState.instances.find(
+                    i => i.folderId === projectId && i.agentRole === role
+                  )
+                  return (
+                    <button
+                      className="pipeline-open-agent-btn"
+                      title={match ? `Open ${role} agent` : 'No agent assigned'}
+                      disabled={!match}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (match) {
+                          selectInstance(match.id)
+                          appDispatch({ type: 'SET_VIEW', payload: 'chat' })
+                        }
+                      }}
+                    >
+                      👤
+                    </button>
+                  )
+                })()}
               </div>
               <div className="pipeline-column-tasks">
                 {colTasks.map(task => (
