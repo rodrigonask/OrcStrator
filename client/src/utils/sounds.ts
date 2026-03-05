@@ -34,8 +34,8 @@ export const sounds = {
     // Water fill: bubble + rising chime chord
     osc(ctx, 'sine', 200, 0, 300, 0.3, 0.12)
     osc(ctx, 'sine', 400, 0.1, 600, 0.25, 0.18)
-    osc(ctx, 'sine', 523, 0.2, 784, 0.3, 0.35, 0.2)
-    osc(ctx, 'sine', 784, 0.25, 1046, 0.2, 0.3, 0.15)
+    osc(ctx, 'sine', 523, 0.2, 784, 0.35, 0.2)
+    osc(ctx, 'sine', 784, 0.25, 1046, 0.3, 0.15)
   },
 
   heal(): void {

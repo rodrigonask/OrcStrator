@@ -244,6 +244,12 @@ function migration007(): void {
   setSchemaVersion(7)
 }
 
+function migration008(): void {
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('animationsEnabled', 'true')").run()
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('soundsEnabled', 'false')").run()
+  setSchemaVersion(8)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -273,6 +279,10 @@ function runMigrations(): void {
 
   if (currentVersion < 7) {
     migration007()
+  }
+
+  if (currentVersion < 8) {
+    migration008()
   }
 }
 
