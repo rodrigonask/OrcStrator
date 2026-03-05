@@ -50,6 +50,17 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
     setAttachments(prev => [...prev, ...newAttachments])
   }, [])
 
+  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+    const imageFiles: File[] = []
+    for (const item of e.clipboardData.items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+    if (imageFiles.length > 0) await addFiles(imageFiles)
+  }, [addFiles])
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setIsDragOver(true)
@@ -92,9 +103,16 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
     onClose()
   }, [projectId, title, description, column, priority, labels, attachments, onClose])
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      handleSave()
+    }
+  }, [handleSave])
+
   return (
     <div className="modal-overlay create-task-modal" onClick={onClose}>
-      <div className="modal-panel" onClick={e => e.stopPropagation()}>
+      <div className="modal-panel" onClick={e => e.stopPropagation()} onPaste={handlePaste} onKeyDown={handleKeyDown}>
         <div className="modal-header">
           <span className="modal-title">Create Task</span>
           <button className="modal-close" onClick={onClose}>x</button>
@@ -136,7 +154,7 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
             >
               {attachments.length === 0 ? (
                 <span className="screenshot-dropzone-hint">
-                  Drop screenshots here or click to browse
+                  Drop, paste (Ctrl+V), or click to browse
                 </span>
               ) : (
                 <div className="screenshot-thumbs">
@@ -223,6 +241,7 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
           </div>
         </div>
         <div className="modal-footer">
+          <span className="input-hint" style={{ marginRight: 'auto', alignSelf: 'center' }}>Ctrl+Enter to save</span>
           <button className="btn" onClick={onClose}>Cancel</button>
           <button
             className="btn btn-primary"
