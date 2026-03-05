@@ -53,12 +53,18 @@ export default async function historyRoutes(app: FastifyInstance): Promise<void>
     const msgId = crypto.randomUUID()
     const now = Date.now()
 
+    const contentStr = JSON.stringify(body.content)
+    const MAX_CONTENT_BYTES = 50 * 1024
+    const finalContent = Buffer.byteLength(contentStr) > MAX_CONTENT_BYTES
+      ? JSON.stringify([{ type: 'text', text: '[Output truncated — exceeded 50KB storage limit]' }])
+      : contentStr
+
     db.prepare(`
       INSERT INTO messages (id, instance_id, role, content, input_tokens, output_tokens, cost_usd, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       msgId, id, body.role,
-      JSON.stringify(body.content),
+      finalContent,
       body.inputTokens ?? null,
       body.outputTokens ?? null,
       body.costUsd ?? null,
