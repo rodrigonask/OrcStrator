@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
 import { useApp } from '../context/AppContext'
 import { api } from '../api'
+import { sounds } from '../utils/sounds'
 
 interface InstanceItemProps {
   instance: InstanceConfig
@@ -40,6 +41,59 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [skills, setSkills] = useState<SkillConfig[]>([])
   const [showSkillsMenu, setShowSkillsMenu] = useState(false)
+
+  const animEnabled = state.settings.animationsEnabled !== false
+  const soundEnabled = state.settings.soundsEnabled === true
+
+  const [animClass, setAnimClass] = useState<string | null>(null)
+  const [isRemoving, setIsRemoving] = useState(false)
+  const prevStateRef = useRef<string | null>(null)
+  const prevMsgCountRef = useRef(messages.length)
+  const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function triggerAnim(cls: string, duration: number) {
+    if (!animEnabled) return
+    if (animTimerRef.current) clearTimeout(animTimerRef.current)
+    setAnimClass(cls)
+    animTimerRef.current = setTimeout(() => setAnimClass(null), duration)
+  }
+
+  // Spawn animation on mount
+  useEffect(() => {
+    triggerAnim('anim-spawn', 600)
+    if (soundEnabled) sounds.spawn()
+    prevStateRef.current = instance.state
+    prevMsgCountRef.current = messages.length
+    return () => { if (animTimerRef.current) clearTimeout(animTimerRef.current) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // State transition animations
+  useEffect(() => {
+    const prev = prevStateRef.current
+    prevStateRef.current = instance.state
+    if (prev === null || prev === instance.state) return
+
+    if (instance.state === 'running') {
+      triggerAnim('anim-activate', 800)
+      if (soundEnabled) sounds.activate()
+    } else if (prev === 'running') {
+      triggerAnim('anim-sleep', 1200)
+      if (soundEnabled) sounds.sleep()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instance.state])
+
+  // New task while active (message received while running)
+  useEffect(() => {
+    const prev = prevMsgCountRef.current
+    prevMsgCountRef.current = messages.length
+    if (messages.length > prev && instance.state === 'running') {
+      triggerAnim('anim-heal', 600)
+      if (soundEnabled) sounds.heal()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length])
 
   useEffect(() => {
     if (contextMenu) {
@@ -95,28 +149,35 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     }
   }, [instance.id, instance.orchestratorManaged, isOrchestratorLocked, dispatch])
 
+  const handleDelete = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (animEnabled) {
+      setIsRemoving(true)
+      if (soundEnabled) sounds.remove()
+      setTimeout(() => deleteInstance(instance.id), 780)
+    } else {
+      deleteInstance(instance.id)
+    }
+  }, [animEnabled, soundEnabled, deleteInstance, instance.id])
+
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
     setContextMenu({ x: e.clientX, y: e.clientY })
   }, [])
 
+  const activeAnimClass = isRemoving ? 'anim-remove' : (animClass || '')
+
   return (
     <div
-      className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''}`}
+      className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} ${activeAnimClass}`}
       onClick={() => {
         selectInstance(instance.id)
         if (state.view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
       }}
       onContextMenu={handleContextMenu}
+      {...(dragHandleProps as React.HTMLAttributes<HTMLDivElement>)}
     >
-      {dragHandleProps && (
-        <span
-          className="instance-drag-handle"
-          onClick={e => e.stopPropagation()}
-          {...(dragHandleProps as React.HTMLAttributes<HTMLSpanElement>)}
-        >⠿</span>
-      )}
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
         <div className="instance-name">
@@ -138,7 +199,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
       {unread > 0 && <span className="instance-badge">{unread}</span>}
       <button
         className="instance-close-btn"
-        onClick={(e) => { e.stopPropagation(); deleteInstance(instance.id) }}
+        onClick={handleDelete}
         title="Close session"
       >
         ×
@@ -229,7 +290,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
             <div className="context-menu-separator" />
             <button
               className="context-menu-item danger"
-              onClick={() => { setContextMenu(null); deleteInstance(instance.id) }}
+              onClick={(e) => { setContextMenu(null); handleDelete(e) }}
             >
               Close Session
             </button>
