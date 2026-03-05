@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import type { FolderConfig } from '@shared/types'
 import { useApp } from '../context/AppContext'
 import { api } from '../api'
@@ -43,6 +43,32 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
   const [repoUrl, setRepoUrl] = useState(folder.repoUrl || '')
   const [notes, setNotes] = useState(folder.notes || '')
   const [stealthMode, setStealthMode] = useState(folder.stealthMode || false)
+  const [activeTab, setActiveTab] = useState<'settings' | 'claude-md'>('settings')
+  const [claudeMdContent, setClaudeMdContent] = useState<string | null>(null)
+  const [claudeMdSaving, setClaudeMdSaving] = useState(false)
+  const [claudeMdMsg, setClaudeMdMsg] = useState('')
+
+  useEffect(() => {
+    if (activeTab === 'claude-md' && claudeMdContent === null) {
+      api.checkClaudeMd(folder.path).then(res => {
+        setClaudeMdContent(res.content ?? '')
+      }).catch(() => setClaudeMdContent(''))
+    }
+  }, [activeTab, folder.path, claudeMdContent])
+
+  const handleSaveClaudeMd = useCallback(async () => {
+    if (claudeMdContent === null) return
+    setClaudeMdSaving(true)
+    setClaudeMdMsg('')
+    try {
+      await api.writeClaudeMd(folder.path, claudeMdContent)
+      setClaudeMdMsg('Saved')
+    } catch {
+      setClaudeMdMsg('Save failed')
+    } finally {
+      setClaudeMdSaving(false)
+    }
+  }, [folder.path, claudeMdContent])
 
   const handleSave = useCallback(() => {
     const updated: Partial<FolderConfig> = {
@@ -68,7 +94,42 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
           <span className="modal-title">Edit Project</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
+        <div className="modal-tabs">
+          <button
+            className={`modal-tab ${activeTab === 'settings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('settings')}
+          >
+            Settings
+          </button>
+          <button
+            className={`modal-tab ${activeTab === 'claude-md' ? 'active' : ''}`}
+            onClick={() => setActiveTab('claude-md')}
+          >
+            CLAUDE.md
+          </button>
+        </div>
         <div className="modal-body">
+          {activeTab === 'claude-md' && (
+            <div className="claude-md-editor">
+              <div className="claude-md-header">
+                <span className="claude-md-path">{folder.path}/CLAUDE.md</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {claudeMdMsg && <span className="claude-md-msg">{claudeMdMsg}</span>}
+                  <button className="btn btn-primary" onClick={handleSaveClaudeMd} disabled={claudeMdSaving}>
+                    {claudeMdSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+              <textarea
+                className="claude-md-textarea"
+                value={claudeMdContent ?? ''}
+                onChange={e => setClaudeMdContent(e.target.value)}
+                placeholder="Loading..."
+                spellCheck={false}
+              />
+            </div>
+          )}
+          {activeTab === 'settings' && <>
           {/* Emoji + Display Name */}
           <div className="form-row">
             <div className="form-group" style={{ flex: '0 0 auto' }}>
@@ -196,10 +257,11 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
               <span>👻 Stealth Mode — conversations do not save memory or persist context</span>
             </label>
           </div>
+          </>}
         </div>
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave}>Save</button>
+          {activeTab === 'settings' && <button className="btn btn-primary" onClick={handleSave}>Save</button>}
         </div>
       </div>
     </div>

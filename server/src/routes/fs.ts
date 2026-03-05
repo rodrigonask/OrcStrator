@@ -197,4 +197,28 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
 
     return { exists, path: claudeMdPath, content }
   })
+
+  // Write CLAUDE.md in a directory
+  app.put('/fs/claude-md', async (request) => {
+    const { dir } = request.query as { dir?: string }
+    const { content } = request.body as { content?: string }
+
+    if (!dir) throw { statusCode: 400, message: 'Missing dir parameter' }
+    if (typeof content !== 'string') throw { statusCode: 400, message: 'Missing content in body' }
+
+    const resolved = path.resolve(dir)
+
+    if (!isPathAllowed(resolved)) {
+      throw { statusCode: 403, message: 'Path not in allowed directories' }
+    }
+
+    const claudeMdPath = path.join(resolved, 'CLAUDE.md')
+    try {
+      fs.writeFileSync(claudeMdPath, content, 'utf-8')
+    } catch {
+      throw { statusCode: 500, message: 'Failed to write CLAUDE.md' }
+    }
+
+    return { ok: true, path: claudeMdPath }
+  })
 }

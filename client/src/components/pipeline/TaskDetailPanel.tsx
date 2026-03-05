@@ -9,6 +9,31 @@ import { useApp } from '../../context/AppContext'
 
 marked.setOptions({ breaks: true })
 
+function AgentLabel({ agentId }: { agentId?: string | null }) {
+  const { state, dispatch } = useApp()
+  if (!agentId || agentId === 'system') return <strong>system</strong>
+  if (agentId === 'human') return <strong>human</strong>
+  const instance = state.instances.find(i => i.id === agentId)
+  const label = instance ? instance.name : agentId.slice(0, 8) + '...'
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dispatch({ type: 'SELECT_INSTANCE', payload: agentId })
+    dispatch({ type: 'SET_VIEW', payload: 'chat' })
+  }
+  return (
+    <strong>
+      <a
+        href={`/?instance=${agentId}`}
+        onClick={handleClick}
+        title={agentId}
+        style={{ color: 'inherit', textDecoration: 'underline dotted', cursor: 'pointer' }}
+      >
+        {label}
+      </a>
+    </strong>
+  )
+}
+
 function renderMd(text: string): string {
   return DOMPurify.sanitize(marked.parse(text) as string, {
     ALLOWED_TAGS: ['p','br','strong','em','code','pre','ul','ol','li','blockquote','h1','h2','h3','h4','h5','h6','a','s','del'],
@@ -206,7 +231,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
 
               <span className="task-detail-meta-label">Agent</span>
               <span className="task-detail-meta-value">
-                {task.assignedAgent || 'Unassigned'}
+                {task.assignedAgent ? <AgentLabel agentId={task.assignedAgent} /> : 'Unassigned'}
               </span>
 
               <span className="task-detail-meta-label">Created</span>
@@ -308,7 +333,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
                   <div className="task-history-dot" />
                   <span className="task-history-time">{formatTime(entry.timestamp)}</span>
                   <span>
-                    <strong>{entry.agent || 'system'}</strong>{' '}
+                    <AgentLabel agentId={entry.agent} />{' '}
                     {entry.action}
                     {entry.from && entry.to && ` from ${entry.from} to ${entry.to}`}
                     {entry.note && ` - ${entry.note}`}

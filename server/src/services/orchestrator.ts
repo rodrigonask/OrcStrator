@@ -265,6 +265,8 @@ class OrchestratorService {
     const role = instance.agent_role as string
     const masterPrompt = this.loadMasterPrompt(role)
     const projectContext = this.loadProjectContext(folder.path as string)
+    const memory = this.loadMemory(role)
+    const skills = this.loadInstanceSkills(instance)
     const isBundle = tasksToLock.length > 1
 
     const priorityLabels: Record<number, string> = { 1: 'critical', 2: 'high', 3: 'normal', 4: 'low' }
@@ -323,19 +325,53 @@ class OrchestratorService {
     ].join('\n')
 
     const parts: string[] = []
+
+    // Scope constraint is always first (highest priority guard)
+    parts.push(scopeConstraint)
+    parts.push('---')
+
+    // Master prompt
     if (masterPrompt) {
       parts.push(masterPrompt)
       parts.push('---')
     }
+
+    // Agent memory — accumulated cross-session knowledge
+    if (memory) {
+      parts.push('## AGENT MEMORY')
+      parts.push('> Your accumulated knowledge from past tasks. Use it to avoid repeating mistakes and apply proven patterns.')
+      parts.push(memory)
+      parts.push('---')
+    }
+
+    // Agent skills — specialization content injected from assigned skills
+    if (skills.length > 0) {
+      parts.push('## AGENT SKILLS')
+      for (const skill of skills) {
+        parts.push(`### ${skill.name}`)
+        parts.push(skill.content)
+      }
+      parts.push('---')
+    }
+
+    // Project context (CLAUDE.md)
     if (projectContext) {
       parts.push('## PROJECT CONTEXT')
       parts.push(projectContext)
       parts.push('---')
     }
 
-    // Inject scope constraint as FIRST item (highest priority)
-    parts.unshift('---')
-    parts.unshift(scopeConstraint)
+    // Builder context flood — inject BACKEND_REFERENCE.md if available
+    if (role === 'builder') {
+      const backendRef = this.loadBuilderContext(folder.path as string)
+      if (backendRef) {
+        parts.push('## BACKEND REFERENCE')
+        parts.push('> Auto-injected context. Study this before building — understanding the existing data model saves you from guessing.')
+        parts.push(backendRef)
+        parts.push('---')
+      }
+    }
+
     parts.push('## YOUR ASSIGNMENT')
     parts.push(assignment)
 
@@ -349,6 +385,14 @@ class OrchestratorService {
     parts.push(`Valid columns: backlog | spec | build | qa | staging | ship | done`)
     parts.push('')
     parts.push('**DO NOT use Todoist, HyperTask, or any external task management tool.** Your task is above. Use the Pipeline API URLs above to move it when done.')
+    parts.push('')
+
+    // Memory update instruction — agents append insights after each task
+    const memoryPath = path.join(MASTER_PROMPTS_DIR, `${role}-memory.md`).replace(/\\/g, '/')
+    parts.push('## MEMORY UPDATE (do this before moving the task)')
+    parts.push(`Append 2–4 bullet insights to your memory file at: \`${memoryPath}\``)
+    parts.push('Format each line as: `- [insight or pattern you learned]`')
+    parts.push('Keep each bullet short (1 sentence). Skip obvious things. Focus on surprises, gotchas, and reusable patterns.')
     parts.push('')
     parts.push('Good luck. The pipeline is watching.')
 
@@ -368,6 +412,41 @@ class OrchestratorService {
     try {
       if (fs.existsSync(claudeMdPath)) return fs.readFileSync(claudeMdPath, 'utf-8')
     } catch { /* not found */ }
+    return ''
+  }
+
+  private loadMemory(role: string): string {
+    const filePath = path.join(MASTER_PROMPTS_DIR, `${role}-memory.md`)
+    try {
+      if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf-8')
+    } catch { /* not found */ }
+    return ''
+  }
+
+  private loadInstanceSkills(instance: Record<string, unknown>): Array<{ name: string; content: string }> {
+    if (!instance.agent_id) return []
+    const agent = db.prepare('SELECT skills FROM agents WHERE id = ?').get(instance.agent_id as string) as { skills: string } | undefined
+    if (!agent) return []
+    const skillIds = JSON.parse(agent.skills || '[]') as string[]
+    if (skillIds.length === 0) return []
+    const results: Array<{ name: string; content: string }> = []
+    for (const skillId of skillIds) {
+      const skill = db.prepare('SELECT name, content FROM skills WHERE id = ?').get(skillId) as { name: string; content: string } | undefined
+      if (skill?.content) results.push(skill)
+    }
+    return results
+  }
+
+  private loadBuilderContext(folderPath: string): string {
+    const candidates = [
+      path.join(folderPath, 'agents', 'BACKEND_REFERENCE.md'),
+      path.join(folderPath, 'BACKEND_REFERENCE.md'),
+    ]
+    for (const p of candidates) {
+      try {
+        if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8')
+      } catch { /* skip */ }
+    }
     return ''
   }
 
