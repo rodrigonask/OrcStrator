@@ -78,6 +78,24 @@ export function parseStreamLine(line: string, instanceId: string): ClaudeStreamE
     }
   }
 
+  // assistant message — full response (non-streaming mode or final message)
+  if (eventType === 'assistant') {
+    const message = data.message as Record<string, unknown> | undefined
+    if (message) {
+      const contentBlocks = message.content as Array<Record<string, unknown>> | undefined
+      if (contentBlocks) {
+        const textParts = contentBlocks
+          .filter(b => b.type === 'text')
+          .map(b => b.text as string)
+          .join('')
+        if (textParts) {
+          return { type: 'text-delta', instanceId, text: textParts }
+        }
+      }
+    }
+    return null
+  }
+
   // error event
   if (eventType === 'error') {
     const errorObj = data.error as Record<string, unknown> | undefined

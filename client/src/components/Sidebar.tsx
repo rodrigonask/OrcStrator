@@ -26,7 +26,7 @@ export function Sidebar() {
         <div className="sidebar-header">
           <div className="sidebar-header-left">
             <ConnectionStatus />
-            <span className="sidebar-title">Nasklaude</span>
+            <span className="sidebar-title">NasKlaude</span>
           </div>
           <button
             className="sidebar-collapse-btn"

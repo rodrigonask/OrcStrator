@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT || String(DEFAULT_PORT), 10)
   try {
     await app.listen({ port, host: '0.0.0.0' })
-    console.log(`[server] Nasklaude server listening on http://localhost:${port}`)
+    console.log(`[server] NasKlaude server listening on http://localhost:${port}`)
   } catch (err) {
     console.error('[server] Failed to start:', err)
     process.exit(1)

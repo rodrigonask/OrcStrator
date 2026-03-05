@@ -20,7 +20,7 @@ function AppContent() {
         {state.view === 'pipeline' && <PipelineBoard />}
         {!state.selectedInstanceId && state.view === 'chat' && (
           <div className="empty-state">
-            <h2>Welcome to Nasklaude</h2>
+            <h2>Welcome to NasKlaude</h2>
             <p>Select an instance or create a new project to get started</p>
           </div>
         )}

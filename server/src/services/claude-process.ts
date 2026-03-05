@@ -40,11 +40,9 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   // Build CLI args
   const args: string[] = ['--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json']
 
-  // Resume or session ID
-  if (resume && sessionId) {
+  // Resume existing session or start new one
+  if (sessionId) {
     args.push('--resume', sessionId)
-  } else if (sessionId) {
-    args.push('--session-id', sessionId)
   }
 
   // Filtered user flags
@@ -88,16 +86,14 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     if (eventBatch.length === 0) return
     const events = eventBatch
     eventBatch = []
-    for (const event of events) {
-      broadcastEvent({ type: 'claude:event', payload: event })
-    }
+    broadcastEvent({ type: 'claude:output-batch', payload: { instanceId, events } })
   }
 
   function enqueueEvent(event: ClaudeStreamEvent): void {
     // System events and results are sent immediately
     if (event.type === 'system' || event.type === 'result' || event.type === 'error') {
       flushBatch()
-      broadcastEvent({ type: 'claude:event', payload: event })
+      broadcastEvent({ type: 'claude:output-batch', payload: { instanceId, events: [event] } })
       return
     }
     eventBatch.push(event)
@@ -117,6 +113,25 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     stdoutBuffer = lines.pop() || ''
 
     for (const line of lines) {
+      // Save assistant messages to DB before parsing
+      try {
+        const raw = JSON.parse(line.trim())
+        if (raw.type === 'assistant' && raw.message?.content) {
+          const msgId = crypto.randomUUID()
+          const content = raw.message.content.map((b: Record<string, unknown>) => {
+            if (b.type === 'text') return { type: 'text', text: b.text }
+            if (b.type === 'tool_use') return { type: 'tool-use', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
+            return b
+          })
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(msgId, instanceId, 'assistant', JSON.stringify(content), Date.now())
+        }
+      } catch {
+        // non-JSON line, ignore
+      }
+
       const event = parseStreamLine(line, instanceId)
       if (!event) continue
 
@@ -142,9 +157,18 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   })
 
   // Write user message to stdin as NDJSON, then close
-  const inputMessage: Record<string, unknown> = { type: 'user', content: text }
+  // stream-json format: { type: "user", message: { role: "user", content: "..." }, session_id, parent_tool_use_id }
+  const messageContent: unknown[] = [{ type: 'text', text }]
   if (images && images.length > 0) {
-    inputMessage.images = images
+    for (const img of images) {
+      messageContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: img } })
+    }
+  }
+  const inputMessage = {
+    type: 'user',
+    message: { role: 'user', content: messageContent },
+    session_id: resolvedSessionId,
+    parent_tool_use_id: null
   }
   child.stdin?.write(JSON.stringify(inputMessage) + '\n')
   child.stdin?.end()
@@ -190,7 +214,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
       inputTokens: lastInputTokens,
       outputTokens: lastOutputTokens
     }
-    broadcastEvent({ type: 'claude:exit', payload: exitEvent })
+    broadcastEvent({ type: 'claude:process-exit', payload: exitEvent })
     broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
 
     // Best-effort session sanitization
@@ -209,8 +233,8 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     }
     db.prepare('UPDATE instances SET state = ? WHERE id = ?').run('idle', instanceId)
     broadcastEvent({
-      type: 'claude:event',
-      payload: { type: 'error', instanceId, message: `Failed to spawn claude: ${err.message}` }
+      type: 'claude:output-batch',
+      payload: { instanceId, events: [{ type: 'error', instanceId, message: `Failed to spawn claude: ${err.message}` }] }
     })
     broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
   })
