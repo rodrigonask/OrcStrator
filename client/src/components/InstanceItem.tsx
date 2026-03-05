@@ -8,7 +8,7 @@ interface InstanceItemProps {
 }
 
 export function InstanceItem({ instance, index, total }: InstanceItemProps) {
-  const { state, selectInstance } = useApp()
+  const { state, selectInstance, deleteInstance } = useApp()
   const isSelected = state.selectedInstanceId === instance.id
   const messages: ChatMessage[] = state.messages[instance.id] || []
   const lastMsg = messages[messages.length - 1]
@@ -33,6 +33,13 @@ export function InstanceItem({ instance, index, total }: InstanceItemProps) {
         {preview && <div className="instance-preview">{preview}</div>}
       </div>
       {unread > 0 && <span className="instance-badge">{unread}</span>}
+      <button
+        className="instance-close-btn"
+        onClick={(e) => { e.stopPropagation(); deleteInstance(instance.id) }}
+        title="Close session"
+      >
+        ×
+      </button>
     </div>
   )
 }

@@ -331,6 +331,7 @@ interface AppContextValue {
   state: State
   dispatch: React.Dispatch<Action>
   selectInstance: (id: string | null) => void
+  deleteInstance: (id: string) => Promise<void>
   sendMessage: (instanceId: string, text: string, images?: string[]) => Promise<void>
 }
 
@@ -469,7 +470,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     []
   )
 
-  const value: AppContextValue = { state, dispatch, selectInstance, sendMessage }
+  const deleteInstance = useCallback(async (id: string) => {
+    await api.deleteInstance(id)
+    dispatch({ type: 'REMOVE_INSTANCE', payload: id })
+  }, [])
+
+  const value: AppContextValue = { state, dispatch, selectInstance, deleteInstance, sendMessage }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }
