@@ -172,6 +172,8 @@ export interface AppSettings {
   userName?: string
   userEmoji?: string
   columnLabels?: Partial<Record<PipelineColumn, string>>
+  animationsEnabled?: boolean
+  soundsEnabled?: boolean
 }
 
 // === USAGE MONITORING ===

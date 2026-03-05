@@ -104,6 +104,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   columnLabels: DEFAULT_COLUMN_LABELS,
   userName: 'Rodrigo Nask',
   userEmoji: '🧠',
+  animationsEnabled: true,
+  soundsEnabled: false,
 }
 
 export const OAUTH = {

@@ -21,6 +21,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const defaultNames = { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
   const [agentNames, setAgentNames] = useState(settings.orchestratorAgentNames || defaultNames)
   const [allowSpawn, setAllowSpawn] = useState(settings.orchestratorAllowSpawn || false)
+  const [animationsEnabled, setAnimationsEnabled] = useState(settings.animationsEnabled !== false)
+  const [soundsEnabled, setSoundsEnabled] = useState(settings.soundsEnabled === true)
 
   const oauthConnected = state.usage?.connected ?? false
 
@@ -54,6 +56,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         theme,
         orchestratorAgentNames: agentNames,
         orchestratorAllowSpawn: allowSpawn,
+        animationsEnabled,
+        soundsEnabled,
       },
     })
     api.updateSettings({
@@ -65,6 +69,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       theme,
       orchestratorAgentNames: agentNames,
       orchestratorAllowSpawn: allowSpawn,
+      animationsEnabled,
+      soundsEnabled,
     })
     onClose()
   }, [dispatch, settings, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, onClose])
@@ -151,6 +157,25 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <div
                 className={`toggle-switch ${notifications ? 'active' : ''}`}
                 onClick={() => setNotifications(n => !n)}
+              />
+            </div>
+          </div>
+
+          {/* Animations & Sounds */}
+          <div className="settings-section">
+            <div className="settings-section-title">Animations & Sounds</div>
+            <div className="settings-toggle">
+              <span className="settings-toggle-label">Instance card animations</span>
+              <div
+                className={`toggle-switch ${animationsEnabled ? 'active' : ''}`}
+                onClick={() => setAnimationsEnabled(v => !v)}
+              />
+            </div>
+            <div className="settings-toggle" style={{ marginTop: 8 }}>
+              <span className="settings-toggle-label">Sound effects</span>
+              <div
+                className={`toggle-switch ${soundsEnabled ? 'active' : ''}`}
+                onClick={() => setSoundsEnabled(v => !v)}
               />
             </div>
           </div>
