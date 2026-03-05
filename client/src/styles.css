@@ -455,12 +455,14 @@ body {
 
 .folder-add-dropdown {
   position: relative;
+  padding-bottom: 4px;
 }
 
 .folder-add-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: 100%;
   right: 0;
+  padding-top: 4px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -3675,7 +3677,7 @@ body {
 .rs-usage-reset {
   font-size: 10px;
   color: var(--text-muted);
-  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 /* Shortcuts */
@@ -3831,14 +3833,14 @@ body {
 .role-pill.role-builder { border-color: #3b82f6; color: #93c5fd; background: rgba(59, 130, 246, 0.1); }
 .role-pill.role-tester  { border-color: #f59e0b; color: #fcd34d; background: rgba(245, 158, 11, 0.1); }
 .role-pill.role-promoter { border-color: #10b981; color: #6ee7b7; background: rgba(16, 185, 129, 0.1); }
-.role-pill.compact { padding: 1px 6px; font-size: 9px; }
+.role-pill.compact { padding: 2px 7px; font-size: 11px; }
 
 /* Instance role row (compact inline display) */
 .instance-role-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 /* Chat header role pill */

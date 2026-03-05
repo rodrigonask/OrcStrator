@@ -192,7 +192,7 @@ export function FolderGroup({ folder }: FolderGroupProps) {
           >
             <button
               className="folder-add-btn"
-              onClick={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setShowAddMenu(v => !v) }}
             >
               +
             </button>
