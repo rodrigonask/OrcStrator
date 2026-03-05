@@ -1,10 +1,28 @@
 import { useState, useCallback } from 'react'
-import type { FolderConfig } from '@shared/types'
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
+import type { DragEndEvent } from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import type { FolderConfig, InstanceConfig } from '@shared/types'
 import { useApp } from '../context/AppContext'
 import { api } from '../api'
 import { InstanceItem } from './InstanceItem'
 import { LaunchTeamModal } from './LaunchTeamModal'
 import { CreateTaskModal } from './pipeline/CreateTaskModal'
+
+function SortableInstanceItem({ instance, folderOrchestratorActive }: { instance: InstanceConfig; folderOrchestratorActive: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: instance.id })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+  return (
+    <div ref={setNodeRef} style={style}>
+      <InstanceItem instance={instance} folderOrchestratorActive={folderOrchestratorActive} dragHandleProps={{ ...attributes, ...listeners }} />
+    </div>
+  )
+}
 
 const FRUITS = [
   '🍎 Apple', '🍊 Orange', '🍋 Lemon', '🍇 Grape', '🍓 Strawberry',
@@ -19,9 +37,10 @@ function randomFruitName(): string {
 
 interface FolderGroupProps {
   folder: FolderConfig
+  dragHandleProps?: Record<string, unknown>
 }
 
-export function FolderGroup({ folder }: FolderGroupProps) {
+export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
   const { state, dispatch } = useApp()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [confirmOrchestrate, setConfirmOrchestrate] = useState(false)
@@ -31,9 +50,23 @@ export function FolderGroup({ folder }: FolderGroupProps) {
   const [orchStatus, setOrchStatus] = useState<{ idleAgents: number; pendingTasks: number } | null>(null)
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
 
-  const instances = state.instances.filter(i => i.folderId === folder.id)
+  const instances = [...state.instances.filter(i => i.folderId === folder.id)]
+    .sort((a, b) => a.sortOrder - b.sortOrder)
   const expanded = folder.expanded
   const isOrchestratorActive = folder.orchestratorActive || false
+
+  const instanceSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+
+  const handleInstanceDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const ids = instances.map(i => i.id)
+    const oldIndex = ids.indexOf(active.id as string)
+    const newIndex = ids.indexOf(over.id as string)
+    const reordered = arrayMove(ids, oldIndex, newIndex)
+    dispatch({ type: 'REORDER_INSTANCES', payload: { folderId: folder.id, ids: reordered } })
+    api.reorderInstances(reordered).catch(console.error)
+  }, [instances, dispatch, folder.id])
 
   const toggleExpanded = useCallback(() => {
     dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
@@ -149,6 +182,13 @@ export function FolderGroup({ folder }: FolderGroupProps) {
   return (
     <div className={`folder-group${folder.stealthMode ? ' stealth' : ''}`}>
       <div className="folder-header" onClick={toggleExpanded} onContextMenu={handleContextMenu}>
+        {dragHandleProps && (
+          <span
+            className="folder-drag-handle"
+            onClick={e => e.stopPropagation()}
+            {...(dragHandleProps as React.HTMLAttributes<HTMLSpanElement>)}
+          >⠿</span>
+        )}
         <div
           className="folder-color-bar"
           style={{ backgroundColor: folder.stealthMode ? '#374151' : (folder.color || '#7c3aed') }}
@@ -166,7 +206,7 @@ export function FolderGroup({ folder }: FolderGroupProps) {
           </div>
           {folder.client && <div className="folder-client">{folder.client}</div>}
           {isOrchestratorActive && orchStatus && (
-            <div className="orchestrator-status-line">
+            <div className={`orchestrator-status-line${orchStatus.pendingTasks === 0 ? ' idle' : ''}`}>
               {orchStatus.pendingTasks} tasks queued
             </div>
           )}
@@ -227,13 +267,17 @@ export function FolderGroup({ folder }: FolderGroupProps) {
 
       {expanded && (
         <div className="folder-instances">
-          {instances.map((inst, idx) => (
-            <InstanceItem
-              key={inst.id}
-              instance={inst}
-              folderOrchestratorActive={isOrchestratorActive}
-            />
-          ))}
+          <DndContext sensors={instanceSensors} collisionDetection={closestCenter} onDragEnd={handleInstanceDragEnd}>
+            <SortableContext items={instances.map(i => i.id)} strategy={verticalListSortingStrategy}>
+              {instances.map(inst => (
+                <SortableInstanceItem
+                  key={inst.id}
+                  instance={inst}
+                  folderOrchestratorActive={isOrchestratorActive}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
           {instances.length === 0 && (
             <div className="instance-item" style={{ opacity: 0.5, cursor: 'default' }}>
               <span className="instance-info">

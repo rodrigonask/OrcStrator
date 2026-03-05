@@ -83,6 +83,7 @@ type Action =
   | { type: 'ADD_INSTANCE'; payload: InstanceConfig }
   | { type: 'REMOVE_INSTANCE'; payload: string }
   | { type: 'UPDATE_INSTANCE'; payload: { id: string; updates: Partial<InstanceConfig> } }
+  | { type: 'REORDER_INSTANCES'; payload: { folderId: string; ids: string[] } }
   | { type: 'SELECT_INSTANCE'; payload: string | null }
   | { type: 'SET_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[] } }
   | { type: 'ADD_MESSAGE'; payload: ChatMessage }
@@ -155,6 +156,18 @@ function reducer(state: State, action: Action): State {
           })
           .filter((f): f is FolderConfig => f !== null),
       }
+
+    case 'REORDER_INSTANCES': {
+      const { folderId, ids } = action.payload
+      const otherInstances = state.instances.filter(i => i.folderId !== folderId)
+      const reordered = ids
+        .map((id, index) => {
+          const inst = state.instances.find(i => i.id === id)
+          return inst ? { ...inst, sortOrder: index } : null
+        })
+        .filter((i): i is InstanceConfig => i !== null)
+      return { ...state, instances: [...otherInstances, ...reordered] }
+    }
 
     case 'ADD_INSTANCE':
       return { ...state, instances: [...state.instances, action.payload] }

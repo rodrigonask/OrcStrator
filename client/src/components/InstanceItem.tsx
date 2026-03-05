@@ -1,11 +1,12 @@
-import { useState, useCallback } from 'react'
-import type { InstanceConfig, ChatMessage } from '@shared/types'
+import { useState, useCallback, useEffect } from 'react'
+import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
 import { useApp } from '../context/AppContext'
 import { api } from '../api'
 
 interface InstanceItemProps {
   instance: InstanceConfig
   folderOrchestratorActive?: boolean
+  dragHandleProps?: Record<string, unknown>
 }
 
 const AGENT_ROLES = ['planner', 'builder', 'tester', 'promoter'] as const
@@ -29,7 +30,7 @@ function stripMarkdown(text: string): string {
     .trim()
 }
 
-export function InstanceItem({ instance, folderOrchestratorActive }: InstanceItemProps) {
+export function InstanceItem({ instance, folderOrchestratorActive, dragHandleProps }: InstanceItemProps) {
   const { state, dispatch, selectInstance, deleteInstance } = useApp()
   const isSelected = state.selectedInstanceId === instance.id
   const messages: ChatMessage[] = state.messages[instance.id] || []
@@ -37,6 +38,14 @@ export function InstanceItem({ instance, folderOrchestratorActive }: InstanceIte
   const unread = state.unreadCounts?.[instance.id] || 0
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [skills, setSkills] = useState<SkillConfig[]>([])
+  const [showSkillsMenu, setShowSkillsMenu] = useState(false)
+
+  useEffect(() => {
+    if (contextMenu) {
+      api.getSkills().then(setSkills).catch(() => {})
+    }
+  }, [contextMenu])
 
   const agentNames = state.settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
 
@@ -101,6 +110,13 @@ export function InstanceItem({ instance, folderOrchestratorActive }: InstanceIte
       }}
       onContextMenu={handleContextMenu}
     >
+      {dragHandleProps && (
+        <span
+          className="instance-drag-handle"
+          onClick={e => e.stopPropagation()}
+          {...(dragHandleProps as React.HTMLAttributes<HTMLSpanElement>)}
+        >⠿</span>
+      )}
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
         <div className="instance-name">
@@ -169,16 +185,38 @@ export function InstanceItem({ instance, folderOrchestratorActive }: InstanceIte
             >
               Rename...
             </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                setContextMenu(null)
-                const spec = window.prompt('Specialization:', instance.specialization || '')
-                if (spec !== null) handleSpecSave(spec.trim())
-              }}
-            >
-              Set Specialization...
-            </button>
+            <div style={{ position: 'relative' }}>
+              <button
+                className="context-menu-item"
+                onClick={() => setShowSkillsMenu(s => !s)}
+              >
+                Set Specialization... {instance.specialization ? `(${instance.specialization})` : ''}
+              </button>
+              {showSkillsMenu && (
+                <div className="context-menu context-menu-sub">
+                  {instance.specialization && (
+                    <button
+                      className="context-menu-item"
+                      onClick={() => { handleSpecSave(''); setShowSkillsMenu(false); setContextMenu(null) }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                  {skills.length === 0 && (
+                    <span className="context-menu-item" style={{ opacity: 0.5, cursor: 'default' }}>No skills yet</span>
+                  )}
+                  {skills.map(skill => (
+                    <button
+                      key={skill.id}
+                      className={`context-menu-item ${instance.specialization === skill.name ? 'active' : ''}`}
+                      onClick={() => { handleSpecSave(skill.name); setShowSkillsMenu(false); setContextMenu(null) }}
+                    >
+                      {skill.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="context-menu-separator" />
             {!isOrchestratorLocked && (
               <button

@@ -65,6 +65,7 @@ export const rest = {
   createInstance: (data: Partial<InstanceConfig>) => post<InstanceConfig>('/api/instances', data),
   updateInstance: (id: string, data: Partial<InstanceConfig>) => put<InstanceConfig>(`/api/instances/${id}`, data),
   deleteInstance: (id: string) => del<{ ok: true }>(`/api/instances/${id}`),
+  reorderInstances: (ids: string[]) => put<{ ok: true }>('/api/instances/reorder', { ids }),
 
   // Claude session control
   sendMessage: (instanceId: string, data: { text?: string; images?: string[]; flags?: string[] }) =>
@@ -166,5 +167,10 @@ export const rest = {
   checkClaudeMd: (dirPath: string) =>
     get<{ exists: boolean; path: string; content: string | null }>(
       `/api/fs/claude-md?dir=${encodeURIComponent(dirPath)}`
+    ),
+  writeClaudeMd: (dirPath: string, content: string) =>
+    put<{ ok: boolean; path: string }>(
+      `/api/fs/claude-md?dir=${encodeURIComponent(dirPath)}`,
+      { content }
     ),
 }

@@ -457,6 +457,27 @@ body {
   accent-color: #6b7280;
 }
 
+/* Drag handles */
+.folder-drag-handle,
+.instance-drag-handle {
+  opacity: 0;
+  cursor: grab;
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  transition: opacity var(--transition-fast);
+  touch-action: none;
+}
+.folder-drag-handle:active,
+.instance-drag-handle:active {
+  cursor: grabbing;
+}
+.folder-header:hover .folder-drag-handle,
+.instance-item:hover .instance-drag-handle {
+  opacity: 1;
+}
+
 .folder-action-group {
   display: flex;
   align-items: center;
@@ -3478,6 +3499,89 @@ body {
   margin: 4px 0;
 }
 
+.context-menu-sub {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  min-width: 180px;
+  z-index: 201;
+}
+
+/* === Modal Tabs === */
+.modal-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+}
+
+.modal-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 8px 14px;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.modal-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.modal-tab:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+/* === CLAUDE.md Editor === */
+.claude-md-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 460px;
+}
+
+.claude-md-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.claude-md-path {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-md-msg {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.claude-md-textarea {
+  flex: 1;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 10px;
+  resize: none;
+  outline: none;
+}
+
+.claude-md-textarea:focus {
+  border-color: var(--accent);
+}
+
 /* === Right Sidebar === */
 .right-sidebar {
   width: 260px;
@@ -3849,10 +3953,10 @@ body {
   transition: border-color var(--transition-fast);
 }
 .role-pill-select:hover { border-color: var(--border-hover); }
-.role-pill-select.role-planner { border-color: #8b5cf6; color: #a78bfa; background: rgba(139, 92, 246, 0.1); }
-.role-pill-select.role-builder { border-color: #3b82f6; color: #93c5fd; background: rgba(59, 130, 246, 0.1); }
-.role-pill-select.role-tester  { border-color: #f59e0b; color: #fcd34d; background: rgba(245, 158, 11, 0.1); }
-.role-pill-select.role-promoter { border-color: #10b981; color: #6ee7b7; background: rgba(16, 185, 129, 0.1); }
+.role-pill-select.role-planner { border-color: #7c3aed; color: #a78bfa; background: rgba(124, 58, 237, 0.12); }
+.role-pill-select.role-builder { border-color: #2563eb; color: #93c5fd; background: rgba(37, 99, 235, 0.12); }
+.role-pill-select.role-tester  { border-color: #b45309; color: #fb923c; background: rgba(180, 83, 9, 0.12); }
+.role-pill-select.role-promoter { border-color: #059669; color: #34d399; background: rgba(5, 150, 105, 0.12); }
 
 /* Role pill — static (locked) */
 .role-pill {
@@ -3864,12 +3968,12 @@ body {
   font-size: 16px;
   border: 1px solid var(--border);
   color: var(--text-secondary);
-  background: var(--bg-elevated);
+  background: transparent;
 }
-.role-pill.role-planner { border-color: #8b5cf6; color: #a78bfa; background: rgba(139, 92, 246, 0.1); }
-.role-pill.role-builder { border-color: #3b82f6; color: #93c5fd; background: rgba(59, 130, 246, 0.1); }
-.role-pill.role-tester  { border-color: #f59e0b; color: #fcd34d; background: rgba(245, 158, 11, 0.1); }
-.role-pill.role-promoter { border-color: #10b981; color: #6ee7b7; background: rgba(16, 185, 129, 0.1); }
+.role-pill.role-planner { border-color: #7c3aed; color: #fff; background: #7c3aed; }
+.role-pill.role-builder { border-color: #2563eb; color: #fff; background: #2563eb; }
+.role-pill.role-tester  { border-color: #b45309; color: #fff; background: #b45309; }
+.role-pill.role-promoter { border-color: #047857; color: #fff; background: #047857; }
 .role-pill.compact { padding: 2px 7px; font-size: 11px; }
 
 /* Instance role row (compact inline display) */
@@ -4021,6 +4125,9 @@ body {
   font-size: 16px;
   color: var(--warning);
   margin-top: 1px;
+}
+.orchestrator-status-line.idle {
+  color: var(--text-muted);
 }
 
 /* Launch Team button */

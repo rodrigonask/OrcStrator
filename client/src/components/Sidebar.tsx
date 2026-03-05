@@ -1,15 +1,54 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
+import type { DragEndEvent } from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useApp } from '../context/AppContext'
+import { api } from '../api'
 import { ConnectionStatus } from './ConnectionStatus'
 import { FolderGroup } from './FolderGroup'
 import { FolderBrowserModal } from './FolderBrowserModal'
 import { ProjectEditModal } from './ProjectEditModal'
 import { SettingsModal } from './SettingsModal'
 import { LevelBar } from './tour/LevelBar'
+import type { FolderConfig } from '@shared/types'
+
+function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+  return (
+    <div ref={setNodeRef} style={style}>
+      <FolderGroup folder={folder} dragHandleProps={{ ...attributes, ...listeners }} />
+    </div>
+  )
+}
 
 export function Sidebar() {
   const { state, dispatch } = useApp()
   const [collapsed, setCollapsed] = useState(false)
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+
+  const sortedFolders = [...state.folders].sort((a, b) => {
+    if (a.stealthMode && !b.stealthMode) return -1
+    if (!a.stealthMode && b.stealthMode) return 1
+    return a.sortOrder - b.sortOrder
+  })
+
+  const handleFolderDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const ids = sortedFolders.map(f => f.id)
+    const oldIndex = ids.indexOf(active.id as string)
+    const newIndex = ids.indexOf(over.id as string)
+    const reordered = arrayMove(ids, oldIndex, newIndex)
+    dispatch({ type: 'REORDER_FOLDERS', payload: reordered })
+    api.reorderFolders(reordered).catch(console.error)
+  }, [sortedFolders, dispatch])
 
 
   const usage = state.usage
@@ -52,15 +91,13 @@ export function Sidebar() {
         </div>
 
         <div className="sidebar-folders">
-          {[...state.folders]
-            .sort((a, b) => {
-              if (a.stealthMode && !b.stealthMode) return -1
-              if (!a.stealthMode && b.stealthMode) return 1
-              return a.sortOrder - b.sortOrder
-            })
-            .map(folder => (
-              <FolderGroup key={folder.id} folder={folder} />
-            ))}
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleFolderDragEnd}>
+            <SortableContext items={sortedFolders.map(f => f.id)} strategy={verticalListSortingStrategy}>
+              {sortedFolders.map(folder => (
+                <SortableFolderGroup key={folder.id} folder={folder} />
+              ))}
+            </SortableContext>
+          </DndContext>
         </div>
 
         <div className="sidebar-add-folder">

@@ -190,6 +190,20 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const message = getLastAssistantMessage(instance.cwd as string, instance.session_id as string)
     return { message }
   })
+
+  // Reorder instances
+  app.put('/instances/reorder', async (request) => {
+    const { ids } = request.body as { ids: string[] }
+    const stmt = db.prepare('UPDATE instances SET sort_order = ? WHERE id = ?')
+    const transaction = db.transaction(() => {
+      for (let i = 0; i < ids.length; i++) {
+        stmt.run(i, ids[i])
+      }
+    })
+    transaction()
+    broadcastEvent({ type: 'instances:reordered', payload: { ids } })
+    return { ok: true }
+  })
 }
 
 function rowToInstance(r: Record<string, unknown>) {
