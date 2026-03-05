@@ -74,7 +74,7 @@ export function Sidebar() {
             className="settings-btn"
             onClick={() => setShowSettings(true)}
           >
-            <span>\u2699</span>
+            <span>&#x2699;</span>
             <span className="sidebar-footer-text">Settings</span>
           </button>
         </div>

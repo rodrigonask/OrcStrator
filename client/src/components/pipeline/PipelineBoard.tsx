@@ -19,12 +19,12 @@ const COLUMN_LABELS: Record<PipelineColumn, string> = {
 
 export function PipelineBoard() {
   const { state: appState, dispatch: appDispatch } = useApp()
-  const { state: pipelineState } = usePipeline()
+  const pipeline = usePipeline()
   const [selectedTask, setSelectedTask] = useState<PipelineTask | null>(null)
   const [showCreate, setShowCreate] = useState(false)
 
-  const projectId = appState.pipelineProjectId || appState.folders[0]?.id || ''
-  const tasks = pipelineState.tasks
+  const projectId = appState.activePipelineId || appState.folders[0]?.id || ''
+  const tasks = pipeline.tasks
 
   const tasksByColumn = useMemo(() => {
     const map: Record<PipelineColumn, PipelineTask[]> = {
