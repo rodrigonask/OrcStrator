@@ -435,7 +435,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
           }
         }
-        dispatch({ type: 'INCREMENT_UNREAD', payload: instanceId })
       })
     )
 
@@ -479,7 +478,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(
       api.onMessageAdded((payload: { instanceId: string; message: ChatMessage }) => {
         dispatch({ type: 'ADD_MESSAGE', payload: payload.message })
-        dispatch({ type: 'INCREMENT_UNREAD', payload: payload.instanceId })
+        if (payload.message.role === 'assistant') {
+          dispatch({ type: 'INCREMENT_UNREAD', payload: payload.instanceId })
+        }
       })
     )
 
