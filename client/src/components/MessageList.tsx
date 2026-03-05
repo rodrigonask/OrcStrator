@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import type { ChatMessage } from '@shared/types'
 import { useApp } from '../context/AppContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
@@ -11,10 +11,22 @@ function hasVisibleContent(msg: ChatMessage): boolean {
 }
 
 export function MessageList() {
-  const { state } = useApp()
+  const { state, loadOlderMessages } = useApp()
   const instanceId = state.selectedInstanceId
   const messages: ChatMessage[] = instanceId ? (state.messages[instanceId] || []) : []
+  const hasMore = instanceId ? (state.hasMore[instanceId] ?? false) : false
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const scrollRef = useAutoScroll([messages])
+
+  const handleLoadOlder = useCallback(async () => {
+    if (!instanceId || loadingOlder) return
+    setLoadingOlder(true)
+    try {
+      await loadOlderMessages(instanceId)
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [instanceId, loadingOlder, loadOlderMessages])
 
   const instance = instanceId ? state.instances.find(i => i.id === instanceId) : null
   const isAgentRunning = instance?.state === 'running'
@@ -50,6 +62,17 @@ export function MessageList() {
 
   return (
     <div className="message-list" ref={scrollRef}>
+      {hasMore && (
+        <div className="message-list-load-older">
+          <button
+            className="btn btn-sm"
+            onClick={handleLoadOlder}
+            disabled={loadingOlder}
+          >
+            {loadingOlder ? 'Loading...' : 'Load older messages'}
+          </button>
+        </div>
+      )}
       {visibleMessages.map(msg => (
         <MessageBubble key={msg.id} message={msg} toolResults={toolResults} />
       ))}
