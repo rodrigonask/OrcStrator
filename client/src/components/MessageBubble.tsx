@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { ChatMessage, MessageContentBlock } from '@shared/types'
@@ -50,6 +50,28 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
 
   const nonToolContent = content.filter(b => b.type !== 'tool-call' && b.type !== 'tool-result')
   const hasSummary = role === 'assistant' && toolCallBlocks.length > 0
+
+  const isToolOnly = role === 'assistant' &&
+    toolCallBlocks.length > 0 &&
+    nonToolContent.every(b => b.type !== 'text' || !(b as { type: 'text'; text: string }).text.trim()) &&
+    nonToolContent.every(b => b.type !== 'image')
+
+  if (isToolOnly) {
+    return (
+      <div className="tool-chip" onClick={() => setToolsExpanded(e => !e)}>
+        <span className="tool-chip-icon">🔧</span>
+        <span className="tool-chip-text">{summary}</span>
+        <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
+        {toolsExpanded && (
+          <div className="tool-chip-expanded" onClick={e => e.stopPropagation()}>
+            {toolCallBlocks.map((block, i) => (
+              <ContentBlock key={i} block={block} toolResults={toolResults} defaultExpanded={false} />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className={`message-bubble ${role}`}>
@@ -141,11 +163,15 @@ function ContentBlock({
   return null
 }
 
-const COLLAPSE_HEIGHT = 280
+const COLLAPSE_CHARS = 600
 
 function TextContent({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const isTall = text.length > COLLAPSE_CHARS
+  const displayText = isTall && !expanded ? text.slice(0, COLLAPSE_CHARS) : text
+
   const html = useMemo(() => {
-    const raw = marked.parse(text) as string
+    const raw = marked.parse(displayText) as string
     return DOMPurify.sanitize(raw, {
       ALLOWED_TAGS: [
         'p', 'br', 'strong', 'em', 'b', 'i', 'u', 's', 'del',
@@ -156,33 +182,15 @@ function TextContent({ text }: { text: string }) {
       ],
       ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel'],
     })
-  }, [text])
-
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [isTall, setIsTall] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-
-  useEffect(() => {
-    if (contentRef.current) {
-      setIsTall(contentRef.current.scrollHeight > COLLAPSE_HEIGHT)
-    }
-  }, [html])
-
-  const isCollapsed = isTall && !expanded
+  }, [displayText])
 
   return (
-    <div className={`message-content-wrapper${isCollapsed ? ' collapsed' : ''}`}>
-      <div
-        ref={contentRef}
-        className="message-content"
-        style={isCollapsed ? { maxHeight: COLLAPSE_HEIGHT, overflow: 'hidden' } : undefined}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-      {isCollapsed && <div className="message-content-fade" />}
+    <div className="message-content-wrapper">
+      <div className="message-content" dangerouslySetInnerHTML={{ __html: html }} />
       {isTall && (
-        <button className="view-more-btn" onClick={() => setExpanded(e => !e)}>
-          {expanded ? 'View less ↑' : 'View more... ↓'}
-        </button>
+        <span className="view-more-inline" onClick={() => setExpanded(e => !e)}>
+          {expanded ? 'View less ↑' : '... View more ↓'}
+        </span>
       )}
     </div>
   )
