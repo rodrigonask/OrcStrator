@@ -83,8 +83,8 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
   }, [activePipelineId, fetchTasks])
 
   // Group tasks by column (memoized to avoid recomputing on unrelated renders)
-  const tasksByColumn = useMemo(() =>
-    tasks.reduce<Record<PipelineColumn, PipelineTask[]>>(
+  const tasksByColumn = useMemo(() => {
+    const groups = tasks.reduce<Record<PipelineColumn, PipelineTask[]>>(
       (acc, task) => {
         if (acc[task.column]) {
           acc[task.column].push(task)
@@ -92,9 +92,11 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
         return acc
       },
       { backlog: [], spec: [], build: [], qa: [], staging: [], ship: [], done: [] }
-    ),
-    [tasks]
-  )
+    )
+    // Most recently completed first; fall back to updatedAt for tasks missing completedAt
+    groups.done.sort((a, b) => (b.completedAt ?? b.updatedAt) - (a.completedAt ?? a.updatedAt))
+    return groups
+  }, [tasks])
 
   const createTask = useCallback(
     async (data: Partial<PipelineTask>) => {
