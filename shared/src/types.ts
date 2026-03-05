@@ -15,6 +15,7 @@ export interface FolderConfig {
   expanded: boolean
   sortOrder: number
   createdAt: number
+  orchestratorActive?: boolean
 }
 
 export interface InstanceConfig {
@@ -28,6 +29,9 @@ export interface InstanceConfig {
   idleRestartMinutes: number
   sortOrder: number
   createdAt: number
+  agentRole?: 'planner' | 'builder' | 'tester' | 'promoter'
+  specialization?: string
+  orchestratorManaged?: boolean
 }
 
 // === CHAT MESSAGES ===
@@ -61,6 +65,7 @@ export type ClaudeStreamEvent =
   | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number }
   | { type: 'error'; instanceId: string; message: string }
   | { type: 'system'; instanceId: string; sessionId?: string }
+  | { type: 'raw-line'; instanceId: string; line: string; isStderr?: boolean }
 
 export interface ClaudeProcessExitEvent {
   instanceId: string
@@ -75,6 +80,12 @@ export interface ClaudeProcessExitEvent {
 
 export type PipelineColumn = 'backlog' | 'spec' | 'build' | 'qa' | 'staging' | 'ship' | 'done'
 
+export interface TaskAttachment {
+  id: string
+  name: string
+  dataUrl: string
+}
+
 export interface PipelineTask {
   id: string
   projectId: string
@@ -83,6 +94,7 @@ export interface PipelineTask {
   column: PipelineColumn
   priority: 1 | 2 | 3 | 4
   labels: string[]
+  attachments: TaskAttachment[]
   assignedAgent?: string
   groupId?: string
   groupIndex?: number
@@ -93,6 +105,17 @@ export interface PipelineTask {
   completedAt?: number
   createdAt: number
   updatedAt: number
+  lockedBy?: string
+  lockedAt?: number
+  retryCount?: number
+}
+
+export interface TaskComment {
+  id: string
+  taskId: string
+  author: string
+  body: string
+  createdAt: number
 }
 
 export interface TaskHistoryEntry {
@@ -143,6 +166,11 @@ export interface AppSettings {
   usagePollMinutes: number
   theme: 'light' | 'dark' | 'system'
   port: number
+  orchestratorAgentNames?: { planner: string; builder: string; tester: string; promoter: string }
+  orchestratorAllowSpawn?: boolean
+  userName?: string
+  userEmoji?: string
+  columnLabels?: Partial<Record<PipelineColumn, string>>
 }
 
 // === USAGE MONITORING ===

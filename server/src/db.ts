@@ -168,11 +168,98 @@ function migration001(): void {
   db.prepare("INSERT OR IGNORE INTO oauth_tokens (id, access_token, refresh_token, expires_at, verifier) VALUES (1, '', '', '', '')").run()
 }
 
+function migration003(): void {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS task_comments (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES pipeline_tasks(id) ON DELETE CASCADE,
+        author TEXT NOT NULL DEFAULT 'human',
+        body TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_comments_task_id ON task_comments(task_id, created_at);
+    `)
+  } catch {
+    // already exists
+  }
+  setSchemaVersion(3)
+}
+
+function migration002(): void {
+  // SQLite doesn't support multiple ALTER TABLE in one exec, run each separately
+  const columns: Array<[string, string]> = [
+    ['folders', 'orchestrator_active INTEGER DEFAULT 0'],
+    ['instances', 'agent_role TEXT'],
+    ['instances', 'specialization TEXT'],
+    ['instances', 'orchestrator_managed INTEGER DEFAULT 0'],
+    ['pipeline_tasks', 'locked_by TEXT'],
+    ['pipeline_tasks', 'locked_at INTEGER'],
+    ['pipeline_tasks', 'retry_count INTEGER DEFAULT 0'],
+  ]
+
+  for (const [table, col] of columns) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
+    } catch {
+      // column already exists — ignore
+    }
+  }
+
+  const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
+  insertSetting.run('orchestratorAgentNames', JSON.stringify({ planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }))
+  insertSetting.run('orchestratorAllowSpawn', JSON.stringify(false))
+
+  setSchemaVersion(2)
+}
+
+function migration004(): void {
+  try {
+    db.prepare("ALTER TABLE pipeline_tasks ADD COLUMN attachments TEXT DEFAULT '[]'").run()
+  } catch {
+    // column already exists
+  }
+  setSchemaVersion(4)
+}
+
+function migration005(): void {
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('columnLabels', ?)").run(
+    JSON.stringify({ backlog: 'Backlog', spec: 'Spec', build: 'Build', qa: 'QA', staging: 'Staging', ship: 'Ship', done: 'Done' })
+  )
+  setSchemaVersion(5)
+}
+
+function migration006(): void {
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('userName', ?)").run(JSON.stringify('Rodrigo Nask'))
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('userEmoji', ?)").run(JSON.stringify('🧠'))
+  setSchemaVersion(6)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
   if (currentVersion < 1) {
     migration001()
+  }
+
+  if (currentVersion < 2) {
+    migration002()
+  }
+
+  if (currentVersion < 3) {
+    migration003()
+  }
+
+  if (currentVersion < 4) {
+    migration004()
+  }
+
+  if (currentVersion < 5) {
+    migration005()
+  }
+
+  if (currentVersion < 6) {
+    migration006()
   }
 }
 

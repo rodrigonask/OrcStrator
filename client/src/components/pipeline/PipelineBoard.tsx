@@ -1,52 +1,67 @@
-import { useState, useMemo } from 'react'
+import { useState, useCallback } from 'react'
 import type { PipelineTask, PipelineColumn } from '@shared/types'
-import { PIPELINE_COLUMNS, COLUMN_COLORS } from '@shared/constants'
+import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
 import { useApp } from '../../context/AppContext'
+import { api } from '../../api'
 import { TaskCard } from './TaskCard'
 import { TaskDetailPanel } from './TaskDetailPanel'
 import { CreateTaskModal } from './CreateTaskModal'
-
-const COLUMN_LABELS: Record<PipelineColumn, string> = {
-  backlog: 'Backlog',
-  spec: 'Spec',
-  build: 'Build',
-  qa: 'QA',
-  staging: 'Staging',
-  ship: 'Ship',
-  done: 'Done',
-}
 
 export function PipelineBoard() {
   const { state: appState, dispatch: appDispatch } = useApp()
   const pipeline = usePipeline()
   const [selectedTask, setSelectedTask] = useState<PipelineTask | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [editingColumn, setEditingColumn] = useState<PipelineColumn | null>(null)
+  const [editValue, setEditValue] = useState('')
+
+  const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(appState.settings.columnLabels || {}) }
 
   const projectId = appState.activePipelineId || appState.folders[0]?.id || ''
-  const tasks = pipeline.tasks
+  const [dragOverColumn, setDragOverColumn] = useState<PipelineColumn | null>(null)
 
-  const tasksByColumn = useMemo(() => {
-    const map: Record<PipelineColumn, PipelineTask[]> = {
-      backlog: [],
-      spec: [],
-      build: [],
-      qa: [],
-      staging: [],
-      ship: [],
-      done: [],
+  const handleDragOver = useCallback((e: React.DragEvent, col: PipelineColumn) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverColumn(col)
+  }, [])
+
+  const handleDragLeave = useCallback(() => {
+    setDragOverColumn(null)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent, col: PipelineColumn) => {
+    e.preventDefault()
+    setDragOverColumn(null)
+    const taskId = e.dataTransfer.getData('text/plain')
+    if (taskId) {
+      pipeline.moveTask(taskId, col)
     }
-    for (const task of tasks) {
-      if (task.projectId === projectId && map[task.column]) {
-        map[task.column].push(task)
-      }
+  }, [pipeline])
+
+  const handleColumnLabelDoubleClick = useCallback((col: PipelineColumn) => {
+    setEditingColumn(col)
+    setEditValue(columnLabels[col])
+  }, [columnLabels])
+
+  const handleColumnLabelSave = useCallback(async (col: PipelineColumn) => {
+    const trimmed = editValue.trim()
+    if (trimmed && trimmed !== columnLabels[col]) {
+      const newLabels = { ...columnLabels, [col]: trimmed }
+      appDispatch({ type: 'UPDATE_SETTINGS', payload: { columnLabels: newLabels } })
+      await api.updateSettings({ columnLabels: newLabels })
     }
-    // Sort by priority (1=urgent first), then by creation date
-    for (const col of PIPELINE_COLUMNS) {
-      map[col].sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt)
+    setEditingColumn(null)
+  }, [editValue, columnLabels, appDispatch])
+
+  const handleColumnLabelKeyDown = useCallback((e: React.KeyboardEvent, col: PipelineColumn) => {
+    if (e.key === 'Enter') {
+      handleColumnLabelSave(col)
+    } else if (e.key === 'Escape') {
+      setEditingColumn(null)
     }
-    return map
-  }, [tasks, projectId])
+  }, [handleColumnLabelSave])
 
   return (
     <div className="pipeline-board">
@@ -55,9 +70,16 @@ export function PipelineBoard() {
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             className="btn btn-sm"
-            onClick={() => appDispatch({ type: 'SET_VIEW', view: 'chat' })}
+            onClick={() => appDispatch({ type: 'SET_VIEW', payload: 'chat' })}
           >
             Back to Chat
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={pipeline.refresh}
+            disabled={pipeline.loading}
+          >
+            {pipeline.loading ? 'Syncing...' : 'Sync'}
           </button>
           <button
             className="btn btn-sm btn-primary"
@@ -70,11 +92,35 @@ export function PipelineBoard() {
 
       <div className="pipeline-columns">
         {PIPELINE_COLUMNS.map(col => {
-          const colTasks = tasksByColumn[col]
+          const colTasks = pipeline.tasksByColumn[col]
+          const isDragOver = dragOverColumn === col
           return (
-            <div key={col} className="pipeline-column">
+            <div
+              key={col}
+              className={`pipeline-column${isDragOver ? ' drag-over' : ''}`}
+              onDragOver={(e) => handleDragOver(e, col)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, col)}
+            >
               <div className={`pipeline-column-header ${col}`}>
-                <span className="pipeline-column-name">{COLUMN_LABELS[col]}</span>
+                {editingColumn === col ? (
+                  <input
+                    className="pipeline-column-name-input"
+                    value={editValue}
+                    onChange={e => setEditValue(e.target.value)}
+                    onBlur={() => handleColumnLabelSave(col)}
+                    onKeyDown={e => handleColumnLabelKeyDown(e, col)}
+                    onFocus={e => e.target.select()}
+                    autoFocus
+                  />
+                ) : (
+                  <span
+                    className="pipeline-column-name"
+                    onDoubleClick={() => handleColumnLabelDoubleClick(col)}
+                  >
+                    {columnLabels[col]}
+                  </span>
+                )}
                 <span className="pipeline-column-count">{colTasks.length}</span>
               </div>
               <div className="pipeline-column-tasks">

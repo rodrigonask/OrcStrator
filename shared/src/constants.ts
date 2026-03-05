@@ -82,6 +82,16 @@ export const ALLOWED_FLAG_PREFIXES = [
   '--no-cache'
 ]
 
+export const DEFAULT_COLUMN_LABELS: Record<PipelineColumn, string> = {
+  backlog: 'Backlog',
+  spec: 'Spec',
+  build: 'Build',
+  qa: 'QA',
+  staging: 'Staging',
+  ship: 'Ship',
+  done: 'Done',
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   globalFlags: ['--dangerously-skip-permissions'],
   idleTimeoutSeconds: 60,
@@ -90,7 +100,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rootFolder: '',
   usagePollMinutes: 10,
   theme: 'system',
-  port: 3333
+  port: 3333,
+  columnLabels: DEFAULT_COLUMN_LABELS,
+  userName: 'Rodrigo Nask',
+  userEmoji: '🧠',
 }
 
 export const OAUTH = {
