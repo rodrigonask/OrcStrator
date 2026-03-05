@@ -54,6 +54,18 @@ class WsClient {
     this.listeners.get(event)?.forEach((cb) => cb(payload))
   }
 
+  subscribeTerminal(instanceId: string): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'subscribe:terminal', instanceId }))
+    }
+  }
+
+  unsubscribeTerminal(instanceId: string): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'unsubscribe:terminal', instanceId }))
+    }
+  }
+
   disconnect() {
     if (this.ws) {
       this.ws.onclose = null

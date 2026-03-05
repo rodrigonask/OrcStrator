@@ -6,6 +6,9 @@ const clients = new Set<WebSocket>()
 const MAX_WS_CLIENTS = 50
 let pingInterval: ReturnType<typeof setInterval> | null = null
 
+// Per-client terminal subscriptions: socket -> Set of subscribed instanceIds
+const terminalSubscribers = new Map<WebSocket, Set<string>>()
+
 export function registerWebSocket(app: FastifyInstance): void {
   app.get('/ws', { websocket: true }, (socket: WebSocket, request) => {
     // Origin validation
@@ -23,12 +26,26 @@ export function registerWebSocket(app: FastifyInstance): void {
 
     clients.add(socket)
 
+    socket.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as { type: string; instanceId?: string }
+        if (msg.type === 'subscribe:terminal' && msg.instanceId) {
+          if (!terminalSubscribers.has(socket)) terminalSubscribers.set(socket, new Set())
+          terminalSubscribers.get(socket)!.add(msg.instanceId)
+        } else if (msg.type === 'unsubscribe:terminal' && msg.instanceId) {
+          terminalSubscribers.get(socket)?.delete(msg.instanceId)
+        }
+      } catch { /* ignore malformed */ }
+    })
+
     socket.on('close', () => {
       clients.delete(socket)
+      terminalSubscribers.delete(socket)
     })
 
     socket.on('error', () => {
       clients.delete(socket)
+      terminalSubscribers.delete(socket)
     })
   })
 
@@ -53,6 +70,15 @@ export function registerWebSocket(app: FastifyInstance): void {
     }
     clients.clear()
   })
+}
+
+export function broadcastTerminalLine(instanceId: string, payload: unknown): void {
+  const data = JSON.stringify({ type: 'claude:output-batch', payload })
+  for (const [client, subs] of terminalSubscribers) {
+    if (subs.has(instanceId) && client.readyState === client.OPEN) {
+      client.send(data)
+    }
+  }
 }
 
 export function broadcastEvent(message: { type: string; payload: unknown }): void {

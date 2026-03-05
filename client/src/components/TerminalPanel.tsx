@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useApp } from '../context/AppContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
+import { api } from '../api'
 
 interface BashEntry {
   key: string
@@ -22,6 +23,12 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const { state } = useApp()
   const instanceId = state.selectedInstanceId
   const [tab, setTab] = useState<'bash' | 'stream'>('stream')
+
+  useEffect(() => {
+    if (!instanceId) return
+    api.subscribeTerminal(instanceId)
+    return () => { api.unsubscribeTerminal(instanceId) }
+  }, [instanceId])
 
   const historicalEntries = useMemo<BashEntry[]>(() => {
     if (!instanceId) return []

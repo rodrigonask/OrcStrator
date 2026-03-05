@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { createStreamParser } from './stream-parser.js'
-import { broadcastEvent } from '../ws/handler.js'
+import { broadcastEvent, broadcastTerminalLine } from '../ws/handler.js'
 import { db } from '../db.js'
 import { sanitizeSession } from './session-sanitizer.js'
 import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@nasklaude/shared'
@@ -110,6 +110,11 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   }
 
   function enqueueEvent(event: ClaudeStreamEvent): void {
+    // Raw lines go only to terminal subscribers (opt-in), not all clients
+    if (event.type === 'raw-line') {
+      broadcastTerminalLine(instanceId, { instanceId, events: [event] })
+      return
+    }
     // System events and results are sent immediately
     if (event.type === 'system' || event.type === 'result' || event.type === 'error') {
       flushBatch()
@@ -147,6 +152,16 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
             INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
             VALUES (?, ?, ?, ?, ?)
           `).run(msgId, instanceId, 'assistant', JSON.stringify(content), Date.now())
+          db.prepare(`
+            DELETE FROM messages
+            WHERE instance_id = ?
+            AND id NOT IN (
+              SELECT id FROM messages
+              WHERE instance_id = ?
+              ORDER BY created_at DESC
+              LIMIT 300
+            )
+          `).run(instanceId, instanceId)
         }
       } catch {
         // non-JSON line, ignore
