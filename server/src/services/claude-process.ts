@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process'
-import { parseStreamLine } from './stream-parser.js'
+import { createStreamParser } from './stream-parser.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { db } from '../db.js'
 import { sanitizeSession } from './session-sanitizer.js'
@@ -72,6 +72,9 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   db.prepare('UPDATE instances SET state = ? WHERE id = ?').run('running', instanceId)
   broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'running' } })
 
+  // Stateful stream parser for this process (tracks index→toolId mapping)
+  const parseLine = createStreamParser(instanceId)
+
   // Track session ID from system event
   let resolvedSessionId = sessionId || ''
   let lastCostUsd: number | undefined
@@ -132,21 +135,24 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
         // non-JSON line, ignore
       }
 
-      const event = parseStreamLine(line, instanceId)
-      if (!event) continue
+      const parsed = parseLine(line)
+      if (!parsed) continue
+      const lineEvents = Array.isArray(parsed) ? parsed : [parsed]
 
-      if (event.type === 'system' && event.sessionId) {
-        resolvedSessionId = event.sessionId
-        db.prepare('UPDATE instances SET session_id = ? WHERE id = ?').run(resolvedSessionId, instanceId)
+      for (const event of lineEvents) {
+        if (event.type === 'system' && event.sessionId) {
+          resolvedSessionId = event.sessionId
+          db.prepare('UPDATE instances SET session_id = ? WHERE id = ?').run(resolvedSessionId, instanceId)
+        }
+
+        if (event.type === 'result') {
+          lastCostUsd = event.costUsd
+          lastInputTokens = event.inputTokens
+          lastOutputTokens = event.outputTokens
+        }
+
+        enqueueEvent(event)
       }
-
-      if (event.type === 'result') {
-        lastCostUsd = event.costUsd
-        lastInputTokens = event.inputTokens
-        lastOutputTokens = event.outputTokens
-      }
-
-      enqueueEvent(event)
     }
   })
 
@@ -191,8 +197,11 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
 
     // Flush remaining events
     if (stdoutBuffer.trim()) {
-      const event = parseStreamLine(stdoutBuffer, instanceId)
-      if (event) enqueueEvent(event)
+      const parsed = parseLine(stdoutBuffer)
+      if (parsed) {
+        const events = Array.isArray(parsed) ? parsed : [parsed]
+        for (const event of events) enqueueEvent(event)
+      }
     }
     flushBatch()
     if (batchTimer) {

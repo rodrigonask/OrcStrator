@@ -8,7 +8,14 @@ interface ToolCallBlockProps {
   isRunning?: boolean
 }
 
-export function ToolCallBlock({ toolName, input, output, isError, isRunning }: ToolCallBlockProps) {
+export function ToolCallBlock(props: ToolCallBlockProps) {
+  if (props.toolName === 'Bash') {
+    return <BashBlock {...props} />
+  }
+  return <GenericToolCallBlock {...props} />
+}
+
+function GenericToolCallBlock({ toolName, input, output, isError, isRunning }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(true)
 
   const summary = (() => {
@@ -43,6 +50,38 @@ export function ToolCallBlock({ toolName, input, output, isError, isRunning }: T
               <pre className={`tool-call-output ${isError ? 'error' : ''}`}>{output}</pre>
             </>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BashBlock({ input, output, isError, isRunning }: Omit<ToolCallBlockProps, 'toolName'>) {
+  let command = input
+  let description: string | undefined
+  try {
+    const parsed = JSON.parse(input)
+    command = parsed.command ?? input
+    description = parsed.description
+  } catch {}
+
+  const statusClass = isRunning ? 'running' : isError ? 'error' : 'success'
+
+  return (
+    <div className="bash-block">
+      <div className="bash-block-header">
+        <span className="bash-block-dollar">$</span>
+        <span className="bash-block-label">bash</span>
+        {description && <span className="bash-block-desc">{description}</span>}
+        <span className={`tool-call-status ${statusClass}`} />
+      </div>
+      <pre className="bash-block-command">{command}</pre>
+      {output !== undefined && (
+        <pre className={`bash-block-output ${isError ? 'error' : ''}`}>{output}</pre>
+      )}
+      {isRunning && output === undefined && (
+        <div className="bash-block-running">
+          <span className="bash-cursor" />
         </div>
       )}
     </div>

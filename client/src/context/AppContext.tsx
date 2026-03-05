@@ -37,6 +37,7 @@ interface State {
   activePipelineId: string | null
   connected: boolean
   usage: UsageData | null
+  terminalPanelOpen: boolean
 }
 
 const initialState: State = {
@@ -64,6 +65,7 @@ const initialState: State = {
   activePipelineId: null,
   connected: false,
   usage: null,
+  terminalPanelOpen: false,
 }
 
 // === Actions ===
@@ -101,6 +103,8 @@ type Action =
   | { type: 'OPEN_PROJECT_EDIT'; folderId: string }
   | { type: 'CLOSE_PROJECT_EDIT' }
   | { type: 'SET_PIPELINE_PROJECT'; projectId: string | null }
+  | { type: 'TOGGLE_TERMINAL' }
+  | { type: 'SET_TERMINAL_OPEN'; payload: boolean }
 
 // === Reducer ===
 
@@ -309,6 +313,12 @@ function reducer(state: State, action: Action): State {
 
     case 'SET_PIPELINE_PROJECT':
       return { ...state, activePipelineId: action.projectId }
+
+    case 'TOGGLE_TERMINAL':
+      return { ...state, terminalPanelOpen: !state.terminalPanelOpen }
+
+    case 'SET_TERMINAL_OPEN':
+      return { ...state, terminalPanelOpen: action.payload }
 
     default:
       return state

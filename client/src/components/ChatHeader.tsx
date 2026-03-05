@@ -72,6 +72,13 @@ export function ChatHeader() {
             Resume
           </button>
         )}
+        <button
+          className={`chat-header-btn ${state.terminalPanelOpen ? 'active' : ''}`}
+          onClick={() => dispatch({ type: 'TOGGLE_TERMINAL' })}
+          title="Toggle terminal panel"
+        >
+          Terminal
+        </button>
         <button className="chat-header-btn" onClick={handleCopyLast} title="Copy last response">
           Copy
         </button>
