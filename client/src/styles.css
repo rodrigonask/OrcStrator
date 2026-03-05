@@ -57,10 +57,10 @@
   --transition-slow: 350ms ease;
 
   /* Message bubble colors */
-  --msg-user-bg: #2d1b69;
-  --msg-user-border: rgba(124, 58, 237, 0.3);
-  --msg-assistant-bg: #1a1a2e;
-  --msg-assistant-border: #2a2a3e;
+  --msg-user-bg: #4c28a8;
+  --msg-user-border: rgba(124, 58, 237, 0.6);
+  --msg-assistant-bg: #252545;
+  --msg-assistant-border: #3d3d5c;
   --msg-system-bg: rgba(59, 130, 246, 0.08);
   --msg-system-border: rgba(59, 130, 246, 0.2);
 
@@ -111,10 +111,10 @@
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
   --shadow-glow: 0 0 20px rgba(124, 58, 237, 0.1);
 
-  --msg-user-bg: rgba(124, 58, 237, 0.08);
-  --msg-user-border: rgba(124, 58, 237, 0.2);
-  --msg-assistant-bg: #ffffff;
-  --msg-assistant-border: #e2e3ea;
+  --msg-user-bg: rgba(124, 58, 237, 0.15);
+  --msg-user-border: rgba(124, 58, 237, 0.35);
+  --msg-assistant-bg: #f5f5fa;
+  --msg-assistant-border: #d5d5e0;
   --msg-system-bg: rgba(59, 130, 246, 0.05);
   --msg-system-border: rgba(59, 130, 246, 0.15);
 }
@@ -727,6 +727,7 @@ body {
   background: var(--msg-user-bg);
   border: 1px solid var(--msg-user-border);
   border-bottom-right-radius: var(--radius-sm);
+  color: var(--text-primary);
 }
 
 .message-bubble.assistant {
@@ -734,6 +735,7 @@ body {
   background: var(--msg-assistant-bg);
   border: 1px solid var(--msg-assistant-border);
   border-bottom-left-radius: var(--radius-sm);
+  color: var(--text-primary);
 }
 
 .message-bubble.system {
@@ -759,6 +761,7 @@ body {
 .message-content {
   font-size: 14px;
   word-break: break-word;
+  color: inherit;
 }
 
 .message-content p {
