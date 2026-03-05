@@ -120,7 +120,7 @@ export function MessageInput() {
       )}
       {isOrchestratorOwned && selectedFolder && (
         <div className="orchestrator-pov-banner">
-          <span className="orchestrator-pov-label">Managed by Orchestrator</span>
+          <span className="orchestrator-pov-label">Managed by The Orc</span>
           <button
             className="orchestrator-pov-btn"
             onClick={() => {
@@ -128,7 +128,7 @@ export function MessageInput() {
               dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: selectedFolder.id })
             }}
           >
-            Orchestrator POV
+            The Orc POV
           </button>
         </div>
       )}
@@ -142,7 +142,7 @@ export function MessageInput() {
           className="message-textarea"
           placeholder={
             isOrchestratorOwned
-              ? 'This agent belongs to the Orchestrator now.'
+              ? 'This agent belongs to The Orc now.'
               : instanceId ? 'Type a message...' : 'Select an instance first'
           }
           value={text}

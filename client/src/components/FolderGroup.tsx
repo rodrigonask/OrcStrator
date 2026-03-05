@@ -9,6 +9,7 @@ import { api } from '../api'
 import { InstanceItem } from './InstanceItem'
 import { LaunchTeamModal } from './LaunchTeamModal'
 import { CreateTaskModal } from './pipeline/CreateTaskModal'
+import { randomName } from '../utils/naming'
 
 function SortableInstanceItem({ instance, folderOrchestratorActive }: { instance: InstanceConfig; folderOrchestratorActive: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: instance.id })
@@ -24,16 +25,6 @@ function SortableInstanceItem({ instance, folderOrchestratorActive }: { instance
   )
 }
 
-const FRUITS = [
-  '🍎 Apple', '🍊 Orange', '🍋 Lemon', '🍇 Grape', '🍓 Strawberry',
-  '🫐 Blueberry', '🍒 Cherry', '🥭 Mango', '🍍 Pineapple', '🥝 Kiwi',
-  '🍑 Peach', '🍈 Melon', '🍌 Banana', '🍐 Pear', '🥥 Coconut',
-  '🍉 Watermelon', '🫒 Olive', '🍏 Lime', '🍅 Tomato', '🫙 Fig',
-]
-
-function randomFruitName(): string {
-  return FRUITS[Math.floor(Math.random() * FRUITS.length)]
-}
 
 interface FolderGroupProps {
   folder: FolderConfig
@@ -91,7 +82,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     try {
       const instance = await api.createInstance({
         folderId: folder.id,
-        name: randomFruitName(),
+        name: randomName(state.settings.namingTheme || 'fruits'),
         cwd: folder.path,
       })
       dispatch({ type: 'ADD_INSTANCE', payload: instance })
@@ -222,7 +213,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
           </button>
           <button
             className={`orchestrator-toggle-btn ${isOrchestratorActive ? 'active' : ''}`}
-            title={isOrchestratorActive ? 'Orchestrator active — click to deactivate' : 'Activate Orchestrator'}
+            title={isOrchestratorActive ? 'The Orc is active — click to stop' : 'Activate The Orc'}
             onClick={handleOrchestrateClick}
           >
             {isOrchestratorActive ? (
@@ -333,7 +324,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             </div>
             <div className="modal-body">
               <p className="orchestrate-confirm-text">
-                The Orchestrator will claim all tagged agent sessions and direct their every move.
+                The Orc will claim all tagged agent sessions and direct their every move.
               </p>
               <p className="orchestrate-confirm-subtext">
                 You can watch — you just can't interfere.

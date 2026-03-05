@@ -73,7 +73,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
         </div>
         <div className="modal-body">
           <p className="launch-team-subtitle">
-            Spawn pre-configured agents for <strong>{folder.displayName || folder.name}</strong>. All spawned agents will be marked as Orchestrator-managed.
+            Spawn pre-configured agents for <strong>{folder.displayName || folder.name}</strong>. All spawned agents will be marked as Orc-managed.
           </p>
 
           <div className="launch-team-grid">
@@ -112,7 +112,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
 
           <div className="launch-team-footer-note">
             <span className="spawn-disabled-note" title="Coming soon — we're teaching it responsibility first">
-              [ ] Allow Orchestrator to spawn new agents <em>(coming soon)</em>
+              [ ] Allow The Orc to spawn new agents <em>(coming soon)</em>
             </span>
           </div>
         </div>

@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { useApp } from '../context/AppContext'
 import { api } from '../api'
 import { ALLOWED_FLAG_PREFIXES } from '@shared/constants'
+import type { NamingTheme } from '../utils/naming'
 
 interface SettingsModalProps {
   onClose: () => void
@@ -23,6 +24,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [allowSpawn, setAllowSpawn] = useState(settings.orchestratorAllowSpawn || false)
   const [animationsEnabled, setAnimationsEnabled] = useState(settings.animationsEnabled !== false)
   const [soundsEnabled, setSoundsEnabled] = useState(settings.soundsEnabled === true)
+  const [namingTheme, setNamingTheme] = useState<NamingTheme>(settings.namingTheme || 'fruits')
 
   const oauthConnected = state.usage?.connected ?? false
 
@@ -58,6 +60,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         orchestratorAllowSpawn: allowSpawn,
         animationsEnabled,
         soundsEnabled,
+        namingTheme,
       },
     })
     api.updateSettings({
@@ -71,6 +74,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       orchestratorAllowSpawn: allowSpawn,
       animationsEnabled,
       soundsEnabled,
+      namingTheme,
     })
     onClose()
   }, [dispatch, settings, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, onClose])
@@ -107,6 +111,22 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body">
+          {/* Session Naming */}
+          <div className="settings-section">
+            <div className="settings-section-title">Session Naming</div>
+            <label className="form-label">Name theme for new sessions</label>
+            <select
+              className="form-select"
+              value={namingTheme}
+              onChange={e => setNamingTheme(e.target.value as NamingTheme)}
+            >
+              <option value="fruits">🍎 Fruits</option>
+              <option value="rpg">⚔️ RPG Characters</option>
+              <option value="wow">🌋 World of Warcraft</option>
+              <option value="memes">😂 Meme Names</option>
+            </select>
+          </div>
+
           {/* CLI Flags */}
           <div className="settings-section">
             <div className="settings-section-title">CLI Flags</div>
@@ -247,7 +267,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           </div>
         {/* Orchestrator */}
           <div className="settings-section">
-            <div className="settings-section-title">Orchestrator</div>
+            <div className="settings-section-title">The Orc</div>
             <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
               Agent names shown in the UI and injected into prompts.
             </p>
@@ -262,10 +282,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               </div>
             ))}
             <div className="settings-toggle" style={{ marginTop: 12, opacity: 0.5 }}>
-              <span className="settings-toggle-label" title="Coming soon — The Orchestrator is not yet trusted with a credit card.">
-                Allow Orchestrator to spawn new agents
+              <span className="settings-toggle-label" title="Coming soon — The Orc is not yet trusted with a credit card.">
+                Allow The Orc to spawn new agents
                 <br />
-                <em style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Currently disabled. The Orchestrator is not yet trusted with a credit card.</em>
+                <em style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Currently disabled. The Orc is not yet trusted with a credit card.</em>
               </span>
               <div
                 className={`toggle-switch ${allowSpawn ? 'active' : ''}`}

@@ -174,6 +174,7 @@ export interface AppSettings {
   columnLabels?: Partial<Record<PipelineColumn, string>>
   animationsEnabled?: boolean
   soundsEnabled?: boolean
+  namingTheme?: 'fruits' | 'rpg' | 'wow' | 'memes'
 }
 
 // === USAGE MONITORING ===
