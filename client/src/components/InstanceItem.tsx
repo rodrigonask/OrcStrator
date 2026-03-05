@@ -197,6 +197,24 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
           {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orc-managed">⚡</span>}
         </div>
         {preview && <div className="instance-preview">{preview}</div>}
+        {instance.orchestratorManaged && instance.activeTaskTitle && instance.state === 'running' && (
+          <div className="instance-active-task">
+            working on{' '}
+            <button
+              className="instance-active-task-link"
+              onClick={(e) => {
+                e.stopPropagation()
+                dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: instance.folderId })
+                dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
+              }}
+              title={instance.activeTaskTitle}
+            >
+              {instance.activeTaskTitle.length > 35
+                ? instance.activeTaskTitle.slice(0, 35) + '...'
+                : instance.activeTaskTitle}
+            </button>
+          </div>
+        )}
       </div>
       {unread > 0 && <span className="instance-badge">{unread}</span>}
       <button

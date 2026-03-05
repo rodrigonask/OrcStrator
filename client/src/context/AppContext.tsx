@@ -494,7 +494,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
         dispatch({
           type: 'UPDATE_INSTANCE',
-          payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId } },
+          payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId, activeTaskId: undefined, activeTaskTitle: undefined } },
         })
         // Refresh history to get the final messages
         api.getHistory(instanceId, { limit: 50 }).then((data) => {
@@ -515,8 +515,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     unsubs.push(
       api.onOrchestratorAssigned((payload: { folderId: string; instanceId: string; taskId: string; taskTitle: string }) => {
-        // Update the assigned instance to running state (server will also broadcast instance:state)
-        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.instanceId, updates: { state: 'running' } } })
+        dispatch({
+          type: 'UPDATE_INSTANCE',
+          payload: { id: payload.instanceId, updates: { state: 'running', activeTaskId: payload.taskId, activeTaskTitle: payload.taskTitle } },
+        })
       })
     )
 

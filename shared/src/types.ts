@@ -33,6 +33,8 @@ export interface InstanceConfig {
   agentRole?: 'planner' | 'builder' | 'tester' | 'promoter'
   specialization?: string
   orchestratorManaged?: boolean
+  activeTaskId?: string
+  activeTaskTitle?: string
 }
 
 // === CHAT MESSAGES ===
