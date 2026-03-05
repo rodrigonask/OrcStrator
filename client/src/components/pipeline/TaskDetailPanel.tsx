@@ -16,48 +16,64 @@ const PRIORITY_LABELS: Record<number, string> = {
 }
 
 export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
-  const { dispatch } = usePipeline()
+  const { updateTask, moveTask, claimTask, blockTask, unblockTask, deleteTask } = usePipeline()
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [priority, setPriority] = useState(task.priority)
   const [labelInput, setLabelInput] = useState('')
   const [labels, setLabels] = useState<string[]>([...task.labels])
 
-  const handleSave = useCallback(() => {
-    dispatch({
-      type: 'UPDATE_TASK',
-      taskId: task.id,
-      updates: { title, description, priority, labels },
-    })
-    onClose()
-  }, [dispatch, task.id, title, description, priority, labels, onClose])
-
-  const handleMove = useCallback((column: PipelineColumn) => {
-    dispatch({ type: 'MOVE_TASK', taskId: task.id, column })
-    onClose()
-  }, [dispatch, task.id, onClose])
-
-  const handleClaim = useCallback((agent: string) => {
-    dispatch({ type: 'CLAIM_TASK', taskId: task.id, agent })
-  }, [dispatch, task.id])
-
-  const handleBlock = useCallback(() => {
-    const isBlocked = task.labels.includes('blocked')
-    if (isBlocked) {
-      setLabels(l => l.filter(lb => lb !== 'blocked'))
-      dispatch({ type: 'UNBLOCK_TASK', taskId: task.id })
-    } else {
-      setLabels(l => [...l, 'blocked'])
-      dispatch({ type: 'BLOCK_TASK', taskId: task.id, reason: 'Manually blocked' })
+  const handleSave = useCallback(async () => {
+    try {
+      await updateTask(task.id, { title, description, priority, labels })
+    } catch (err) {
+      console.error('Failed to update task:', err)
     }
-  }, [dispatch, task.id, task.labels])
+    onClose()
+  }, [updateTask, task.id, title, description, priority, labels, onClose])
 
-  const handleDelete = useCallback(() => {
+  const handleMove = useCallback(async (column: PipelineColumn) => {
+    try {
+      await moveTask(task.id, column)
+    } catch (err) {
+      console.error('Failed to move task:', err)
+    }
+    onClose()
+  }, [moveTask, task.id, onClose])
+
+  const handleClaim = useCallback(async (agent: string) => {
+    try {
+      await claimTask(task.id, agent)
+    } catch (err) {
+      console.error('Failed to claim task:', err)
+    }
+  }, [claimTask, task.id])
+
+  const handleBlock = useCallback(async () => {
+    const isBlocked = task.labels.includes('blocked')
+    try {
+      if (isBlocked) {
+        setLabels(l => l.filter(lb => lb !== 'blocked'))
+        await unblockTask(task.id)
+      } else {
+        setLabels(l => [...l, 'blocked'])
+        await blockTask(task.id, 'Manually blocked')
+      }
+    } catch (err) {
+      console.error('Failed to toggle block:', err)
+    }
+  }, [blockTask, unblockTask, task.id, task.labels])
+
+  const handleDelete = useCallback(async () => {
     if (confirm(`Delete task "${task.title}"?`)) {
-      dispatch({ type: 'DELETE_TASK', taskId: task.id })
+      try {
+        await deleteTask(task.id)
+      } catch (err) {
+        console.error('Failed to delete task:', err)
+      }
       onClose()
     }
-  }, [dispatch, task.id, task.title, onClose])
+  }, [deleteTask, task.id, task.title, onClose])
 
   const addLabel = useCallback(() => {
     const trimmed = labelInput.trim()

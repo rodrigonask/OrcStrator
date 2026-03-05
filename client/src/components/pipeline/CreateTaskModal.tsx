@@ -9,7 +9,7 @@ interface CreateTaskModalProps {
 }
 
 export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
-  const { dispatch } = usePipeline()
+  const { createTask } = usePipeline()
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -30,21 +30,22 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
     setLabels(l => l.filter(lb => lb !== label))
   }, [])
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!title.trim()) return
-    dispatch({
-      type: 'CREATE_TASK',
-      task: {
+    try {
+      await createTask({
         projectId,
         title: title.trim(),
         description,
         column,
         priority,
         labels,
-      },
-    })
+      })
+    } catch (err) {
+      console.error('Failed to create task:', err)
+    }
     onClose()
-  }, [dispatch, projectId, title, description, column, priority, labels, onClose])
+  }, [createTask, projectId, title, description, column, priority, labels, onClose])
 
   return (
     <div className="modal-overlay create-task-modal" onClick={onClose}>
