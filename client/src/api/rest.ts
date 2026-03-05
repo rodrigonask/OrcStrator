@@ -81,7 +81,7 @@ export const rest = {
     if (params?.before) query.set('before', String(params.before))
     if (params?.limit) query.set('limit', String(params.limit))
     const qs = query.toString()
-    return get<ChatMessage[]>(`/api/instances/${instanceId}/history${qs ? `?${qs}` : ''}`)
+    return get<{ messages: ChatMessage[]; hasMore: boolean }>(`/api/instances/${instanceId}/history${qs ? `?${qs}` : ''}`)
   },
   addMessage: (instanceId: string, message: Partial<ChatMessage>) =>
     post<ChatMessage>(`/api/instances/${instanceId}/history`, message),
@@ -89,24 +89,24 @@ export const rest = {
     del<{ ok: true }>(`/api/instances/${instanceId}/history`),
 
   // Pipeline
-  getPipelines: () => get<Record<string, PipelineTask[]>>('/api/pipeline'),
-  getProjectPipeline: (projectId: string) => get<PipelineTask[]>(`/api/pipeline/${projectId}`),
+  getPipelines: () => get<Record<string, PipelineTask[]>>('/api/pipelines'),
+  getProjectPipeline: (projectId: string) => get<PipelineTask[]>(`/api/pipelines/${projectId}`),
   createTask: (projectId: string, data: Partial<PipelineTask>) =>
-    post<PipelineTask>(`/api/pipeline/${projectId}/tasks`, data),
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks`, data),
   updateTask: (projectId: string, taskId: string, data: Partial<PipelineTask>) =>
-    put<PipelineTask>(`/api/pipeline/${projectId}/tasks/${taskId}`, data),
+    put<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}`, data),
   deleteTask: (projectId: string, taskId: string) =>
-    del<{ ok: true }>(`/api/pipeline/${projectId}/tasks/${taskId}`),
+    del<{ ok: true }>(`/api/pipelines/${projectId}/tasks/${taskId}`),
   moveTask: (projectId: string, taskId: string, column: PipelineColumn) =>
-    post<PipelineTask>(`/api/pipeline/${projectId}/tasks/${taskId}/move`, { column }),
-  claimTask: (projectId: string, taskId: string, agent: string) =>
-    post<PipelineTask>(`/api/pipeline/${projectId}/tasks/${taskId}/claim`, { agent }),
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/move`, { column }),
+  claimTask: (projectId: string, taskId: string, agentRole: string) =>
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/claim`, { agentRole }),
   blockTask: (projectId: string, taskId: string, reason: string) =>
-    post<PipelineTask>(`/api/pipeline/${projectId}/tasks/${taskId}/block`, { reason }),
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/block`, { reason }),
   unblockTask: (projectId: string, taskId: string) =>
-    post<PipelineTask>(`/api/pipeline/${projectId}/tasks/${taskId}/unblock`),
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/unblock`),
   getNextTask: (projectId: string, column: PipelineColumn) =>
-    get<PipelineTask | null>(`/api/pipeline/${projectId}/next?column=${column}`),
+    get<PipelineTask | null>(`/api/pipelines/${projectId}/next?column=${column}`),
 
   // Settings
   getSettings: () => get<AppSettings>('/api/settings'),

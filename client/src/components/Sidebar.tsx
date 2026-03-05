@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext'
 import { ConnectionStatus } from './ConnectionStatus'
 import { FolderGroup } from './FolderGroup'
 import { FolderBrowserModal } from './FolderBrowserModal'
+import { ProjectEditModal } from './ProjectEditModal'
 import { SettingsModal } from './SettingsModal'
 import { LevelBar } from './tour/LevelBar'
 
@@ -80,6 +81,16 @@ export function Sidebar() {
       </aside>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+
+      {state.editingFolderId && (() => {
+        const folder = state.folders.find(f => f.id === state.editingFolderId)
+        return folder ? (
+          <ProjectEditModal
+            folder={folder}
+            onClose={() => dispatch({ type: 'CLOSE_PROJECT_EDIT' })}
+          />
+        ) : null
+      })()}
 
       {state.showFolderBrowser && (
         <FolderBrowserModal

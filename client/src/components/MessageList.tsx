@@ -36,7 +36,7 @@ export function MessageList() {
       {messages.map(msg => (
         <MessageBubble key={msg.id} message={msg} toolResults={toolResults} />
       ))}
-      {state.streaming?.[instanceId!] && (
+      {state.streamingContent?.[instanceId!] && (
         <div className="message-bubble assistant">
           <div className="streaming-indicator">
             <span />

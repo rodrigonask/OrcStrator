@@ -1,7 +1,27 @@
 import type { FastifyInstance } from 'fastify'
+import type { FolderConfig } from '@nasklaude/shared'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import crypto from 'crypto'
+
+function rowToFolder(r: Record<string, unknown>): FolderConfig {
+  return {
+    id: r.id as string,
+    path: r.path as string,
+    name: r.name as string,
+    displayName: r.display_name as string | undefined,
+    emoji: r.emoji as string | undefined,
+    client: r.client as string | undefined,
+    projectType: r.project_type as FolderConfig['projectType'],
+    color: r.color as string | undefined,
+    status: (r.status as FolderConfig['status']) || 'active',
+    repoUrl: r.repo_url as string | undefined,
+    notes: r.notes as string | undefined,
+    expanded: Boolean(r.expanded),
+    sortOrder: r.sort_order as number,
+    createdAt: r.created_at as number,
+  }
+}
 
 export default async function folderRoutes(app: FastifyInstance): Promise<void> {
   // Create folder
@@ -30,7 +50,8 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
       now
     )
 
-    const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(id)
+    const row = db.prepare('SELECT * FROM folders WHERE id = ?').get(id) as Record<string, unknown>
+    const folder = rowToFolder(row)
     broadcastEvent({ type: 'folder:created', payload: folder })
     reply.code(201)
     return folder
@@ -67,7 +88,8 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     params.push(id)
     db.prepare(`UPDATE folders SET ${sets.join(', ')} WHERE id = ?`).run(...params)
 
-    const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(id)
+    const row = db.prepare('SELECT * FROM folders WHERE id = ?').get(id) as Record<string, unknown>
+    const folder = rowToFolder(row)
     broadcastEvent({ type: 'folder:updated', payload: folder })
     return folder
   })

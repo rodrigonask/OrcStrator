@@ -80,6 +80,7 @@ type Action =
   | { type: 'SET_CONNECTED'; payload: boolean }
   | { type: 'SET_USAGE'; payload: UsageData | null }
   | { type: 'UPDATE_SETTINGS'; payload: Partial<AppSettings> }
+  | { type: 'CLEAR_MESSAGES'; payload: string }
   | { type: 'TOGGLE_FOLDER'; folderId: string }
   | { type: 'OPEN_FOLDER_BROWSER' }
   | { type: 'CLOSE_FOLDER_BROWSER' }
@@ -226,6 +227,11 @@ function reducer(state: State, action: Action): State {
     case 'UPDATE_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.payload } }
 
+    case 'CLEAR_MESSAGES': {
+      const { [action.payload]: _, ...restMessages } = state.messages
+      return { ...state, messages: restMessages }
+    }
+
     case 'TOGGLE_FOLDER':
       return {
         ...state,
@@ -328,7 +334,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId } },
         })
         // Refresh history to get the final messages
-        api.getHistory(instanceId).then((messages) => {
+        api.getHistory(instanceId).then((data) => {
+          const messages = (data as any).messages ?? data
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages } })
         }).catch(() => {
           // history fetch failed, streaming content already cleared
@@ -354,7 +361,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (id) {
         dispatch({ type: 'CLEAR_UNREAD', payload: id })
         if (!state.messages[id]) {
-          api.getHistory(id).then((messages) => {
+          api.getHistory(id).then((data) => {
+            const messages = (data as any).messages ?? data
             dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages } })
           }).catch((err) => {
             console.error('Failed to fetch history:', err)

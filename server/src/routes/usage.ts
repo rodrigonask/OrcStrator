@@ -8,7 +8,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
   })
 
   // Generate OAuth PKCE auth URL
-  app.post('/usage/auth-url', async () => {
+  app.get('/usage/auth-url', async () => {
     return generateAuthUrl()
   })
 
@@ -16,8 +16,8 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.post('/usage/exchange', async (request) => {
     const { code } = request.body as { code: string }
     if (!code) throw { statusCode: 400, message: 'Missing authorization code' }
-    const success = await exchangeCode(code)
-    return { success }
+    await exchangeCode(code)
+    return { ok: true }
   })
 
   // Disconnect and clear tokens

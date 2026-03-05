@@ -54,7 +54,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
       repoUrl,
       notes,
     }
-    dispatch({ type: 'UPDATE_FOLDER', folderId: folder.id, updates: updated })
+    dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: updated } })
     api.updateFolder(folder.id, updated)
     onClose()
   }, [dispatch, folder.id, displayName, emoji, client, projectType, color, status, repoUrl, notes, onClose])

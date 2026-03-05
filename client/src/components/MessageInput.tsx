@@ -1,16 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext'
-import { api } from '../api'
 
 export function MessageInput() {
-  const { state } = useApp()
+  const { state, sendMessage } = useApp()
   const [text, setText] = useState('')
   const [planMode, setPlanMode] = useState(false)
   const [images, setImages] = useState<{ base64: string; mediaType: string }[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const instanceId = state.selectedInstanceId
 
-  const isStreaming = instanceId ? state.streaming?.[instanceId] : false
+  const isStreaming = instanceId ? !!state.streamingContent?.[instanceId] : false
 
   // Auto-resize textarea
   useEffect(() => {
@@ -22,7 +21,8 @@ export function MessageInput() {
 
   const handleSend = useCallback(() => {
     if (!instanceId || (!text.trim() && images.length === 0)) return
-    api.sendMessage(instanceId, text.trim(), { planMode, images })
+    const messageText = planMode ? 'Use plan mode. ' + text.trim() : text.trim()
+    sendMessage(instanceId, messageText, images.map(i => i.base64))
     setText('')
     setImages([])
     setPlanMode(false)

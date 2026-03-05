@@ -6,7 +6,7 @@ interface InstanceItemProps {
 }
 
 export function InstanceItem({ instance }: InstanceItemProps) {
-  const { state, dispatch } = useApp()
+  const { state, selectInstance } = useApp()
   const isSelected = state.selectedInstanceId === instance.id
   const messages: ChatMessage[] = state.messages[instance.id] || []
   const lastMsg = messages[messages.length - 1]
@@ -23,7 +23,7 @@ export function InstanceItem({ instance }: InstanceItemProps) {
   return (
     <div
       className={`instance-item ${isSelected ? 'selected' : ''}`}
-      onClick={() => dispatch({ type: 'SELECT_INSTANCE', instanceId: instance.id })}
+      onClick={() => selectInstance(instance.id)}
     >
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">

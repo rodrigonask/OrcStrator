@@ -43,7 +43,8 @@ export function ChatHeader() {
 
   const handleClear = useCallback(() => {
     if (instanceId && confirm('Clear chat history for this instance?')) {
-      dispatch({ type: 'CLEAR_MESSAGES', instanceId })
+      api.clearHistory(instanceId)
+      dispatch({ type: 'CLEAR_MESSAGES', payload: instanceId })
     }
   }, [instanceId, dispatch])
 

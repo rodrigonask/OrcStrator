@@ -42,8 +42,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const handleSave = useCallback(() => {
     dispatch({
       type: 'UPDATE_SETTINGS',
-      settings: {
-        ...settings,
+      payload: {
         globalFlags: flags,
         idleTimeoutSeconds: idleTimeout,
         notifications,
@@ -63,13 +62,29 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     onClose()
   }, [dispatch, settings, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, onClose])
 
-  const handleOAuthConnect = useCallback(() => {
-    api.connectOAuth()
-  }, [])
+  const handleOAuthConnect = useCallback(async () => {
+    try {
+      const { url } = await api.getAuthUrl()
+      window.open(url, '_blank')
+      const code = prompt('Paste the authorization code:')
+      if (code) {
+        await api.exchangeCode(code)
+        const usage = await api.getUsage()
+        dispatch({ type: 'SET_USAGE', payload: usage })
+      }
+    } catch (err) {
+      console.error('OAuth connect failed:', err)
+    }
+  }, [dispatch])
 
-  const handleOAuthDisconnect = useCallback(() => {
-    api.disconnectOAuth()
-  }, [])
+  const handleOAuthDisconnect = useCallback(async () => {
+    try {
+      await api.disconnectUsage()
+      dispatch({ type: 'SET_USAGE', payload: null })
+    } catch (err) {
+      console.error('OAuth disconnect failed:', err)
+    }
+  }, [dispatch])
 
   return (
     <div className="modal-overlay" onClick={onClose}>
