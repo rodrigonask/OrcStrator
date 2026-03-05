@@ -12,6 +12,15 @@ import type {
 
 // === State ===
 
+interface StreamingToolCall {
+  toolId: string
+  toolName: string
+  input: string
+  output?: string
+  isError?: boolean
+  isRunning: boolean
+}
+
 interface State {
   folders: FolderConfig[]
   instances: InstanceConfig[]
@@ -19,6 +28,7 @@ interface State {
   selectedInstanceId: string | null
   messages: Record<string, ChatMessage[]>
   streamingContent: Record<string, string>
+  streamingToolCalls: Record<string, StreamingToolCall[]>
   unreadCounts: Record<string, number>
   sidebarCollapsed: boolean
   showFolderBrowser: boolean
@@ -45,6 +55,7 @@ const initialState: State = {
   selectedInstanceId: null,
   messages: {},
   streamingContent: {},
+  streamingToolCalls: {},
   unreadCounts: {},
   sidebarCollapsed: false,
   showFolderBrowser: false,
@@ -71,6 +82,9 @@ type Action =
   | { type: 'ADD_MESSAGE'; payload: ChatMessage }
   | { type: 'APPEND_STREAMING'; payload: { instanceId: string; text: string } }
   | { type: 'CLEAR_STREAMING'; payload: string }
+  | { type: 'TOOL_START'; payload: { instanceId: string; toolId: string; toolName: string } }
+  | { type: 'TOOL_INPUT_DELTA'; payload: { instanceId: string; toolId: string; input: string } }
+  | { type: 'TOOL_COMPLETE'; payload: { instanceId: string; toolId: string; output: string; isError?: boolean } }
   | { type: 'SET_MESSAGE_TOKENS'; payload: { instanceId: string; messageId: string; inputTokens?: number; outputTokens?: number; costUsd?: number } }
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' }
@@ -180,8 +194,49 @@ function reducer(state: State, action: Action): State {
     }
 
     case 'CLEAR_STREAMING': {
-      const { [action.payload]: _, ...rest } = state.streamingContent
-      return { ...state, streamingContent: rest }
+      const { [action.payload]: _sc, ...restSC } = state.streamingContent
+      const { [action.payload]: _stc, ...restSTC } = state.streamingToolCalls
+      return { ...state, streamingContent: restSC, streamingToolCalls: restSTC }
+    }
+
+    case 'TOOL_START': {
+      const { instanceId, toolId, toolName } = action.payload
+      const existing = state.streamingToolCalls[instanceId] || []
+      return {
+        ...state,
+        streamingToolCalls: {
+          ...state.streamingToolCalls,
+          [instanceId]: [...existing, { toolId, toolName, input: '', isRunning: true }],
+        },
+      }
+    }
+
+    case 'TOOL_INPUT_DELTA': {
+      const { instanceId, toolId, input } = action.payload
+      const calls = state.streamingToolCalls[instanceId] || []
+      return {
+        ...state,
+        streamingToolCalls: {
+          ...state.streamingToolCalls,
+          [instanceId]: calls.map(c =>
+            c.toolId === toolId ? { ...c, input: c.input + input } : c
+          ),
+        },
+      }
+    }
+
+    case 'TOOL_COMPLETE': {
+      const { instanceId, toolId, output, isError } = action.payload
+      const calls = state.streamingToolCalls[instanceId] || []
+      return {
+        ...state,
+        streamingToolCalls: {
+          ...state.streamingToolCalls,
+          [instanceId]: calls.map(c =>
+            c.toolId === toolId ? { ...c, output, isError, isRunning: false } : c
+          ),
+        },
+      }
     }
 
     case 'SET_MESSAGE_TOKENS': {
@@ -319,6 +374,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         for (const event of events) {
           if (event.type === 'text-delta') {
             dispatch({ type: 'APPEND_STREAMING', payload: { instanceId, text: event.text } })
+          } else if (event.type === 'tool-start') {
+            dispatch({ type: 'TOOL_START', payload: { instanceId, toolId: event.toolId, toolName: event.toolName } })
+          } else if (event.type === 'tool-input-delta') {
+            dispatch({ type: 'TOOL_INPUT_DELTA', payload: { instanceId, toolId: event.toolId, input: event.input } })
+          } else if (event.type === 'tool-complete') {
+            dispatch({ type: 'TOOL_COMPLETE', payload: { instanceId, toolId: event.toolId, output: event.output, isError: event.isError } })
           }
         }
         dispatch({ type: 'INCREMENT_UNREAD', payload: instanceId })

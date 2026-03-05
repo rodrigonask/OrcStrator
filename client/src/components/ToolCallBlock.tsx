@@ -9,7 +9,7 @@ interface ToolCallBlockProps {
 }
 
 export function ToolCallBlock({ toolName, input, output, isError, isRunning }: ToolCallBlockProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
 
   const summary = (() => {
     try {
