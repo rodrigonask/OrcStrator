@@ -177,6 +177,32 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
         </div>
 
         <div className="task-detail-body">
+          {task.column === 'staging' && task.title.startsWith('[ACTION NEEDED]') && (
+            <div style={{
+              background: 'rgba(245,158,11,0.12)',
+              border: '1px solid rgba(245,158,11,0.4)',
+              borderRadius: 8,
+              padding: '12px 14px',
+              marginBottom: 12,
+              fontSize: 13,
+            }}>
+              <div style={{ fontWeight: 600, color: '#f59e0b', marginBottom: 6 }}>
+                Action required from you
+              </div>
+              <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, color: 'var(--text-primary)' }}>
+                <li>Read the agent note in the description and comments below</li>
+                <li>Complete the required action (edit a file, add a credential, etc.)</li>
+                <li>Add a comment confirming what you did</li>
+                <li>
+                  Use <strong>Move to...</strong> to route it forward:
+                  <ul style={{ paddingLeft: 16, marginTop: 2 }}>
+                    <li><strong>build</strong> — agent resumes implementation</li>
+                    <li><strong>done</strong> — fully resolved, no further agent action</li>
+                  </ul>
+                </li>
+              </ol>
+            </div>
+          )}
           {/* Title */}
           <div className="task-detail-section">
             <input
