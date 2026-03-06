@@ -34,6 +34,7 @@ export function GameScreen() {
   useEffect(() => {
     if (!containerRef.current) return
 
+    let cancelled = false
     const app = new Application()
     appRef.current = app
 
@@ -42,8 +43,11 @@ export function GameScreen() {
       height: GAME_H,
       background: 0x0d0d1a,
       antialias: true,
+    }).catch((err) => {
+      console.warn('[GameScreen] PixiJS init failed (HMR/StrictMode):', err.message)
     }).then(() => {
-      if (!containerRef.current) return
+      if (!app.canvas) return // init failed
+      if (cancelled || !containerRef.current) return
 
       const canvas = app.canvas as HTMLCanvasElement
       canvas.style.width  = '100%'
@@ -136,11 +140,12 @@ export function GameScreen() {
     })
 
     return () => {
+      cancelled = true
       attackAnimatorRef.current?.destroy()
       attackAnimatorRef.current = null
       monsterPanelRef.current?.destroy()
       monsterPanelRef.current = null
-      app.destroy(true)
+      try { app.destroy(true) } catch { /* PixiJS may throw if init never completed */ }
       appRef.current   = null
       panelRef.current = null
     }
