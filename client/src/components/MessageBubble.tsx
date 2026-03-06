@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify'
 import type { ChatMessage, MessageContentBlock } from '@shared/types'
 import { ToolCallBlock } from './ToolCallBlock'
 import { summarizeToolCalls } from '../utils/toolFormat'
+import { getOrcQuip } from '../utils/orcQuips'
 
 // Configure marked once at module level
 marked.setOptions({ breaks: true })
@@ -35,6 +36,40 @@ function formatTimestamp(ts: number): string {
   return `${days[date.getDay()]} ${date.getDate()} ${time}`
 }
 
+interface OrcBriefBubbleProps {
+  taskTitle: string
+  taskId: string
+  instanceName: string
+  fullPrompt: string
+  createdAt: number
+  messageId: string
+}
+
+function OrcBriefBubble({ taskTitle, instanceName, fullPrompt, createdAt, messageId }: OrcBriefBubbleProps) {
+  const [expanded, setExpanded] = useState(false)
+  const quip = getOrcQuip(instanceName, taskTitle, messageId)
+
+  return (
+    <div className="orc-brief-bubble">
+      <div className="orc-brief-header">
+        <span className="orc-brief-icon">⚡</span>
+        <span className="orc-brief-quip">{quip}</span>
+      </div>
+      <button className="orc-brief-toggle" onClick={() => setExpanded(e => !e)}>
+        {expanded ? 'Hide brief ↑' : 'View full brief ↓'}
+      </button>
+      {expanded && (
+        <div className="orc-brief-full">
+          <pre className="orc-brief-text">{fullPrompt}</pre>
+        </div>
+      )}
+      {createdAt && (
+        <div className="message-timestamp">{formatTimestamp(createdAt)}</div>
+      )}
+    </div>
+  )
+}
+
 export const MessageBubble = memo(function MessageBubble({ message, toolResults }: MessageBubbleProps) {
   const { role, content, createdAt } = message
   const [toolsExpanded, setToolsExpanded] = useState(false)
@@ -47,6 +82,24 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
     () => summarizeToolCalls(toolCallBlocks.map(b => ({ toolName: (b as { type: 'tool-call'; toolName: string }).toolName }))),
     [toolCallBlocks]
   )
+
+  const orcBriefBlock = content[0]?.type === 'orc-brief'
+    ? content[0] as { type: 'orc-brief'; taskTitle: string; taskId: string; instanceName: string }
+    : null
+
+  if (orcBriefBlock) {
+    const textBlock = content.find(b => b.type === 'text') as { type: 'text'; text: string } | undefined
+    return (
+      <OrcBriefBubble
+        taskTitle={orcBriefBlock.taskTitle}
+        taskId={orcBriefBlock.taskId}
+        instanceName={orcBriefBlock.instanceName}
+        fullPrompt={textBlock?.text ?? ''}
+        createdAt={createdAt}
+        messageId={message.id}
+      />
+    )
+  }
 
   const nonToolContent = content.filter(b => b.type !== 'tool-call' && b.type !== 'tool-result')
   const hasSummary = role === 'assistant' && toolCallBlocks.length > 0

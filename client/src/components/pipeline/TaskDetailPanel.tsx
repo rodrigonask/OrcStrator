@@ -82,6 +82,14 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [comments])
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
   const handleSave = useCallback(async () => {
     try {
       await updateTask(task.id, { title, description, priority, labels })

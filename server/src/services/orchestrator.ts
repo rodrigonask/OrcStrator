@@ -315,7 +315,15 @@ class OrchestratorService {
 
     // Save orchestrator prompt as a user message so it's visible in the session
     const msgId = crypto.randomUUID()
-    const msgContent: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }]
+    const msgContent: Array<Record<string, unknown>> = [
+      {
+        type: 'orc-brief',
+        taskTitle: task.title as string,
+        taskId: task.id as string,
+        instanceName: instance.name as string,
+      },
+      { type: 'text', text: prompt },
+    ]
     if (taskImages) {
       for (const img of taskImages) {
         msgContent.push({ type: 'image', base64: img.base64, mediaType: img.mediaType })
@@ -417,6 +425,35 @@ class OrchestratorService {
     parts.push(scopeConstraint)
     parts.push('---')
 
+    // Planner: require proof-of-completion screenshot section in every spec
+    if (role === 'planner') {
+      const proofReq = [
+        '## PROOF OF COMPLETION — MANDATORY SPEC SECTION',
+        '',
+        'Every spec you write MUST include a `## Proof of Completion Screenshot` section',
+        'placed immediately BEFORE the `## Acceptance Criteria` section.',
+        '',
+        '**For visual / UI tasks — use this format:**',
+        '  ## Proof of Completion Screenshot',
+        '  - URL: /pipeline  (or whichever route shows the feature)',
+        '  - State: describe the exact visible state',
+        '    e.g. "task detail panel is closed, pipeline board is fully visible"',
+        '  - Filename: proof-FIX06-esc-close.png  (task code must appear in the name)',
+        '',
+        '**For backend / non-visual tasks — use this format:**',
+        '  ## Proof of Completion Screenshot',
+        '  No screenshot needed.',
+        '  CI gate: `npx tsc --noEmit` in server/ exits 0 with zero errors.',
+        '',
+        'Rules:',
+        '- Filename must be unique per task (include the task code: FIX-06, UI-11, etc.)',
+        '- State description must be specific enough for the tester to reproduce mechanically',
+        '- When in doubt, require a screenshot — it costs the tester 1 playwriter command',
+      ].join('\n')
+      parts.push(proofReq)
+      parts.push('---')
+    }
+
     // Tester: inject playwriter-only browser rules before master prompt
     if (role === 'tester') {
       const browserRules = [
@@ -447,6 +484,24 @@ class OrchestratorService {
         '  Do NOT switch to playwright MCP as a fallback',
         '- Screenshots use relative paths (e.g. `"shot.png"`) — absolute paths outside nasklaude throw EPERM',
         '- `page.evaluate()` multi-statement calls time out — use one return expression per call',
+        '',
+        '## PROOF SCREENSHOT — MANDATORY',
+        '',
+        'After all QA checks pass, read the `## Proof of Completion Screenshot` section',
+        'of your task spec (in the description).',
+        '',
+        'If a screenshot filename is specified:',
+        '1. Navigate to the specified URL in playwriter',
+        '2. Reproduce the specified state',
+        '3. `playwriter -e \'page.screenshot({ path: "proof-TASKCODE.png" })\'`',
+        '4. Post a task comment in EXACTLY this format (replace placeholders):',
+        '   Proof screenshot: proof-TASKCODE.png — [one sentence: what is visible]',
+        '',
+        'If the spec says "No screenshot needed":',
+        '- Run the specified CI gate command',
+        '- Post a comment: Proof screenshot: N/A — [CI gate result, e.g. "tsc exits 0"]',
+        '',
+        'DO NOT move the task to ship without posting the proof comment.',
       ].join('\n')
       parts.push(browserRules)
       parts.push('---')

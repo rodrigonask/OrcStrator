@@ -47,6 +47,7 @@ export type MessageContentBlock =
   | { type: 'tool-result'; toolId: string; output: string; isError?: boolean }
   | { type: 'cost'; inputTokens: number; outputTokens: number; costUsd?: number; durationMs?: number }
   | { type: 'error'; message: string }
+  | { type: 'orc-brief'; taskTitle: string; taskId: string; instanceName: string }
 
 export interface ChatMessage {
   id: string
