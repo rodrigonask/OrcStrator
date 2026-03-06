@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api } from '../api'
 import { useUI } from './UIContext'
 import type { PipelineTask, PipelineColumn, PipelineEvent } from '@shared/types'
@@ -37,26 +37,30 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
   const [tasks, setTasks] = useState<PipelineTask[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Monotonic counter — stale fetches (incremented ID != current) are discarded
+  const fetchSeqRef = useRef(0)
 
   const fetchTasks = useCallback(async () => {
     if (!activePipelineId) {
       setTasks([])
       return
     }
+    const seq = ++fetchSeqRef.current
     setLoading(true)
     setError(null)
     try {
       const data = await api.getProjectPipeline(activePipelineId)
-      setTasks(data)
+      if (seq === fetchSeqRef.current) setTasks(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load pipeline')
+      if (seq === fetchSeqRef.current) setError(err instanceof Error ? err.message : 'Failed to load pipeline')
     } finally {
-      setLoading(false)
+      if (seq === fetchSeqRef.current) setLoading(false)
     }
   }, [activePipelineId])
 
-  // Fetch when active pipeline changes
+  // Fetch when active pipeline changes — clear stale tasks immediately
   useEffect(() => {
+    setTasks([])
     fetchTasks()
   }, [fetchTasks])
 

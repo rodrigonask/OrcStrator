@@ -3,6 +3,7 @@ import type { FolderConfig } from '@shared/types'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
+import { randomName } from '../utils/naming'
 
 interface LaunchTeamModalProps {
   folder: FolderConfig
@@ -43,7 +44,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
       for (const row of selected) {
         const instance = await api.createInstance({
           folderId: folder.id,
-          name: agentNames[row.role],
+          name: randomName(settings.namingTheme || 'fruits'),
           cwd: folder.path,
         })
         // Set role, specialization, orchestratorManaged
