@@ -18,13 +18,22 @@ function hasVisibleContent(msg: ChatMessage): boolean {
   })
 }
 
-function isToolOnlyMsg(msg: ChatMessage): boolean {
-  return msg.role === 'assistant' && msg.content.every(b => b.type === 'tool-call')
+const TERSE_CHAR_THRESHOLD = 60
+
+function isTerseAgentMsg(msg: ChatMessage): boolean {
+  if (msg.role !== 'assistant') return false
+  const toolCalls = msg.content.filter(b => b.type === 'tool-call')
+  if (toolCalls.length === 0) return false
+  const totalText = msg.content
+    .filter(b => b.type === 'text')
+    .map(b => (b as { type: 'text'; text: string }).text.trim())
+    .join('')
+  return totalText.length <= TERSE_CHAR_THRESHOLD
 }
 
 type MsgGroup =
   | { kind: 'single'; msg: ChatMessage }
-  | { kind: 'tools'; msgs: ChatMessage[] }
+  | { kind: 'tools'; msgs: ChatMessage[]; tersePhrases: string[] }
 
 export function MessageList() {
   const { selectedInstanceId: instanceId } = useUI()
@@ -73,18 +82,26 @@ export function MessageList() {
   const groups = useMemo<MsgGroup[]>(() => {
     const result: MsgGroup[] = []
     let toolBatch: ChatMessage[] = []
+    let tersePhrases: string[] = []
     for (const msg of visibleMessages) {
-      if (isToolOnlyMsg(msg)) {
+      if (isTerseAgentMsg(msg)) {
         toolBatch.push(msg)
+        const phrase = msg.content
+          .filter(b => b.type === 'text')
+          .map(b => (b as { type: 'text'; text: string }).text.trim())
+          .join(' ')
+          .trim()
+        if (phrase) tersePhrases.push(phrase)
       } else {
         if (toolBatch.length > 0) {
-          result.push({ kind: 'tools', msgs: toolBatch })
+          result.push({ kind: 'tools', msgs: toolBatch, tersePhrases })
           toolBatch = []
+          tersePhrases = []
         }
         result.push({ kind: 'single', msg })
       }
     }
-    if (toolBatch.length > 0) result.push({ kind: 'tools', msgs: toolBatch })
+    if (toolBatch.length > 0) result.push({ kind: 'tools', msgs: toolBatch, tersePhrases })
     return result
   }, [visibleMessages])
 
@@ -112,7 +129,7 @@ export function MessageList() {
       {groups.map((group, i) =>
         group.kind === 'single'
           ? <MessageBubble key={group.msg.id} message={group.msg} toolResults={toolResults} />
-          : <CondensedToolChip key={group.msgs[0].id + '-group-' + i} msgs={group.msgs} toolResults={toolResults} />
+          : <CondensedToolChip key={group.msgs[0].id + '-group-' + i} msgs={group.msgs} toolResults={toolResults} tersePhrases={group.tersePhrases} />
       )}
       {showLiveTurn && (
         <div className="message-bubble assistant">
@@ -149,14 +166,17 @@ export function MessageList() {
 interface CondensedToolChipProps {
   msgs: ChatMessage[]
   toolResults: Map<string, { output: string; isError?: boolean }>
+  tersePhrases?: string[]
 }
 
-function CondensedToolChip({ msgs, toolResults }: CondensedToolChipProps) {
+function CondensedToolChip({ msgs, toolResults, tersePhrases }: CondensedToolChipProps) {
   const [expanded, setExpanded] = useState(false)
   const allToolCalls = msgs.flatMap(m =>
     m.content.filter(b => b.type === 'tool-call') as Array<{ type: 'tool-call'; toolId: string; toolName: string; input: string }>
   )
-  const label = summarizeToolCalls(allToolCalls)
+  const toolLabel = summarizeToolCalls(allToolCalls)
+  const phrasePrefix = tersePhrases && tersePhrases.length > 0 ? tersePhrases[0] : ''
+  const label = phrasePrefix ? `${phrasePrefix} · ${toolLabel}` : toolLabel
 
   return (
     <div className="condensed-tool-chip">

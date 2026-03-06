@@ -51,16 +51,22 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
   const nonToolContent = content.filter(b => b.type !== 'tool-call' && b.type !== 'tool-result')
   const hasSummary = role === 'assistant' && toolCallBlocks.length > 0
 
+  const TERSE_CHAR_THRESHOLD = 60
+  const totalNonToolText = nonToolContent
+    .filter(b => b.type === 'text')
+    .map(b => (b as { type: 'text'; text: string }).text.trim())
+    .join('')
   const isToolOnly = role === 'assistant' &&
     toolCallBlocks.length > 0 &&
-    nonToolContent.every(b => b.type !== 'text' || !(b as { type: 'text'; text: string }).text.trim()) &&
+    totalNonToolText.length <= TERSE_CHAR_THRESHOLD &&
     nonToolContent.every(b => b.type !== 'image')
+  const chipLabel = totalNonToolText ? `${totalNonToolText} · ${summary}` : summary
 
   if (isToolOnly) {
     return (
       <div className="tool-chip" onClick={() => setToolsExpanded(e => !e)}>
         <span className="tool-chip-icon">🔧</span>
-        <span className="tool-chip-text">{summary}</span>
+        <span className="tool-chip-text">{chipLabel}</span>
         <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
         {toolsExpanded && (
           <div className="tool-chip-expanded" onClick={e => e.stopPropagation()}>
