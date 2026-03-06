@@ -56,7 +56,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   // Spawn animation on mount
   useEffect(() => {
-    triggerAnim('anim-spawn', 1200)
+    triggerAnim('anim-spawn', 4200)
     if (soundEnabled) sounds.spawn()
     prevStateRef.current = instance.state
     prevMsgCountRef.current = messages.length
@@ -71,10 +71,10 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     if (prev === null || prev === instance.state) return
 
     if (instance.state === 'running') {
-      triggerAnim('anim-activate', 1600)
+      triggerAnim('anim-activate', 6500)
       if (soundEnabled) sounds.activate()
     } else if (prev === 'running') {
-      triggerAnim('anim-sleep', 2400)
+      triggerAnim('anim-sleep', 5500)
       if (soundEnabled) sounds.sleep()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -85,7 +85,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     const prev = prevMsgCountRef.current
     prevMsgCountRef.current = messages.length
     if (messages.length > prev && instance.state === 'running') {
-      triggerAnim('anim-heal', 1200)
+      triggerAnim('anim-heal', 4000)
       if (soundEnabled) sounds.heal()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,7 +142,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     if (animEnabled) {
       setIsRemoving(true)
       if (soundEnabled) sounds.remove()
-      setTimeout(() => deleteInstance(instance.id), 1560)
+      setTimeout(() => deleteInstance(instance.id), 3600)
     } else {
       deleteInstance(instance.id)
     }
@@ -158,7 +158,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   return (
     <div
-      className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} ${activeAnimClass}`}
+      className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${activeAnimClass}`}
       onClick={() => {
         selectInstance(instance.id)
         if (view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })

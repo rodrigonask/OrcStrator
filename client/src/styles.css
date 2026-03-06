@@ -606,6 +606,16 @@ body {
 .instance-state-dot.idle { background: var(--text-muted); }
 .instance-state-dot.paused { background: var(--warning); }
 
+.instance-item.state-idle,
+.instance-item.state-paused {
+  filter: saturate(0.08) brightness(0.72);
+  transition: filter 1.6s ease;
+}
+.instance-item.state-running {
+  filter: saturate(1) brightness(1);
+  transition: filter 0.6s ease;
+}
+
 .instance-info {
   flex: 1;
   min-width: 0;
@@ -4548,127 +4558,143 @@ body {
    Instance Card Animations
    ================================================ */
 
-/* --- Spawn: blue teleport materialisation --- */
+/* --- Spawn: blue teleport materialisation (4s) --- */
 @keyframes instance-spawn-in {
-  0%   { opacity: 0; transform: scaleY(0.4) scaleX(0.85); filter: brightness(3) saturate(0) hue-rotate(220deg); box-shadow: 0 0 0 0 rgba(59,130,246,0); }
-  25%  { opacity: 0.7; transform: scaleY(1.06) scaleX(1.02); filter: brightness(1.8) saturate(0.5) hue-rotate(220deg); box-shadow: 0 0 18px 6px rgba(59,130,246,0.55); }
-  55%  { opacity: 1; transform: scaleY(0.97) scaleX(1.01); filter: brightness(1.1) saturate(1); box-shadow: 0 0 8px 2px rgba(59,130,246,0.2); }
-  100% { opacity: 1; transform: scale(1); filter: none; box-shadow: none; }
+  0%   { opacity: 0; transform: scaleY(0.2) scaleX(0.7); filter: brightness(6) saturate(0) hue-rotate(220deg); box-shadow: 0 0 0 0 rgba(59,130,246,0); }
+  12%  { opacity: 0.9; transform: scaleY(1.12) scaleX(1.05); filter: brightness(3) saturate(0.3) hue-rotate(200deg); box-shadow: 0 0 40px 18px rgba(59,130,246,0.7); }
+  24%  { opacity: 1; transform: scaleY(0.93) scaleX(1.02); filter: brightness(1.8) saturate(0.7); box-shadow: 0 0 22px 8px rgba(59,130,246,0.45); }
+  40%  { transform: scaleY(1.05) scaleX(0.98); filter: brightness(1.3) saturate(0.9); box-shadow: 0 0 12px 4px rgba(59,130,246,0.25); }
+  58%  { transform: scaleY(0.98) scaleX(1.01); filter: brightness(1.08) saturate(1); box-shadow: 0 0 6px 2px rgba(59,130,246,0.1); }
+  78%  { transform: scale(1.01); filter: none; box-shadow: none; }
+  100% { transform: scale(1); filter: none; box-shadow: none; }
 }
 .instance-item.anim-spawn {
-  animation: instance-spawn-in 1.1s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation: instance-spawn-in 4s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 
-/* --- Activate: water fill + green ripple --- */
+/* --- Activate: explosive green power-up with ripple waves (6.5s) --- */
 @keyframes instance-activate-fill {
-  0%   { transform: translateY(100%); opacity: 0.6; }
-  55%  { transform: translateY(-5%); opacity: 0.35; }
-  100% { transform: translateY(-110%); opacity: 0; }
+  0%   { transform: translateY(110%); opacity: 0.9; }
+  30%  { transform: translateY(-8%); opacity: 0.6; }
+  50%  { transform: translateY(5%); opacity: 0.45; }
+  70%  { transform: translateY(-3%); opacity: 0.25; }
+  100% { transform: translateY(-120%); opacity: 0; }
 }
 @keyframes instance-activate-ripple {
-  0%   { box-shadow: 0 0 0 0 rgba(34,197,94,0.6); }
-  60%  { box-shadow: 0 0 0 8px rgba(34,197,94,0.15); }
-  100% { box-shadow: 0 0 0 14px rgba(34,197,94,0); }
+  0%   { box-shadow: 0 0 0 0 rgba(34,197,94,0.9); }
+  15%  { box-shadow: 0 0 0 12px rgba(34,197,94,0.5), 0 0 20px 4px rgba(134,239,172,0.4); }
+  35%  { box-shadow: 0 0 0 22px rgba(34,197,94,0.25), 0 0 35px 10px rgba(134,239,172,0.25); }
+  55%  { box-shadow: 0 0 0 30px rgba(34,197,94,0.1), 0 0 50px 16px rgba(134,239,172,0.12); }
+  75%  { box-shadow: 0 0 0 40px rgba(34,197,94,0.04), 0 0 60px 20px rgba(134,239,172,0.04); }
+  100% { box-shadow: 0 0 0 55px rgba(34,197,94,0), 0 0 0 0 rgba(134,239,172,0); }
 }
 .instance-item.anim-activate {
-  animation: instance-activate-ripple 1.5s ease-out forwards;
+  animation: instance-activate-ripple 6.5s ease-out forwards;
   overflow: hidden;
 }
 .instance-item.anim-activate::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(34,197,94,0.28) 0%, rgba(134,239,172,0.12) 60%, transparent 100%);
-  animation: instance-activate-fill 1.5s ease-out forwards;
+  background: linear-gradient(to top, rgba(34,197,94,0.45) 0%, rgba(134,239,172,0.2) 55%, transparent 100%);
+  animation: instance-activate-fill 6.5s ease-out forwards;
   pointer-events: none;
   z-index: 1;
 }
 
-/* --- Heal: WoW green sparkle burst --- */
+/* --- Heal: WoW green sparkle burst (4s) --- */
 @keyframes instance-heal-glow {
-  0%   { box-shadow: 0 0 0 0 rgba(134,239,172,0.8); }
-  40%  { box-shadow: 0 0 10px 5px rgba(134,239,172,0.4); }
+  0%   { box-shadow: 0 0 0 0 rgba(134,239,172,0.95); }
+  20%  { box-shadow: 0 0 18px 10px rgba(134,239,172,0.6), 0 0 35px 18px rgba(74,222,128,0.3); }
+  50%  { box-shadow: 0 0 12px 6px rgba(134,239,172,0.3), 0 0 50px 25px rgba(74,222,128,0.1); }
   100% { box-shadow: 0 0 0 0 rgba(134,239,172,0); }
 }
 @keyframes instance-heal-sparkle {
-  0%   { opacity: 1; transform: scale(0.5) translateY(0); }
-  60%  { opacity: 0.7; transform: scale(1.4) translateY(-4px); }
-  100% { opacity: 0; transform: scale(1.8) translateY(-10px); }
+  0%   { opacity: 1; transform: scale(0.4) translateY(0); }
+  25%  { opacity: 1; transform: scale(1.6) translateY(-6px); }
+  55%  { opacity: 0.7; transform: scale(2.2) translateY(-14px); }
+  100% { opacity: 0; transform: scale(2.8) translateY(-24px); }
 }
 .instance-item.anim-heal {
-  animation: instance-heal-glow 1.1s ease-out forwards;
+  animation: instance-heal-glow 4s ease-out forwards;
 }
 .instance-item.anim-heal::before {
-  content: '✦ ✦ ✦';
+  content: 'ss s';
   position: absolute;
   top: 2px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 9px;
+  font-size: 10px;
   color: #86efac;
-  letter-spacing: 4px;
-  animation: instance-heal-sparkle 1.1s ease-out forwards;
+  letter-spacing: 5px;
+  animation: instance-heal-sparkle 4s ease-out forwards;
   pointer-events: none;
   z-index: 10;
   white-space: nowrap;
 }
 
-/* --- Sleep: zzz float + desaturate --- */
+/* --- Sleep: dramatic power-down, zzz floats high (5.5s) --- */
 @keyframes instance-sleep-fade {
-  0%   { filter: saturate(1); }
-  35%  { filter: saturate(0) brightness(0.75); }
-  100% { filter: saturate(1) brightness(1); }
+  0%   { filter: saturate(1) brightness(1); }
+  20%  { filter: saturate(0.4) brightness(0.9); }
+  50%  { filter: saturate(0) brightness(0.5); }
+  80%  { filter: saturate(0) brightness(0.65); }
+  100% { filter: saturate(0.08) brightness(0.72); }
 }
 @keyframes instance-zzz-float {
   0%   { opacity: 1; transform: translateY(0) scale(1); }
-  80%  { opacity: 0.6; transform: translateY(-16px) scale(1.1); }
-  100% { opacity: 0; transform: translateY(-22px) scale(1.2); }
+  40%  { opacity: 0.9; transform: translateY(-10px) scale(1.05); }
+  70%  { opacity: 0.6; transform: translateY(-26px) scale(1.15); }
+  90%  { opacity: 0.2; transform: translateY(-38px) scale(1.25); }
+  100% { opacity: 0; transform: translateY(-46px) scale(1.3); }
 }
 .instance-item.anim-sleep {
-  animation: instance-sleep-fade 2.2s ease forwards;
+  animation: instance-sleep-fade 5.5s ease forwards;
 }
 .instance-item.anim-sleep::before {
   content: 'zzz';
   position: absolute;
   top: -4px;
   right: 28px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
-  letter-spacing: 1px;
-  animation: instance-zzz-float 2.2s ease forwards;
+  letter-spacing: 2px;
+  animation: instance-zzz-float 5.5s ease forwards;
   pointer-events: none;
   z-index: 10;
 }
 
-/* --- Remove: hit + shake + dark + smoke --- */
+/* --- Remove: brutal hit + disintegrate (3.5s) --- */
 @keyframes instance-remove-blood {
   0%   { opacity: 0; transform: scale(0); }
-  25%  { opacity: 0.85; transform: scale(1); }
-  100% { opacity: 0; transform: scale(2.5); }
+  18%  { opacity: 0.95; transform: scale(1.1); }
+  60%  { opacity: 0.6; transform: scale(1.8); }
+  100% { opacity: 0; transform: scale(3); }
 }
 @keyframes instance-remove-out {
   0%   { transform: rotate(0deg) scale(1); opacity: 1; filter: brightness(1); box-shadow: inset 0 0 0 0 rgba(239,68,68,0); }
-  10%  { transform: rotate(22deg) scale(1.02); filter: brightness(1.5); box-shadow: inset 0 0 24px 6px rgba(239,68,68,0.5); }
-  25%  { transform: rotate(-20deg) scale(0.98); }
-  40%  { transform: rotate(14deg); }
-  55%  { transform: rotate(-8deg); }
-  68%  { transform: rotate(4deg); filter: brightness(0.7); }
-  80%  { transform: rotate(-2deg) scale(0.9); opacity: 0.7; filter: brightness(0.3) saturate(0); }
-  100% { transform: rotate(0deg) scale(0.7) translateY(4px); opacity: 0; filter: brightness(0) saturate(0); }
+  8%   { transform: rotate(28deg) scale(1.04); filter: brightness(2); box-shadow: inset 0 0 30px 10px rgba(239,68,68,0.7); }
+  18%  { transform: rotate(-24deg) scale(0.97); filter: brightness(1.6); }
+  30%  { transform: rotate(18deg) scale(1.01); filter: brightness(1.2); }
+  42%  { transform: rotate(-12deg); }
+  54%  { transform: rotate(8deg); filter: brightness(0.9); }
+  65%  { transform: rotate(-5deg); filter: brightness(0.6) saturate(0.4); }
+  80%  { transform: rotate(2deg) scale(0.88); opacity: 0.6; filter: brightness(0.3) saturate(0); }
+  100% { transform: rotate(0deg) scale(0.65) translateY(6px); opacity: 0; filter: brightness(0) saturate(0); }
 }
 .instance-item.anim-remove {
-  animation: instance-remove-out 1.5s ease-in forwards;
+  animation: instance-remove-out 3.5s ease-in forwards;
   overflow: hidden;
 }
 .instance-item.anim-remove::after {
-  content: '💢';
+  content: 'X';
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
-  animation: instance-remove-blood 0.75s ease-out forwards;
+  font-size: 28px;
+  animation: instance-remove-blood 1.2s ease-out forwards;
   pointer-events: none;
   z-index: 10;
 }
