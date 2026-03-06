@@ -12,6 +12,11 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
     const instanceRows = db.prepare('SELECT * FROM instances ORDER BY sort_order ASC').all() as Record<string, unknown>[]
     const settingRows = db.prepare('SELECT key, value FROM settings').all() as Array<{ key: string; value: string }>
 
+    const lockedTaskRows = db.prepare(
+      "SELECT locked_by as instanceId, id as taskId, title as taskTitle FROM pipeline_tasks WHERE locked_by IS NOT NULL"
+    ).all() as Array<{ instanceId: string; taskId: string; taskTitle: string }>
+    const lockedByInstance = new Map(lockedTaskRows.map(r => [r.instanceId, { taskId: r.taskId, taskTitle: r.taskTitle }]))
+
     const folders: FolderConfig[] = folderRows.map(r => ({
       id: r.id as string,
       path: r.path as string,
@@ -45,6 +50,8 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       agentRole: r.agent_role as InstanceConfig['agentRole'],
       specialization: r.specialization as string | undefined,
       orchestratorManaged: Boolean(r.orchestrator_managed),
+      activeTaskId: lockedByInstance.get(r.id as string)?.taskId,
+      activeTaskTitle: lockedByInstance.get(r.id as string)?.taskTitle,
     }))
 
     const settings: Record<string, unknown> = {}

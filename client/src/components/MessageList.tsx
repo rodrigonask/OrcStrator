@@ -7,11 +7,24 @@ import { useAppDispatch } from '../context/AppDispatchContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { MessageBubble } from './MessageBubble'
 import { ActivityBubble } from './ActivityBubble'
-import { formatToolLabel } from '../utils/toolFormat'
+import { ToolCallBlock } from './ToolCallBlock'
+import { formatToolLabel, summarizeToolCalls } from '../utils/toolFormat'
 
 function hasVisibleContent(msg: ChatMessage): boolean {
-  return msg.content.some(b => b.type !== 'tool-result')
+  return msg.content.some(b => {
+    if (b.type === 'tool-result') return false
+    if (b.type === 'text' && !b.text?.trim()) return false
+    return true
+  })
 }
+
+function isToolOnlyMsg(msg: ChatMessage): boolean {
+  return msg.role === 'assistant' && msg.content.every(b => b.type === 'tool-call')
+}
+
+type MsgGroup =
+  | { kind: 'single'; msg: ChatMessage }
+  | { kind: 'tools'; msgs: ChatMessage[] }
 
 export function MessageList() {
   const { selectedInstanceId: instanceId } = useUI()
@@ -57,6 +70,24 @@ export function MessageList() {
 
   const visibleMessages = useMemo(() => messages.filter(hasVisibleContent), [messages])
 
+  const groups = useMemo<MsgGroup[]>(() => {
+    const result: MsgGroup[] = []
+    let toolBatch: ChatMessage[] = []
+    for (const msg of visibleMessages) {
+      if (isToolOnlyMsg(msg)) {
+        toolBatch.push(msg)
+      } else {
+        if (toolBatch.length > 0) {
+          result.push({ kind: 'tools', msgs: toolBatch })
+          toolBatch = []
+        }
+        result.push({ kind: 'single', msg })
+      }
+    }
+    if (toolBatch.length > 0) result.push({ kind: 'tools', msgs: toolBatch })
+    return result
+  }, [visibleMessages])
+
   if (visibleMessages.length === 0) {
     return (
       <div className="message-list" ref={scrollRef}>
@@ -78,9 +109,11 @@ export function MessageList() {
           </button>
         </div>
       )}
-      {visibleMessages.map(msg => (
-        <MessageBubble key={msg.id} message={msg} toolResults={toolResults} />
-      ))}
+      {groups.map((group, i) =>
+        group.kind === 'single'
+          ? <MessageBubble key={group.msg.id} message={group.msg} toolResults={toolResults} />
+          : <CondensedToolChip key={group.msgs[0].id + '-group-' + i} msgs={group.msgs} toolResults={toolResults} />
+      )}
       {showLiveTurn && (
         <div className="message-bubble assistant">
           {liveToolCalls.length > 0 && (() => {
@@ -107,6 +140,45 @@ export function MessageList() {
               <span /><span /><span />
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface CondensedToolChipProps {
+  msgs: ChatMessage[]
+  toolResults: Map<string, { output: string; isError?: boolean }>
+}
+
+function CondensedToolChip({ msgs, toolResults }: CondensedToolChipProps) {
+  const [expanded, setExpanded] = useState(false)
+  const allToolCalls = msgs.flatMap(m =>
+    m.content.filter(b => b.type === 'tool-call') as Array<{ type: 'tool-call'; toolId: string; toolName: string; input: string }>
+  )
+  const label = summarizeToolCalls(allToolCalls)
+
+  return (
+    <div className="condensed-tool-chip">
+      <button className="condensed-tool-chip-toggle" onClick={() => setExpanded(e => !e)}>
+        <span className="condensed-tool-chip-icon">{expanded ? '▾' : '▸'}</span>
+        {label}
+      </button>
+      {expanded && (
+        <div className="condensed-tool-chip-body">
+          {allToolCalls.map(tc => {
+            const result = toolResults.get(tc.toolId)
+            return (
+              <ToolCallBlock
+                key={tc.toolId}
+                toolName={tc.toolName}
+                input={tc.input}
+                output={result?.output}
+                isError={result?.isError}
+                isRunning={false}
+              />
+            )
+          })}
         </div>
       )}
     </div>

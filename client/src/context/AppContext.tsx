@@ -498,6 +498,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
 
     unsubs.push(
+      api.onOrchestratorLockReleased((payload: { taskId: string; reason: string }) => {
+        const inst = stateRef.current.instances.find(i => i.activeTaskId === payload.taskId)
+        if (inst) {
+          dispatch({ type: 'UPDATE_INSTANCE', payload: { id: inst.id, updates: { activeTaskId: undefined, activeTaskTitle: undefined } } })
+        }
+      })
+    )
+
+    unsubs.push(
       api.onOrchestratorStatus((payload: { folderId: string; active: boolean; idleAgents: number; pendingTasks: number }) => {
         dispatch({ type: 'UPDATE_FOLDER', payload: { id: payload.folderId, updates: { orchestratorActive: payload.active } } })
       })

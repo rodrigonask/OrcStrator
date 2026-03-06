@@ -270,6 +270,9 @@ class OrchestratorService {
     })
     lockTx()
 
+    // Mark as running immediately so concurrent assignWork calls see it as busy
+    db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(instanceId)
+
     // Build prompt
     const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown>
     const prompt = this.buildPrompt(tasksToLock, task, instance, folder)
@@ -323,6 +326,7 @@ class OrchestratorService {
       for (const t of tasksToLock) {
         db.prepare('UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE id = ?').run(t.id)
       }
+      db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(instanceId)
       return
     }
 
