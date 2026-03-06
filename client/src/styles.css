@@ -4546,7 +4546,7 @@ body {
   100% { opacity: 1; transform: scale(1); filter: none; box-shadow: none; }
 }
 .instance-item.anim-spawn {
-  animation: instance-spawn-in 0.55s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation: instance-spawn-in 1.1s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 
 /* --- Activate: water fill + green ripple --- */
@@ -4561,7 +4561,7 @@ body {
   100% { box-shadow: 0 0 0 14px rgba(34,197,94,0); }
 }
 .instance-item.anim-activate {
-  animation: instance-activate-ripple 0.75s ease-out forwards;
+  animation: instance-activate-ripple 1.5s ease-out forwards;
   overflow: hidden;
 }
 .instance-item.anim-activate::after {
@@ -4569,7 +4569,7 @@ body {
   position: absolute;
   inset: 0;
   background: linear-gradient(to top, rgba(34,197,94,0.28) 0%, rgba(134,239,172,0.12) 60%, transparent 100%);
-  animation: instance-activate-fill 0.75s ease-out forwards;
+  animation: instance-activate-fill 1.5s ease-out forwards;
   pointer-events: none;
   z-index: 1;
 }
@@ -4586,7 +4586,7 @@ body {
   100% { opacity: 0; transform: scale(1.8) translateY(-10px); }
 }
 .instance-item.anim-heal {
-  animation: instance-heal-glow 0.55s ease-out forwards;
+  animation: instance-heal-glow 1.1s ease-out forwards;
 }
 .instance-item.anim-heal::before {
   content: '✦ ✦ ✦';
@@ -4597,7 +4597,7 @@ body {
   font-size: 9px;
   color: #86efac;
   letter-spacing: 4px;
-  animation: instance-heal-sparkle 0.55s ease-out forwards;
+  animation: instance-heal-sparkle 1.1s ease-out forwards;
   pointer-events: none;
   z-index: 10;
   white-space: nowrap;
@@ -4615,7 +4615,7 @@ body {
   100% { opacity: 0; transform: translateY(-22px) scale(1.2); }
 }
 .instance-item.anim-sleep {
-  animation: instance-sleep-fade 1.1s ease forwards;
+  animation: instance-sleep-fade 2.2s ease forwards;
 }
 .instance-item.anim-sleep::before {
   content: 'zzz';
@@ -4625,7 +4625,7 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   letter-spacing: 1px;
-  animation: instance-zzz-float 1.1s ease forwards;
+  animation: instance-zzz-float 2.2s ease forwards;
   pointer-events: none;
   z-index: 10;
 }
@@ -4647,7 +4647,7 @@ body {
   100% { transform: rotate(0deg) scale(0.7) translateY(4px); opacity: 0; filter: brightness(0) saturate(0); }
 }
 .instance-item.anim-remove {
-  animation: instance-remove-out 0.75s ease-in forwards;
+  animation: instance-remove-out 1.5s ease-in forwards;
   overflow: hidden;
 }
 .instance-item.anim-remove::after {

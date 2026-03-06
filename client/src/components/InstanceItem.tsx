@@ -56,7 +56,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   // Spawn animation on mount
   useEffect(() => {
-    triggerAnim('anim-spawn', 600)
+    triggerAnim('anim-spawn', 1200)
     if (soundEnabled) sounds.spawn()
     prevStateRef.current = instance.state
     prevMsgCountRef.current = messages.length
@@ -71,10 +71,10 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     if (prev === null || prev === instance.state) return
 
     if (instance.state === 'running') {
-      triggerAnim('anim-activate', 800)
+      triggerAnim('anim-activate', 1600)
       if (soundEnabled) sounds.activate()
     } else if (prev === 'running') {
-      triggerAnim('anim-sleep', 1200)
+      triggerAnim('anim-sleep', 2400)
       if (soundEnabled) sounds.sleep()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -85,7 +85,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     const prev = prevMsgCountRef.current
     prevMsgCountRef.current = messages.length
     if (messages.length > prev && instance.state === 'running') {
-      triggerAnim('anim-heal', 600)
+      triggerAnim('anim-heal', 1200)
       if (soundEnabled) sounds.heal()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,7 +142,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     if (animEnabled) {
       setIsRemoving(true)
       if (soundEnabled) sounds.remove()
-      setTimeout(() => deleteInstance(instance.id), 780)
+      setTimeout(() => deleteInstance(instance.id), 1560)
     } else {
       deleteInstance(instance.id)
     }
