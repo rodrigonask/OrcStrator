@@ -1252,6 +1252,21 @@ body {
   font-weight: 500;
   line-height: 1.4;
 }
+.orc-brief-task-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.orc-brief-task-link:hover {
+  text-decoration-style: solid;
+  opacity: 0.85;
+}
 .orc-brief-toggle {
   display: block;
   margin-top: 6px;
@@ -2536,6 +2551,46 @@ body {
   flex-shrink: 0;
 }
 
+.pipeline-search-wrapper {
+  position: relative;
+  flex: 1;
+  max-width: 280px;
+  margin: 0 12px;
+}
+.pipeline-search-input {
+  width: 100%;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.pipeline-search-input:focus {
+  border-color: var(--accent);
+}
+.pipeline-search-input::placeholder {
+  color: var(--text-muted);
+}
+.pipeline-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  line-height: 1;
+}
+.pipeline-search-clear:hover {
+  color: var(--text-primary);
+}
+
 .pipeline-title {
   font-size: 16px;
   font-weight: 600;
@@ -2966,15 +3021,13 @@ body {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 12px;
-  max-height: 300px;
-  overflow-y: auto;
   padding-right: 4px;
 }
 
 .task-comment {
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .task-comment-human { border-color: var(--border); }

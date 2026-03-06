@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import type { PipelineTask, PipelineColumn } from '@shared/types'
 import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
@@ -26,8 +26,23 @@ export function PipelineBoard() {
   const [showCreate, setShowCreate] = useState(false)
   const [editingColumn, setEditingColumn] = useState<PipelineColumn | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
 
   const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
+
+  const filteredTasksByColumn = useMemo(() => {
+    if (!searchQuery.trim()) return pipeline.tasksByColumn
+    const q = searchQuery.toLowerCase()
+    const result: Record<string, PipelineTask[]> = {}
+    for (const col of PIPELINE_COLUMNS) {
+      result[col] = (pipeline.tasksByColumn[col] || []).filter(task =>
+        task.title.toLowerCase().includes(q) ||
+        (task.description || '').toLowerCase().includes(q) ||
+        task.labels.some(l => l.toLowerCase().includes(q))
+      )
+    }
+    return result
+  }, [pipeline.tasksByColumn, searchQuery])
 
   const projectId = activePipelineId || folders[0]?.id || ''
   const [dragOverColumn, setDragOverColumn] = useState<PipelineColumn | null>(null)
@@ -78,6 +93,25 @@ export function PipelineBoard() {
     <div className="pipeline-board">
       <div className="pipeline-header">
         <span className="pipeline-title">Pipeline Board</span>
+        <div className="pipeline-search-wrapper">
+          <input
+            className="pipeline-search-input"
+            type="text"
+            placeholder="Search tasks..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') setSearchQuery('') }}
+          />
+          {searchQuery && (
+            <button
+              className="pipeline-search-clear"
+              onClick={() => setSearchQuery('')}
+              title="Clear search"
+            >
+              ×
+            </button>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             className="btn btn-sm"
@@ -104,7 +138,7 @@ export function PipelineBoard() {
       <div className="pipeline-content">
       <div className="pipeline-columns">
         {PIPELINE_COLUMNS.map(col => {
-          const colTasks = pipeline.tasksByColumn[col]
+          const colTasks = filteredTasksByColumn[col] || []
           const isDragOver = dragOverColumn === col
           return (
             <div
@@ -133,7 +167,11 @@ export function PipelineBoard() {
                     {columnLabels[col]}
                   </span>
                 )}
-                <span className="pipeline-column-count">{colTasks.length}</span>
+                <span className="pipeline-column-count">
+                  {searchQuery
+                    ? `${colTasks.length}/${(pipeline.tasksByColumn[col] || []).length}`
+                    : colTasks.length}
+                </span>
                 {COLUMN_TO_ROLE[col] && (() => {
                   const role = COLUMN_TO_ROLE[col]!
                   const match = instances.find(

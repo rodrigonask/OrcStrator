@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -174,13 +174,26 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     : hasRunning ? 'active'
     : 'all-idle'
 
+  const safeDragProps = useMemo(() => {
+    if (!dragHandleProps) return {}
+    const props = { ...(dragHandleProps as Record<string, unknown>) }
+    const origPointerDown = props.onPointerDown as ((e: React.PointerEvent) => void) | undefined
+    if (origPointerDown) {
+      props.onPointerDown = (e: React.PointerEvent) => {
+        if (e.button === 2) return // let right-click through for context menu
+        origPointerDown(e)
+      }
+    }
+    return props
+  }, [dragHandleProps])
+
   return (
     <div className={`folder-group${folder.stealthMode ? ' stealth' : ''}`}>
       <div
         className="folder-header"
         onClick={toggleExpanded}
         onContextMenu={handleContextMenu}
-        {...(dragHandleProps as React.HTMLAttributes<HTMLDivElement>)}
+        {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
       >
         <div
           className="folder-color-bar"

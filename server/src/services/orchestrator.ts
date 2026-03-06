@@ -321,6 +321,7 @@ class OrchestratorService {
         taskTitle: task.title as string,
         taskId: task.id as string,
         instanceName: instance.name as string,
+        projectId: folderId,
       },
       { type: 'text', text: prompt },
     ]

@@ -5,6 +5,7 @@ import type { ChatMessage, MessageContentBlock } from '@shared/types'
 import { ToolCallBlock } from './ToolCallBlock'
 import { summarizeToolCalls } from '../utils/toolFormat'
 import { getOrcQuip } from '../utils/orcQuips'
+import { useAppDispatch } from '../context/AppDispatchContext'
 
 // Configure marked once at module level
 marked.setOptions({ breaks: true })
@@ -40,20 +41,45 @@ interface OrcBriefBubbleProps {
   taskTitle: string
   taskId: string
   instanceName: string
+  projectId?: string
   fullPrompt: string
   createdAt: number
   messageId: string
 }
 
-function OrcBriefBubble({ taskTitle, instanceName, fullPrompt, createdAt, messageId }: OrcBriefBubbleProps) {
+function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, createdAt, messageId }: OrcBriefBubbleProps) {
   const [expanded, setExpanded] = useState(false)
-  const quip = getOrcQuip(instanceName, taskTitle, messageId)
+  const { dispatch } = useAppDispatch()
+  const quip = getOrcQuip(instanceName, messageId)
+  const parts = quip.split('{task}')
+
+  const handleTaskClick = () => {
+    if (projectId) {
+      dispatch({ type: 'SET_PIPELINE_PROJECT', projectId })
+    }
+    dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
+  }
 
   return (
     <div className="orc-brief-bubble">
       <div className="orc-brief-header">
         <span className="orc-brief-icon">⚡</span>
-        <span className="orc-brief-quip">{quip}</span>
+        <span className="orc-brief-quip">
+          {parts.map((part, i) => (
+            <span key={i}>
+              {part}
+              {i < parts.length - 1 && (
+                <button
+                  className="orc-brief-task-link"
+                  onClick={handleTaskClick}
+                  title={taskTitle}
+                >
+                  {taskTitle}
+                </button>
+              )}
+            </span>
+          ))}
+        </span>
       </div>
       <button className="orc-brief-toggle" onClick={() => setExpanded(e => !e)}>
         {expanded ? 'Hide brief ↑' : 'View full brief ↓'}
@@ -84,7 +110,7 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
   )
 
   const orcBriefBlock = content[0]?.type === 'orc-brief'
-    ? content[0] as { type: 'orc-brief'; taskTitle: string; taskId: string; instanceName: string }
+    ? content[0] as { type: 'orc-brief'; taskTitle: string; taskId: string; instanceName: string; projectId?: string }
     : null
 
   if (orcBriefBlock) {
@@ -94,6 +120,7 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
         taskTitle={orcBriefBlock.taskTitle}
         taskId={orcBriefBlock.taskId}
         instanceName={orcBriefBlock.instanceName}
+        projectId={orcBriefBlock.projectId}
         fullPrompt={textBlock?.text ?? ''}
         createdAt={createdAt}
         messageId={message.id}

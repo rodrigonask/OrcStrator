@@ -51,9 +51,8 @@ export const ORC_QUIPS: string[] = [
   "The Orc's favorite child is whoever just shipped. Today that could be {name}. {task} is how you become my favorite.",
 ]
 
-export function getOrcQuip(instanceName: string, taskTitle: string, seed: string): string {
+export function getOrcQuip(instanceName: string, seed: string): string {
   const idx = seed.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) & 0xffff, 0) % ORC_QUIPS.length
   return ORC_QUIPS[idx]
     .replace(/{name}/g, instanceName)
-    .replace(/{task}/g, taskTitle)
 }

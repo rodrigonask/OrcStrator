@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
@@ -156,6 +156,19 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   const activeAnimClass = isRemoving ? 'anim-remove' : (animClass || '')
 
+  const safeDragProps = useMemo(() => {
+    if (!dragHandleProps) return {}
+    const props = { ...(dragHandleProps as Record<string, unknown>) }
+    const origPointerDown = props.onPointerDown as ((e: React.PointerEvent) => void) | undefined
+    if (origPointerDown) {
+      props.onPointerDown = (e: React.PointerEvent) => {
+        if (e.button === 2) return // let right-click through for context menu
+        origPointerDown(e)
+      }
+    }
+    return props
+  }, [dragHandleProps])
+
   return (
     <div
       className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${activeAnimClass}`}
@@ -164,7 +177,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
         if (view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
       }}
       onContextMenu={handleContextMenu}
-      {...(dragHandleProps as React.HTMLAttributes<HTMLDivElement>)}
+      {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
     >
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
@@ -186,7 +199,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
         </div>
         {instance.orchestratorManaged && instance.activeTaskTitle && instance.state === 'running' && (
           <div className="instance-active-task">
-            working on{' '}
+            <span className="instance-active-task-elapsed">{elapsedMins}m</span>{' on '}
             <button
               className="instance-active-task-link"
               onClick={(e) => {
@@ -200,7 +213,6 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
                 ? instance.activeTaskTitle.slice(0, 35) + '...'
                 : instance.activeTaskTitle}
             </button>
-            {elapsedMins > 0 && <span className="instance-active-task-elapsed"> {elapsedMins}m</span>}
           </div>
         )}
       </div>

@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { PipelineTask, PipelineColumn, TaskComment } from '@shared/types'
-import { PIPELINE_COLUMNS } from '@shared/constants'
+import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
 import { rest } from '../../api/rest'
 import { useUI } from '../../context/UIContext'
@@ -58,7 +58,9 @@ const PRIORITY_LABELS: Record<number, string> = {
 
 export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const { updateTask, moveTask, claimTask, blockTask, unblockTask, deleteTask } = usePipeline()
-  const { activePipelineId } = useUI()
+  const { activePipelineId, settings } = useUI()
+  const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
+  const colLabel = (key: string | undefined) => key ? (columnLabels[key as PipelineColumn] ?? key) : ''
   const { folders } = useInstances()
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
@@ -373,7 +375,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
                   <span>
                     <AgentLabel agentId={entry.agent} />{' '}
                     {entry.action}
-                    {entry.from && entry.to && ` from ${entry.from} to ${entry.to}`}
+                    {entry.from && entry.to && ` from ${colLabel(entry.from)} to ${colLabel(entry.to)}`}
                     {entry.note && ` - ${entry.note}`}
                   </span>
                 </div>
