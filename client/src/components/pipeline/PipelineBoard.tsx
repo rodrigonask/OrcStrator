@@ -9,7 +9,6 @@ import { api } from '../../api'
 import { TaskCard } from './TaskCard'
 import { TaskDetailPanel } from './TaskDetailPanel'
 import { CreateTaskModal } from './CreateTaskModal'
-import { OrcFeed } from './OrcFeed'
 
 const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
   backlog: 'planner',
@@ -32,7 +31,6 @@ export function PipelineBoard() {
   const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
 
   const projectId = activePipelineId || folders[0]?.id || ''
-  const isOrcActive = folders.find(f => f.id === projectId)?.orchestratorActive ?? false
   const [dragOverColumn, setDragOverColumn] = useState<PipelineColumn | null>(null)
 
   const handleDragOver = useCallback((e: React.DragEvent, col: PipelineColumn) => {
@@ -191,7 +189,6 @@ export function PipelineBoard() {
           )
         })}
       </div>
-      {isOrcActive && <OrcFeed folderId={projectId} />}
       </div>
 
       {selectedTask && (
