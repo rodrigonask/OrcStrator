@@ -53,10 +53,16 @@ function safeJsonParse<T>(str: string | null | undefined, fallback: T): T {
   }
 }
 
-function broadcastPipeline(projectId: string, taskId: string, action: string, newColumn?: PipelineColumn): void {
+function broadcastPipeline(
+  projectId: string,
+  taskId: string,
+  action: string,
+  newColumn?: PipelineColumn,
+  extra?: Record<string, unknown>,
+): void {
   broadcastEvent({
     type: 'pipeline:updated',
-    payload: { projectId, taskId, action, newColumn }
+    payload: { projectId, taskId, action, newColumn, ...extra }
   })
 }
 
@@ -140,7 +146,10 @@ export async function moveTask(taskId: string, column: PipelineColumn, agent?: s
     `).run(column, JSON.stringify(history), now, completedAt, taskId)
 
     const updated = getTask(taskId)!
-    broadcastPipeline(task.projectId, taskId, 'moved', column)
+    broadcastPipeline(task.projectId, taskId, 'moved', column, {
+      fromColumn: task.column,
+      lockedBy: task.lockedBy ?? null,
+    })
     // Notify orchestrator so it can immediately assign the next agent (only if enabled)
     setImmediate(() => {
       const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(task.projectId) as { orchestrator_active: number } | undefined

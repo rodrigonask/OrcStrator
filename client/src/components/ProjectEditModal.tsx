@@ -183,7 +183,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
             <select
               className="form-select"
               value={projectType}
-              onChange={e => setProjectType(e.target.value as FolderConfig['projectType'])}
+              onChange={e => setProjectType((e.target.value as FolderConfig['projectType']) ?? 'other')}
             >
               {PROJECT_TYPES.map(t => (
                 <option key={t.value} value={t.value}>{t.label}</option>

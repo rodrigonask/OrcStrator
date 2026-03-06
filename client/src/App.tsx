@@ -10,6 +10,7 @@ import { RightSidebar } from './components/RightSidebar'
 import { ChatView } from './components/ChatView'
 import { PipelineBoard } from './components/pipeline/PipelineBoard'
 import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
+import { GameScreen } from './components/game'
 import { api } from './api'
 
 function AppContent() {
@@ -48,12 +49,7 @@ function AppContent() {
       <main className="main-content">
         {view === 'chat' && selectedInstanceId && <ChatView />}
         {view === 'pipeline' && <PipelineBoard />}
-        {!selectedInstanceId && view === 'chat' && (
-          <div className="empty-state">
-            <h2>Welcome to NasKlaude</h2>
-            <p>Select an instance or create a new project to get started</p>
-          </div>
-        )}
+        {!selectedInstanceId && view === 'chat' && <GameScreen />}
       </main>
       <RightSidebar />
       <WelcomeOverlay />

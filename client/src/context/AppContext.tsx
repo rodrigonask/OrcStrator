@@ -499,7 +499,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     unsubs.push(
       api.onOrchestratorLockReleased((payload: { taskId: string; reason: string }) => {
-        const inst = stateRef.current.instances.find(i => i.activeTaskId === payload.taskId)
+        const inst = instStateRef.current.instances.find(i => i.activeTaskId === payload.taskId)
         if (inst) {
           dispatch({ type: 'UPDATE_INSTANCE', payload: { id: inst.id, updates: { activeTaskId: undefined, activeTaskTitle: undefined } } })
         }
