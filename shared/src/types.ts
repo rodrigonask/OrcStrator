@@ -35,6 +35,7 @@ export interface InstanceConfig {
   orchestratorManaged?: boolean
   activeTaskId?: string
   activeTaskTitle?: string
+  taskStartedAt?: number
 }
 
 // === CHAT MESSAGES ===

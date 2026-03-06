@@ -1,8 +1,7 @@
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
 
 export function ConnectionStatus() {
-  const { state } = useApp()
-  const connected = state.connected
+  const { connected } = useUI()
 
   return (
     <div className="connection-status">

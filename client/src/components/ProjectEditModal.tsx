@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import type { FolderConfig } from '@shared/types'
-import { useApp } from '../context/AppContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 
 interface ProjectEditModalProps {
@@ -31,7 +31,7 @@ const PROJECT_TYPES = [
 ]
 
 export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
-  const { dispatch } = useApp()
+  const { dispatch } = useAppDispatch()
 
   const [displayName, setDisplayName] = useState(folder.displayName || folder.name)
   const [emoji, setEmoji] = useState(folder.emoji || '\uD83D\uDCC1')

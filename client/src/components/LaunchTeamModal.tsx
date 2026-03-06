@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import type { FolderConfig } from '@shared/types'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 
 interface LaunchTeamModalProps {
@@ -18,8 +19,9 @@ interface TeamRow {
 }
 
 export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
-  const { state, dispatch } = useApp()
-  const agentNames = state.settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const { settings } = useUI()
+  const { dispatch } = useAppDispatch()
+  const agentNames = settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
 
   const [rows, setRows] = useState<TeamRow[]>(
     ROLES.map(role => ({ role, specialization: '', include: true }))

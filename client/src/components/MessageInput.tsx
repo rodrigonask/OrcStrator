@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useMessages } from '../context/MessagesContext'
+import { useInstances } from '../context/InstancesContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -8,18 +11,20 @@ const MODELS = [
 ]
 
 export function MessageInput() {
-  const { state, dispatch, sendMessage } = useApp()
+  const { selectedInstanceId: instanceId } = useUI()
+  const { streamingContent } = useMessages()
+  const { instances, folders } = useInstances()
+  const { dispatch, sendMessage } = useAppDispatch()
   const [text, setText] = useState('')
   const [planMode, setPlanMode] = useState(false)
   const [model, setModel] = useState('claude-sonnet-4-6')
   const [images, setImages] = useState<{ base64: string; mediaType: string }[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const instanceId = state.selectedInstanceId
 
-  const isStreaming = instanceId ? !!state.streamingContent?.[instanceId] : false
+  const isStreaming = instanceId ? !!streamingContent?.[instanceId] : false
 
-  const selectedInstance = instanceId ? state.instances.find(i => i.id === instanceId) : null
-  const selectedFolder = selectedInstance ? state.folders.find(f => f.id === selectedInstance.folderId) : null
+  const selectedInstance = instanceId ? instances.find(i => i.id === instanceId) : null
+  const selectedFolder = selectedInstance ? folders.find(f => f.id === selectedInstance.folderId) : null
   const isOrchestratorOwned = Boolean(selectedInstance?.orchestratorManaged && selectedFolder?.orchestratorActive)
 
   // Focus textarea when instance changes (cycling or new selection)

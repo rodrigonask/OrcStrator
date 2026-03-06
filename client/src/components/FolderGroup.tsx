@@ -4,7 +4,9 @@ import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { FolderConfig, InstanceConfig } from '@shared/types'
-import { useApp } from '../context/AppContext'
+import { useInstances } from '../context/InstancesContext'
+import { useUI } from '../context/UIContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { InstanceItem } from './InstanceItem'
 import { LaunchTeamModal } from './LaunchTeamModal'
@@ -32,7 +34,9 @@ interface FolderGroupProps {
 }
 
 export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
-  const { state, dispatch } = useApp()
+  const { instances: allInstances } = useInstances()
+  const { settings } = useUI()
+  const { dispatch } = useAppDispatch()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [confirmOrchestrate, setConfirmOrchestrate] = useState(false)
   const [showLaunchTeam, setShowLaunchTeam] = useState(false)
@@ -41,7 +45,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
   const [orchStatus, setOrchStatus] = useState<{ idleAgents: number; pendingTasks: number } | null>(null)
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
 
-  const instances = [...state.instances.filter(i => i.folderId === folder.id)]
+  const instances = [...allInstances.filter(i => i.folderId === folder.id)]
     .sort((a, b) => a.sortOrder - b.sortOrder)
   const expanded = folder.expanded
   const isOrchestratorActive = folder.orchestratorActive || false
@@ -82,7 +86,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     try {
       const instance = await api.createInstance({
         folderId: folder.id,
-        name: randomName(state.settings.namingTheme || 'fruits'),
+        name: randomName(settings.namingTheme || 'fruits'),
         cwd: folder.path,
       })
       dispatch({ type: 'ADD_INSTANCE', payload: instance })

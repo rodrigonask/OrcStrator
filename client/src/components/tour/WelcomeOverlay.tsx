@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useGame } from '../../context/GameContext'
-import { useApp } from '../../context/AppContext'
+import { useAppDispatch } from '../../context/AppDispatchContext'
 import { api } from '../../api'
 
 interface FolderEntry {
@@ -13,7 +13,7 @@ const ROOT_PATH = isWindows ? 'C:\\' : '/'
 
 export function WelcomeOverlay() {
   const { tour, completeStep, addXp } = useGame()
-  const { dispatch } = useApp()
+  const { dispatch } = useAppDispatch()
   const [step, setStep] = useState(0)
   const [exiting, setExiting] = useState(false)
   const [selectedPath, setSelectedPath] = useState('')

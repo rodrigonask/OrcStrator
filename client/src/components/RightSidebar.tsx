@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useInstances } from '../context/InstancesContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
 
 const TIER_COLORS: Record<string, string> = {
@@ -35,12 +37,14 @@ const SHORTCUTS = [
 ]
 
 export function RightSidebar() {
-  const { state, dispatch } = useApp()
+  const { settings, usage } = useUI()
+  const { instances, folders } = useInstances()
+  const { dispatch } = useAppDispatch()
   const { profile, currentLevel, nextLevel, xpProgress } = useGame()
   const [collapsed, setCollapsed] = useState(false)
 
-  const userName = (state.settings.userName as string | undefined) || 'Nask'
-  const userEmoji = (state.settings.userEmoji as string | undefined) || '🧠'
+  const userName = (settings.userName as string | undefined) || 'Nask'
+  const userEmoji = (settings.userEmoji as string | undefined) || '🧠'
   const tier = currentLevel?.tier ?? 'Beginner'
   const tierColor = TIER_COLORS[tier] ?? '#10b981'
   const tierIcon = TIER_ICONS[tier] ?? '🌱'
@@ -49,10 +53,9 @@ export function RightSidebar() {
     ? nextLevel.xpRequired - profile.totalXp
     : 0
 
-  const activeAgents = state.instances.filter(i => i.state === 'running').length
-  const totalProjects = state.folders.length
+  const activeAgents = instances.filter(i => i.state === 'running').length
+  const totalProjects = folders.length
 
-  const usage = state.usage
   const primaryBucket = usage?.buckets?.[0]
   const usagePercent = primaryBucket?.percentage ?? 0
   const usageBarClass = usagePercent >= 90 ? 'danger' : usagePercent >= 70 ? 'warning' : ''

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
 
 interface FolderBrowserModalProps {
   rootFolder?: string
@@ -14,8 +14,8 @@ interface DirectoryEntry {
 }
 
 export function FolderBrowserModal({ rootFolder, onClose, onSelect }: FolderBrowserModalProps) {
-  const { state } = useApp()
-  const effectiveRoot = rootFolder || state.settings.rootFolder
+  const { settings } = useUI()
+  const effectiveRoot = rootFolder || settings.rootFolder
 
   // If rootFolder is set, show simple subfolder picker
   if (effectiveRoot) {

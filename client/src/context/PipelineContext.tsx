@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
 import { api } from '../api'
-import { useApp } from './AppContext'
+import { useUI } from './UIContext'
 import type { PipelineTask, PipelineColumn, PipelineEvent } from '@shared/types'
 
 interface PipelineContextValue {
@@ -33,8 +33,7 @@ const emptyByColumn: Record<PipelineColumn, PipelineTask[]> = {
 const PipelineContext = createContext<PipelineContextValue | null>(null)
 
 export function PipelineProvider({ children }: { children: React.ReactNode }) {
-  const { state } = useApp()
-  const { activePipelineId } = state
+  const { activePipelineId } = useUI()
   const [tasks, setTasks] = useState<PipelineTask[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

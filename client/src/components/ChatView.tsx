@@ -1,11 +1,13 @@
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { ChatHeader } from './ChatHeader'
 import { MessageList } from './MessageList'
 import { MessageInput } from './MessageInput'
 import { TerminalPanel } from './TerminalPanel'
 
 export function ChatView() {
-  const { state, dispatch } = useApp()
+  const { terminalPanelOpen } = useUI()
+  const { dispatch } = useAppDispatch()
 
   return (
     <div className="chat-view">
@@ -15,7 +17,7 @@ export function ChatView() {
           <MessageList />
           <MessageInput />
         </div>
-        {state.terminalPanelOpen && (
+        {terminalPanelOpen && (
           <TerminalPanel onClose={() => dispatch({ type: 'SET_TERMINAL_OPEN', payload: false })} />
         )}
       </div>

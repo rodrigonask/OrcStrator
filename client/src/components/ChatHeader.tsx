@@ -1,15 +1,20 @@
 import { useCallback, useMemo } from 'react'
 import type { ChatMessage } from '@shared/types'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useMessages } from '../context/MessagesContext'
+import { useInstances } from '../context/InstancesContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 
 export function ChatHeader() {
-  const { state, dispatch } = useApp()
-  const instanceId = state.selectedInstanceId
-  const instance = state.instances.find(i => i.id === instanceId)
-  const folder = instance ? state.folders.find(f => f.id === instance.folderId) : undefined
-  const messages: ChatMessage[] = instanceId ? (state.messages[instanceId] || []) : []
-  const agentNames = state.settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const { selectedInstanceId: instanceId, terminalPanelOpen, settings } = useUI()
+  const { messages: allMessages } = useMessages()
+  const { instances, folders } = useInstances()
+  const { dispatch } = useAppDispatch()
+  const instance = instances.find(i => i.id === instanceId)
+  const folder = instance ? folders.find(f => f.id === instance.folderId) : undefined
+  const messages: ChatMessage[] = instanceId ? (allMessages[instanceId] || []) : []
+  const agentNames = settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
   const isOrchestratorLocked = instance?.orchestratorManaged && folder?.orchestratorActive
 
   const totalTokens = useMemo(() => {
@@ -83,7 +88,7 @@ export function ChatHeader() {
           </button>
         )}
         <button
-          className={`chat-header-btn ${state.terminalPanelOpen ? 'active' : ''}`}
+          className={`chat-header-btn ${terminalPanelOpen ? 'active' : ''}`}
           onClick={() => dispatch({ type: 'TOGGLE_TERMINAL' })}
           title="Toggle terminal panel"
         >

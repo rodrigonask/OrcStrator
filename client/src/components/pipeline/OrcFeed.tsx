@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
-import { useApp } from '../../context/AppContext'
+import { useInstances } from '../../context/InstancesContext'
 
 interface FeedEntry {
   id: string
@@ -10,7 +10,7 @@ interface FeedEntry {
 }
 
 export function OrcFeed({ folderId }: { folderId: string }) {
-  const { state } = useApp()
+  const { instances } = useInstances()
   const [entries, setEntries] = useState<FeedEntry[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -23,7 +23,7 @@ export function OrcFeed({ folderId }: { folderId: string }) {
   useEffect(() => {
     const unsub1 = api.onOrchestratorAssigned((p: any) => {
       if (p.folderId !== folderId) return
-      const instanceName = state.instances.find(i => i.id === p.instanceId)?.name ?? p.instanceId.slice(0, 6)
+      const instanceName = instances.find(i => i.id === p.instanceId)?.name ?? p.instanceId.slice(0, 6)
       addEntry({ type: 'assign', text: `Assigned "${p.taskTitle}" to ${instanceName}` })
     })
 

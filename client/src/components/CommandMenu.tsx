@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useApp } from '../context/AppContext'
+import { useInstances } from '../context/InstancesContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 
 interface Command {
@@ -10,7 +11,8 @@ interface Command {
 }
 
 export function CommandMenu() {
-  const { state, dispatch } = useApp()
+  const { folders, instances } = useInstances()
+  const { dispatch } = useAppDispatch()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
@@ -21,7 +23,7 @@ export function CommandMenu() {
       name: '/new-instance',
       description: 'Create a new Claude instance in the selected folder',
       action: () => {
-        const folderId = state.folders[0]?.id
+        const folderId = folders[0]?.id
         if (folderId) {
           api.createInstance({ folderId }).then(instance => {
             dispatch({ type: 'ADD_INSTANCE', payload: instance })
@@ -48,12 +50,12 @@ export function CommandMenu() {
     {
       name: '/pause-all',
       description: 'Pause all running instances',
-      action: () => state.instances.forEach(i => api.pauseInstance(i.id)),
+      action: () => instances.forEach(i => api.pauseInstance(i.id)),
     },
     {
       name: '/resume-all',
       description: 'Resume all paused instances',
-      action: () => state.instances.forEach(i => api.resumeInstance(i.id)),
+      action: () => instances.forEach(i => api.resumeInstance(i.id)),
     },
     {
       name: '/refresh-usage',
@@ -65,7 +67,7 @@ export function CommandMenu() {
       description: 'Add a new project folder',
       action: () => dispatch({ type: 'OPEN_FOLDER_BROWSER' }),
     },
-  ], [state.folders, dispatch])
+  ], [folders, instances, dispatch])
 
   const filtered = useMemo(() => {
     if (!filter) return commands

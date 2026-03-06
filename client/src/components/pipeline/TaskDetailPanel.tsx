@@ -5,15 +5,18 @@ import type { PipelineTask, PipelineColumn, TaskComment } from '@shared/types'
 import { PIPELINE_COLUMNS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
 import { rest } from '../../api/rest'
-import { useApp } from '../../context/AppContext'
+import { useUI } from '../../context/UIContext'
+import { useInstances } from '../../context/InstancesContext'
+import { useAppDispatch } from '../../context/AppDispatchContext'
 
 marked.setOptions({ breaks: true })
 
 function AgentLabel({ agentId }: { agentId?: string | null }) {
-  const { state, dispatch } = useApp()
+  const { instances } = useInstances()
+  const { dispatch } = useAppDispatch()
   if (!agentId || agentId === 'system') return <span className="orc-label">The Orc</span>
   if (agentId === 'human') return <strong>human</strong>
-  const instance = state.instances.find(i => i.id === agentId)
+  const instance = instances.find(i => i.id === agentId)
   const label = instance ? instance.name : agentId.slice(0, 8) + '...'
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -55,7 +58,8 @@ const PRIORITY_LABELS: Record<number, string> = {
 
 export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const { updateTask, moveTask, claimTask, blockTask, unblockTask, deleteTask } = usePipeline()
-  const { state: appState } = useApp()
+  const { activePipelineId } = useUI()
+  const { folders } = useInstances()
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [editingDesc, setEditingDesc] = useState(false)
@@ -67,7 +71,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const [postingComment, setPostingComment] = useState(false)
   const commentsEndRef = useRef<HTMLDivElement>(null)
 
-  const projectId = appState.activePipelineId || appState.folders[0]?.id || ''
+  const projectId = activePipelineId || folders[0]?.id || ''
 
   useEffect(() => {
     if (!projectId) return

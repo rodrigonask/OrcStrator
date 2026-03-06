@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useMessages } from '../context/MessagesContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { sounds } from '../utils/sounds'
 
@@ -12,41 +14,35 @@ interface InstanceItemProps {
 
 const AGENT_ROLES = ['planner', 'builder', 'tester', 'promoter'] as const
 
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, '')        // fenced code blocks
-    .replace(/`[^`]*`/g, (m) => m.slice(1, -1))  // inline code
-    .replace(/!\[.*?\]\(.*?\)/g, '')       // images
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // links
-    .replace(/#{1,6}\s+/g, '')             // headings
-    .replace(/\*\*([^*]+)\*\*/g, '$1')    // bold **
-    .replace(/__([^_]+)__/g, '$1')         // bold __
-    .replace(/\*([^*]+)\*/g, '$1')         // italic *
-    .replace(/_([^_]+)_/g, '$1')           // italic _
-    .replace(/~~([^~]+)~~/g, '$1')         // strikethrough
-    .replace(/^\s*[-*+]\s+/gm, '')         // unordered lists
-    .replace(/^\s*\d+\.\s+/gm, '')         // ordered lists
-    .replace(/>\s+/g, '')                  // blockquotes
-    .replace(/\n+/g, ' ')                  // newlines → space
-    .trim()
-}
 
 export function InstanceItem({ instance, folderOrchestratorActive, dragHandleProps }: InstanceItemProps) {
-  const { state, dispatch, selectInstance, deleteInstance } = useApp()
-  const isSelected = state.selectedInstanceId === instance.id
-  const messages: ChatMessage[] = state.messages[instance.id] || []
-  const lastMsg = messages[messages.length - 1]
-  const unread = state.unreadCounts?.[instance.id] || 0
+  const { selectedInstanceId, view, settings } = useUI()
+  const { messages: allMessages, unreadCounts } = useMessages()
+  const { dispatch, selectInstance, deleteInstance } = useAppDispatch()
+  const isSelected = selectedInstanceId === instance.id
+  const messages: ChatMessage[] = allMessages[instance.id] || []
+  const unread = unreadCounts?.[instance.id] || 0
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [skills, setSkills] = useState<SkillConfig[]>([])
   const [showSkillsMenu, setShowSkillsMenu] = useState(false)
 
-  const animEnabled = state.settings.animationsEnabled !== false
-  const soundEnabled = state.settings.soundsEnabled === true
+  const animEnabled = settings.animationsEnabled !== false
+  const soundEnabled = settings.soundsEnabled === true
 
   const [animClass, setAnimClass] = useState<string | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
+  const [, forceUpdate] = useState(0)
+
+  useEffect(() => {
+    if (!instance.taskStartedAt || instance.state !== 'running') return
+    const id = setInterval(() => forceUpdate(n => n + 1), 60_000)
+    return () => clearInterval(id)
+  }, [instance.taskStartedAt, instance.state])
+
+  const elapsedMins = instance.taskStartedAt
+    ? Math.floor((Date.now() - instance.taskStartedAt) / 60_000)
+    : 0
   const prevStateRef = useRef<string | null>(null)
   const prevMsgCountRef = useRef(messages.length)
   const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -101,17 +97,9 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     }
   }, [contextMenu])
 
-  const agentNames = state.settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const agentNames = settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
 
   const isOrchestratorLocked = instance.orchestratorManaged && folderOrchestratorActive
-
-  let preview = ''
-  if (lastMsg) {
-    const textBlock = lastMsg.content.find(b => b.type === 'text')
-    if (textBlock && textBlock.type === 'text') {
-      preview = stripMarkdown(textBlock.text).slice(0, 80)
-    }
-  }
 
   const handleRoleChange = useCallback(async (role: string) => {
     if (isOrchestratorLocked) return
@@ -173,7 +161,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
       className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} ${activeAnimClass}`}
       onClick={() => {
         selectInstance(instance.id)
-        if (state.view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
+        if (view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
       }}
       onContextMenu={handleContextMenu}
       {...(dragHandleProps as React.HTMLAttributes<HTMLDivElement>)}
@@ -196,7 +184,6 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
           }
           {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orc-managed">⚡</span>}
         </div>
-        {preview && <div className="instance-preview">{preview}</div>}
         {instance.orchestratorManaged && instance.activeTaskTitle && instance.state === 'running' && (
           <div className="instance-active-task">
             working on{' '}
@@ -213,6 +200,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
                 ? instance.activeTaskTitle.slice(0, 35) + '...'
                 : instance.activeTaskTitle}
             </button>
+            {elapsedMins > 0 && <span className="instance-active-task-elapsed"> {elapsedMins}m</span>}
           </div>
         )}
       </div>

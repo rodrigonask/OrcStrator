@@ -3,7 +3,9 @@ import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from 
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useApp } from '../context/AppContext'
+import { useInstances } from '../context/InstancesContext'
+import { useUI } from '../context/UIContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { ConnectionStatus } from './ConnectionStatus'
 import { FolderGroup } from './FolderGroup'
@@ -27,12 +29,14 @@ function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
 }
 
 export function Sidebar() {
-  const { state, dispatch } = useApp()
+  const { folders } = useInstances()
+  const { showSettings, editingFolderId, showFolderBrowser, settings } = useUI()
+  const { dispatch } = useAppDispatch()
   const [collapsed, setCollapsed] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
-  const sortedFolders = [...state.folders].sort((a, b) => {
+  const sortedFolders = [...folders].sort((a, b) => {
     if (a.stealthMode && !b.stealthMode) return -1
     if (!a.stealthMode && b.stealthMode) return 1
     return a.sortOrder - b.sortOrder
@@ -89,10 +93,10 @@ export function Sidebar() {
 
       </aside>
 
-      {state.showSettings && <SettingsModal onClose={() => dispatch({ type: 'CLOSE_SETTINGS' })} />}
+      {showSettings && <SettingsModal onClose={() => dispatch({ type: 'CLOSE_SETTINGS' })} />}
 
-      {state.editingFolderId && (() => {
-        const folder = state.folders.find(f => f.id === state.editingFolderId)
+      {editingFolderId && (() => {
+        const folder = folders.find(f => f.id === editingFolderId)
         return folder ? (
           <ProjectEditModal
             folder={folder}
@@ -101,9 +105,9 @@ export function Sidebar() {
         ) : null
       })()}
 
-      {state.showFolderBrowser && (
+      {showFolderBrowser && (
         <FolderBrowserModal
-          rootFolder={state.settings.rootFolder}
+          rootFolder={settings.rootFolder}
           onClose={() => dispatch({ type: 'CLOSE_FOLDER_BROWSER' })}
           onSelect={async (path) => {
             dispatch({ type: 'CLOSE_FOLDER_BROWSER' })

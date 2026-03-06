@@ -1,6 +1,9 @@
 import { useMemo, useState, useCallback } from 'react'
 import type { ChatMessage } from '@shared/types'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useMessages } from '../context/MessagesContext'
+import { useInstances } from '../context/InstancesContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { MessageBubble } from './MessageBubble'
 import { ActivityBubble } from './ActivityBubble'
@@ -11,10 +14,12 @@ function hasVisibleContent(msg: ChatMessage): boolean {
 }
 
 export function MessageList() {
-  const { state, loadOlderMessages } = useApp()
-  const instanceId = state.selectedInstanceId
-  const messages: ChatMessage[] = instanceId ? (state.messages[instanceId] || []) : []
-  const hasMore = instanceId ? (state.hasMore[instanceId] ?? false) : false
+  const { selectedInstanceId: instanceId } = useUI()
+  const { messages: allMessages, hasMore: allHasMore, streamingContent, streamingToolCalls } = useMessages()
+  const { instances } = useInstances()
+  const { loadOlderMessages } = useAppDispatch()
+  const messages: ChatMessage[] = instanceId ? (allMessages[instanceId] || []) : []
+  const hasMore = instanceId ? (allHasMore[instanceId] ?? false) : false
   const [loadingOlder, setLoadingOlder] = useState(false)
   const scrollRef = useAutoScroll([messages])
 
@@ -28,10 +33,10 @@ export function MessageList() {
     }
   }, [instanceId, loadingOlder, loadOlderMessages])
 
-  const instance = instanceId ? state.instances.find(i => i.id === instanceId) : null
+  const instance = instanceId ? instances.find(i => i.id === instanceId) : null
   const isAgentRunning = instance?.state === 'running'
-  const liveText = instanceId ? (state.streamingContent?.[instanceId] || '') : ''
-  const liveToolCalls = instanceId ? (state.streamingToolCalls?.[instanceId] || []) : []
+  const liveText = instanceId ? (streamingContent?.[instanceId] || '') : ''
+  const liveToolCalls = instanceId ? (streamingToolCalls?.[instanceId] || []) : []
 
   // Show live assistant turn bubble when: agent is running, streaming text, or live tool calls exist
   const lastMessage = messages[messages.length - 1]

@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
-import { useApp } from '../context/AppContext'
+import { useUI } from '../context/UIContext'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { ALLOWED_FLAG_PREFIXES } from '@shared/constants'
 import type { NamingTheme } from '../utils/naming'
@@ -9,8 +10,8 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ onClose }: SettingsModalProps) {
-  const { state, dispatch } = useApp()
-  const settings = state.settings
+  const { settings, usage } = useUI()
+  const { dispatch } = useAppDispatch()
 
   const [flags, setFlags] = useState<string[]>([...settings.globalFlags])
   const [newFlag, setNewFlag] = useState('')
@@ -26,7 +27,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [soundsEnabled, setSoundsEnabled] = useState(settings.soundsEnabled === true)
   const [namingTheme, setNamingTheme] = useState<NamingTheme>(settings.namingTheme || 'fruits')
 
-  const oauthConnected = state.usage?.connected ?? false
+  const oauthConnected = usage?.connected ?? false
 
   const addFlag = useCallback(() => {
     const trimmed = newFlag.trim()

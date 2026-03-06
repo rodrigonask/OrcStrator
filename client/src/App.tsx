@@ -1,5 +1,8 @@
 import { useEffect } from 'react'
-import { AppProvider, useApp } from './context/AppContext'
+import { AppProvider } from './context/AppContext'
+import { useInstances } from './context/InstancesContext'
+import { useMessages } from './context/MessagesContext'
+import { useUI } from './context/UIContext'
 import { GameProvider } from './context/GameContext'
 import { PipelineProvider } from './context/PipelineContext'
 import { Sidebar } from './components/Sidebar'
@@ -10,22 +13,24 @@ import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
 import { api } from './api'
 
 function AppContent() {
-  const { state } = useApp()
+  const { instances, folders } = useInstances()
+  const { messages } = useMessages()
+  const { selectedInstanceId, view, settings } = useUI()
   useEffect(() => { api.connect() }, [])
 
-  // Dynamic page title
+  // Dynamic page title (note: AppProvider also sets title; this handles the App-level concern)
   useEffect(() => {
-    const instance = state.instances.find(i => i.id === state.selectedInstanceId)
+    const instance = instances.find(i => i.id === selectedInstanceId)
     if (!instance) {
       document.title = 'NasKlaude'
       return
     }
-    const folder = state.folders.find(f => f.id === instance.folderId)
+    const folder = folders.find(f => f.id === instance.folderId)
     const parts: string[] = []
     if (folder) parts.push(folder.displayName || folder.name)
     if (instance.agentRole) parts.push(instance.agentRole.toUpperCase())
     parts.push(instance.name)
-    const msgs = state.messages[instance.id]
+    const msgs = messages[instance.id]
     if (msgs?.length) {
       const last = msgs[msgs.length - 1]
       const textBlock = last.content.find(b => b.type === 'text')
@@ -35,15 +40,15 @@ function AppContent() {
       }
     }
     document.title = parts.join(' | ')
-  }, [state.selectedInstanceId, state.instances, state.folders, state.messages])
+  }, [selectedInstanceId, instances, folders, messages])
 
   return (
-    <div className="app" data-theme={state.settings.theme}>
+    <div className="app" data-theme={settings.theme}>
       <Sidebar />
       <main className="main-content">
-        {state.view === 'chat' && state.selectedInstanceId && <ChatView />}
-        {state.view === 'pipeline' && <PipelineBoard />}
-        {!state.selectedInstanceId && state.view === 'chat' && (
+        {view === 'chat' && selectedInstanceId && <ChatView />}
+        {view === 'pipeline' && <PipelineBoard />}
+        {!selectedInstanceId && view === 'chat' && (
           <div className="empty-state">
             <h2>Welcome to NasKlaude</h2>
             <p>Select an instance or create a new project to get started</p>

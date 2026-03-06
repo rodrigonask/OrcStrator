@@ -2,7 +2,9 @@ import { useState, useCallback } from 'react'
 import type { PipelineTask, PipelineColumn } from '@shared/types'
 import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
-import { useApp } from '../../context/AppContext'
+import { useUI } from '../../context/UIContext'
+import { useInstances } from '../../context/InstancesContext'
+import { useAppDispatch } from '../../context/AppDispatchContext'
 import { api } from '../../api'
 import { TaskCard } from './TaskCard'
 import { TaskDetailPanel } from './TaskDetailPanel'
@@ -18,17 +20,19 @@ const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
 }
 
 export function PipelineBoard() {
-  const { state: appState, dispatch: appDispatch, selectInstance } = useApp()
+  const { activePipelineId, settings } = useUI()
+  const { folders, instances } = useInstances()
+  const { dispatch: appDispatch, selectInstance } = useAppDispatch()
   const pipeline = usePipeline()
   const [selectedTask, setSelectedTask] = useState<PipelineTask | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [editingColumn, setEditingColumn] = useState<PipelineColumn | null>(null)
   const [editValue, setEditValue] = useState('')
 
-  const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(appState.settings.columnLabels || {}) }
+  const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
 
-  const projectId = appState.activePipelineId || appState.folders[0]?.id || ''
-  const isOrcActive = appState.folders.find(f => f.id === projectId)?.orchestratorActive ?? false
+  const projectId = activePipelineId || folders[0]?.id || ''
+  const isOrcActive = folders.find(f => f.id === projectId)?.orchestratorActive ?? false
   const [dragOverColumn, setDragOverColumn] = useState<PipelineColumn | null>(null)
 
   const handleDragOver = useCallback((e: React.DragEvent, col: PipelineColumn) => {
@@ -135,7 +139,7 @@ export function PipelineBoard() {
                 <span className="pipeline-column-count">{colTasks.length}</span>
                 {COLUMN_TO_ROLE[col] && (() => {
                   const role = COLUMN_TO_ROLE[col]!
-                  const match = appState.instances.find(
+                  const match = instances.find(
                     i => i.folderId === projectId && i.agentRole === role
                   )
                   return (

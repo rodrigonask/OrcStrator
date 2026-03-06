@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, { useReducer, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api } from '../api'
 import type {
   FolderConfig,
@@ -9,29 +9,35 @@ import type {
   ClaudeStreamEvent,
   ClaudeProcessExitEvent,
 } from '@shared/types'
+import { InstancesContext } from './InstancesContext'
+import { MessagesContext } from './MessagesContext'
+import { UIContext } from './UIContext'
+import { AppDispatchContext } from './AppDispatchContext'
+import { useInstances } from './InstancesContext'
+import { useMessages } from './MessagesContext'
+import { useUI } from './UIContext'
+import { useAppDispatch } from './AppDispatchContext'
 
-// === State ===
+// === State Slice Interfaces ===
 
-interface StreamingToolCall {
-  toolId: string
-  toolName: string
-  input: string
-  output?: string
-  isError?: boolean
-  isRunning: boolean
-}
-
-interface State {
+interface InstancesSlice {
   folders: FolderConfig[]
   instances: InstanceConfig[]
   settings: AppSettings
-  selectedInstanceId: string | null
+}
+
+interface MessagesSlice {
   messages: Record<string, ChatMessage[]>
-  messageOrder: string[]  // LRU list of instanceIds with loaded messages
-  hasMore: Record<string, boolean>  // whether more history exists for each instance
+  messageOrder: string[]
+  hasMore: Record<string, boolean>
   streamingContent: Record<string, string>
   streamingToolCalls: Record<string, StreamingToolCall[]>
   unreadCounts: Record<string, number>
+  rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
+}
+
+interface UISlice {
+  selectedInstanceId: string | null
   sidebarCollapsed: boolean
   showFolderBrowser: boolean
   editingFolderId: string | null
@@ -41,44 +47,24 @@ interface State {
   usage: UsageData | null
   terminalPanelOpen: boolean
   showSettings: boolean
-  rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
 }
 
-const initialState: State = {
-  folders: [],
-  instances: [],
-  settings: {
-    globalFlags: [],
-    idleTimeoutSeconds: 60,
-    notifications: true,
-    startWithOS: false,
-    rootFolder: '',
-    usagePollMinutes: 10,
-    theme: 'system',
-    port: 3333,
-  },
-  selectedInstanceId: null,
-  messages: {},
-  messageOrder: [],
-  hasMore: {},
-  streamingContent: {},
-  streamingToolCalls: {},
-  unreadCounts: {},
-  sidebarCollapsed: false,
-  showFolderBrowser: false,
-  editingFolderId: null,
-  view: 'chat',
-  activePipelineId: null,
-  connected: false,
-  usage: null,
-  terminalPanelOpen: false,
-  showSettings: false,
-  rawOutput: {},
+export interface StreamingToolCall {
+  toolId: string
+  toolName: string
+  input: string
+  output?: string
+  isError?: boolean
+  isRunning: boolean
 }
+
+// === Combined State (for backward-compat useApp) ===
+
+type State = InstancesSlice & MessagesSlice & UISlice
 
 // === Actions ===
 
-type Action =
+export type Action =
   | { type: 'SET_STATE'; payload: { folders: FolderConfig[]; instances: InstanceConfig[]; settings: AppSettings } }
   | { type: 'ADD_FOLDER'; payload: FolderConfig }
   | { type: 'REMOVE_FOLDER'; payload?: string; folderId?: string }
@@ -119,85 +105,96 @@ type Action =
   | { type: 'CLOSE_SETTINGS' }
   | { type: 'APPEND_RAW_LINE'; payload: { instanceId: string; line: string; isStderr?: boolean } }
 
-// === Reducer ===
+// === Initial State ===
 
-function reducer(state: State, action: Action): State {
+const initialInstances: InstancesSlice = {
+  folders: [],
+  instances: [],
+  settings: {
+    globalFlags: [],
+    idleTimeoutSeconds: 60,
+    notifications: true,
+    startWithOS: false,
+    rootFolder: '',
+    usagePollMinutes: 10,
+    theme: 'system',
+    port: 3333,
+  },
+}
+
+const initialMessages: MessagesSlice = {
+  messages: {},
+  messageOrder: [],
+  hasMore: {},
+  streamingContent: {},
+  streamingToolCalls: {},
+  unreadCounts: {},
+  rawOutput: {},
+}
+
+const initialUI: UISlice = {
+  selectedInstanceId: null,
+  sidebarCollapsed: false,
+  showFolderBrowser: false,
+  editingFolderId: null,
+  view: 'chat',
+  activePipelineId: null,
+  connected: false,
+  usage: null,
+  terminalPanelOpen: false,
+  showSettings: false,
+}
+
+// === Reducers ===
+
+function instancesReducer(state: InstancesSlice, action: Action): InstancesSlice {
   switch (action.type) {
     case 'SET_STATE':
-      return {
-        ...state,
-        folders: action.payload.folders,
-        instances: action.payload.instances,
-        settings: action.payload.settings,
-      }
-
+      return { ...state, folders: action.payload.folders, instances: action.payload.instances, settings: action.payload.settings }
     case 'ADD_FOLDER':
       return { ...state, folders: [...state.folders, action.payload] }
-
     case 'REMOVE_FOLDER': {
       const fid = action.payload || action.folderId || ''
       return {
         ...state,
-        folders: state.folders.filter((f) => f.id !== fid),
-        instances: state.instances.filter((i) => i.folderId !== fid),
+        folders: state.folders.filter(f => f.id !== fid),
+        instances: state.instances.filter(i => i.folderId !== fid),
       }
     }
-
     case 'UPDATE_FOLDER':
-      return {
-        ...state,
-        folders: state.folders.map((f) =>
-          f.id === action.payload.id ? { ...f, ...action.payload.updates } : f
-        ),
-      }
-
+      return { ...state, folders: state.folders.map(f => f.id === action.payload.id ? { ...f, ...action.payload.updates } : f) }
     case 'REORDER_FOLDERS':
       return {
         ...state,
         folders: action.payload
-          .map((id, index) => {
-            const folder = state.folders.find((f) => f.id === id)
-            return folder ? { ...folder, sortOrder: index } : null
-          })
+          .map((id, index) => { const f = state.folders.find(f => f.id === id); return f ? { ...f, sortOrder: index } : null })
           .filter((f): f is FolderConfig => f !== null),
       }
-
     case 'REORDER_INSTANCES': {
       const { folderId, ids } = action.payload
-      const otherInstances = state.instances.filter(i => i.folderId !== folderId)
+      const others = state.instances.filter(i => i.folderId !== folderId)
       const reordered = ids
-        .map((id, index) => {
-          const inst = state.instances.find(i => i.id === id)
-          return inst ? { ...inst, sortOrder: index } : null
-        })
+        .map((id, index) => { const i = state.instances.find(i => i.id === id); return i ? { ...i, sortOrder: index } : null })
         .filter((i): i is InstanceConfig => i !== null)
-      return { ...state, instances: [...otherInstances, ...reordered] }
+      return { ...state, instances: [...others, ...reordered] }
     }
-
     case 'ADD_INSTANCE':
       return { ...state, instances: [...state.instances, action.payload] }
-
-    case 'REMOVE_INSTANCE': {
-      const newSelected =
-        state.selectedInstanceId === action.payload ? null : state.selectedInstanceId
-      return {
-        ...state,
-        instances: state.instances.filter((i) => i.id !== action.payload),
-        selectedInstanceId: newSelected,
-      }
-    }
-
+    case 'REMOVE_INSTANCE':
+      return { ...state, instances: state.instances.filter(i => i.id !== action.payload) }
     case 'UPDATE_INSTANCE':
-      return {
-        ...state,
-        instances: state.instances.map((i) =>
-          i.id === action.payload.id ? { ...i, ...action.payload.updates } : i
-        ),
-      }
+      return { ...state, instances: state.instances.map(i => i.id === action.payload.id ? { ...i, ...action.payload.updates } : i) }
+    case 'TOGGLE_FOLDER':
+      return { ...state, folders: state.folders.map(f => f.id === action.folderId ? { ...f, expanded: !f.expanded } : f) }
+    case 'UPDATE_SETTINGS':
+      return { ...state, settings: { ...state.settings, ...action.payload } }
+    default:
+      return state
+  }
+}
 
-    case 'SELECT_INSTANCE':
-      return { ...state, selectedInstanceId: action.payload }
-
+function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
+  switch (action.type) {
     case 'SET_MESSAGES': {
       const MAX_CACHED_INSTANCES = 3
       const { instanceId: smId, messages: smMsgs, hasMore: smHasMore } = action.payload
@@ -205,9 +202,7 @@ function reducer(state: State, action: Action): State {
       const newOrder = [...order, smId]
       let newMessages = { ...state.messages, [smId]: smMsgs }
       let finalOrder = newOrder
-      let newHasMore = smHasMore !== undefined
-        ? { ...state.hasMore, [smId]: smHasMore }
-        : { ...state.hasMore }
+      let newHasMore = smHasMore !== undefined ? { ...state.hasMore, [smId]: smHasMore } : { ...state.hasMore }
       if (newOrder.length > MAX_CACHED_INSTANCES) {
         const evict = newOrder[0]
         const { [evict]: _ev, ...rest } = newMessages
@@ -218,132 +213,60 @@ function reducer(state: State, action: Action): State {
       }
       return { ...state, messages: newMessages, messageOrder: finalOrder, hasMore: newHasMore }
     }
-
     case 'PREPEND_MESSAGES': {
       const { instanceId: pmId, messages: pmMsgs, hasMore: pmHasMore } = action.payload
       const existing = state.messages[pmId] || []
-      return {
-        ...state,
-        messages: { ...state.messages, [pmId]: [...pmMsgs, ...existing] },
-        hasMore: { ...state.hasMore, [pmId]: pmHasMore },
-      }
+      return { ...state, messages: { ...state.messages, [pmId]: [...pmMsgs, ...existing] }, hasMore: { ...state.hasMore, [pmId]: pmHasMore } }
     }
-
     case 'ADD_MESSAGE': {
       const instId = action.payload.instanceId
       const existing = state.messages[instId] || []
       const updated = [...existing, action.payload]
       const capped = updated.length > 200 ? updated.slice(-200) : updated
-      return {
-        ...state,
-        messages: { ...state.messages, [instId]: capped },
-      }
+      return { ...state, messages: { ...state.messages, [instId]: capped } }
     }
-
     case 'APPEND_STREAMING': {
       const { instanceId, text } = action.payload
-      const current = state.streamingContent[instanceId] || ''
-      return {
-        ...state,
-        streamingContent: { ...state.streamingContent, [instanceId]: current + text },
-      }
+      return { ...state, streamingContent: { ...state.streamingContent, [instanceId]: (state.streamingContent[instanceId] || '') + text } }
     }
-
     case 'CLEAR_STREAMING': {
       const { [action.payload]: _sc, ...restSC } = state.streamingContent
       const { [action.payload]: _stc, ...restSTC } = state.streamingToolCalls
       return { ...state, streamingContent: restSC, streamingToolCalls: restSTC }
     }
-
     case 'TOOL_START': {
       const { instanceId, toolId, toolName } = action.payload
       const existing = state.streamingToolCalls[instanceId] || []
-      return {
-        ...state,
-        streamingToolCalls: {
-          ...state.streamingToolCalls,
-          [instanceId]: [...existing, { toolId, toolName, input: '', isRunning: true }],
-        },
-      }
+      return { ...state, streamingToolCalls: { ...state.streamingToolCalls, [instanceId]: [...existing, { toolId, toolName, input: '', isRunning: true }] } }
     }
-
     case 'TOOL_INPUT_DELTA': {
       const { instanceId, toolId, input } = action.payload
       const calls = state.streamingToolCalls[instanceId] || []
-      return {
-        ...state,
-        streamingToolCalls: {
-          ...state.streamingToolCalls,
-          [instanceId]: calls.map(c =>
-            c.toolId === toolId ? { ...c, input: c.input + input } : c
-          ),
-        },
-      }
+      return { ...state, streamingToolCalls: { ...state.streamingToolCalls, [instanceId]: calls.map(c => c.toolId === toolId ? { ...c, input: c.input + input } : c) } }
     }
-
     case 'TOOL_COMPLETE': {
       const { instanceId, toolId, output, isError } = action.payload
       const calls = state.streamingToolCalls[instanceId] || []
-      return {
-        ...state,
-        streamingToolCalls: {
-          ...state.streamingToolCalls,
-          [instanceId]: calls.map(c =>
-            c.toolId === toolId ? { ...c, output, isError, isRunning: false } : c
-          ),
-        },
-      }
+      return { ...state, streamingToolCalls: { ...state.streamingToolCalls, [instanceId]: calls.map(c => c.toolId === toolId ? { ...c, output, isError, isRunning: false } : c) } }
     }
-
     case 'SET_MESSAGE_TOKENS': {
       const { instanceId, messageId, ...tokens } = action.payload
-      const msgs = (state.messages[instanceId] || []).map((m) =>
-        m.id === messageId ? { ...m, ...tokens } : m
-      )
+      const msgs = (state.messages[instanceId] || []).map(m => m.id === messageId ? { ...m, ...tokens } : m)
       return { ...state, messages: { ...state.messages, [instanceId]: msgs } }
     }
-
-    case 'TOGGLE_SIDEBAR':
-      return { ...state, sidebarCollapsed: !state.sidebarCollapsed }
-
-    case 'SET_VIEW':
-      return { ...state, view: action.payload }
-
-    case 'SET_ACTIVE_PIPELINE':
-      return { ...state, activePipelineId: action.payload }
-
     case 'CLEAR_UNREAD': {
       const { [action.payload]: _, ...rest } = state.unreadCounts
       return { ...state, unreadCounts: rest }
     }
-
     case 'INCREMENT_UNREAD': {
       const id = action.payload
-      if (id === state.selectedInstanceId) return state
-      return {
-        ...state,
-        unreadCounts: {
-          ...state.unreadCounts,
-          [id]: (state.unreadCounts[id] || 0) + 1,
-        },
-      }
+      return { ...state, unreadCounts: { ...state.unreadCounts, [id]: (state.unreadCounts[id] || 0) + 1 } }
     }
-
-    case 'SET_CONNECTED':
-      return { ...state, connected: action.payload }
-
-    case 'SET_USAGE':
-      return { ...state, usage: action.payload }
-
-    case 'UPDATE_SETTINGS':
-      return { ...state, settings: { ...state.settings, ...action.payload } }
-
     case 'CLEAR_MESSAGES': {
       const { [action.payload]: _, ...restMessages } = state.messages
       const { [action.payload]: _r, ...restRaw } = state.rawOutput
       return { ...state, messages: restMessages, rawOutput: restRaw }
     }
-
     case 'APPEND_RAW_LINE': {
       const { instanceId, line, isStderr } = action.payload
       const current = state.rawOutput[instanceId] || []
@@ -351,73 +274,148 @@ function reducer(state: State, action: Action): State {
       const next = current.length >= 2000 ? [...current.slice(-1999), entry] : [...current, entry]
       return { ...state, rawOutput: { ...state.rawOutput, [instanceId]: next } }
     }
-
-    case 'TOGGLE_FOLDER':
-      return {
-        ...state,
-        folders: state.folders.map((f) =>
-          f.id === action.folderId ? { ...f, expanded: !f.expanded } : f
-        ),
-      }
-
-    case 'OPEN_FOLDER_BROWSER':
-      return { ...state, showFolderBrowser: true }
-
-    case 'CLOSE_FOLDER_BROWSER':
-      return { ...state, showFolderBrowser: false }
-
-    case 'OPEN_PROJECT_EDIT':
-      return { ...state, editingFolderId: action.folderId }
-
-    case 'CLOSE_PROJECT_EDIT':
-      return { ...state, editingFolderId: null }
-
-    case 'SET_PIPELINE_PROJECT':
-      return { ...state, activePipelineId: action.projectId }
-
-    case 'TOGGLE_TERMINAL':
-      return { ...state, terminalPanelOpen: !state.terminalPanelOpen }
-
-    case 'SET_TERMINAL_OPEN':
-      return { ...state, terminalPanelOpen: action.payload }
-
-    case 'OPEN_SETTINGS':
-      return { ...state, showSettings: true }
-
-    case 'CLOSE_SETTINGS':
-      return { ...state, showSettings: false }
-
     default:
       return state
   }
 }
 
-// === Context ===
-
-interface AppContextValue {
-  state: State
-  dispatch: React.Dispatch<Action>
-  selectInstance: (id: string | null) => void
-  deleteInstance: (id: string) => Promise<void>
-  sendMessage: (instanceId: string, text: string, images?: string[], flags?: string[]) => Promise<void>
-  loadOlderMessages: (instanceId: string) => Promise<void>
+function uiReducer(state: UISlice, action: Action): UISlice {
+  switch (action.type) {
+    case 'SELECT_INSTANCE':
+      return { ...state, selectedInstanceId: action.payload }
+    case 'TOGGLE_SIDEBAR':
+      return { ...state, sidebarCollapsed: !state.sidebarCollapsed }
+    case 'SET_VIEW':
+      return { ...state, view: action.payload }
+    case 'SET_ACTIVE_PIPELINE':
+      return { ...state, activePipelineId: action.payload }
+    case 'SET_CONNECTED':
+      return { ...state, connected: action.payload }
+    case 'SET_USAGE':
+      return { ...state, usage: action.payload }
+    case 'OPEN_FOLDER_BROWSER':
+      return { ...state, showFolderBrowser: true }
+    case 'CLOSE_FOLDER_BROWSER':
+      return { ...state, showFolderBrowser: false }
+    case 'OPEN_PROJECT_EDIT':
+      return { ...state, editingFolderId: action.folderId }
+    case 'CLOSE_PROJECT_EDIT':
+      return { ...state, editingFolderId: null }
+    case 'SET_PIPELINE_PROJECT':
+      return { ...state, activePipelineId: action.projectId }
+    case 'TOGGLE_TERMINAL':
+      return { ...state, terminalPanelOpen: !state.terminalPanelOpen }
+    case 'SET_TERMINAL_OPEN':
+      return { ...state, terminalPanelOpen: action.payload }
+    case 'OPEN_SETTINGS':
+      return { ...state, showSettings: true }
+    case 'CLOSE_SETTINGS':
+      return { ...state, showSettings: false }
+    default:
+      return state
+  }
 }
-
-const AppContext = createContext<AppContextValue | null>(null)
 
 // === Provider ===
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, initialState)
+  const [instState, instDispatch] = useReducer(instancesReducer, initialInstances)
+  const [msgState, msgDispatch] = useReducer(messagesReducer, initialMessages)
+  const [uiState, uiDispatch] = useReducer(uiReducer, initialUI)
+
+  // Refs for stable cross-slice access inside callbacks/WS handlers
+  const instStateRef = useRef(instState)
+  instStateRef.current = instState
+  const msgStateRef = useRef(msgState)
+  msgStateRef.current = msgState
+  const uiStateRef = useRef(uiState)
+  uiStateRef.current = uiState
+
+  // Combined dispatch: routes each action to the correct sub-reducer(s)
+  const dispatch = useCallback((action: Action) => {
+    switch (action.type) {
+      // Instances slice
+      case 'SET_STATE':
+      case 'ADD_FOLDER':
+      case 'UPDATE_FOLDER':
+      case 'REORDER_FOLDERS':
+      case 'TOGGLE_FOLDER':
+      case 'ADD_INSTANCE':
+      case 'UPDATE_INSTANCE':
+      case 'REORDER_INSTANCES':
+      case 'UPDATE_SETTINGS':
+        instDispatch(action)
+        break
+
+      // Cross-cutting: REMOVE_FOLDER clears messages for all affected instances
+      case 'REMOVE_FOLDER': {
+        const fid = action.payload || action.folderId
+        instStateRef.current.instances
+          .filter(i => i.folderId === fid)
+          .forEach(i => msgDispatch({ type: 'CLEAR_MESSAGES', payload: i.id }))
+        instDispatch(action)
+        break
+      }
+
+      // Cross-cutting: REMOVE_INSTANCE clears messages + deselects if needed
+      case 'REMOVE_INSTANCE':
+        msgDispatch({ type: 'CLEAR_MESSAGES', payload: action.payload })
+        instDispatch(action)
+        if (uiStateRef.current.selectedInstanceId === action.payload) {
+          uiDispatch({ type: 'SELECT_INSTANCE', payload: null })
+        }
+        break
+
+      // Messages slice
+      case 'SET_MESSAGES':
+      case 'PREPEND_MESSAGES':
+      case 'ADD_MESSAGE':
+      case 'APPEND_STREAMING':
+      case 'CLEAR_STREAMING':
+      case 'TOOL_START':
+      case 'TOOL_INPUT_DELTA':
+      case 'TOOL_COMPLETE':
+      case 'SET_MESSAGE_TOKENS':
+      case 'CLEAR_MESSAGES':
+      case 'APPEND_RAW_LINE':
+      case 'CLEAR_UNREAD':
+        msgDispatch(action)
+        break
+
+      // Cross-cutting: skip INCREMENT_UNREAD for the currently selected instance
+      case 'INCREMENT_UNREAD':
+        if (action.payload !== uiStateRef.current.selectedInstanceId) {
+          msgDispatch(action)
+        }
+        break
+
+      // UI slice
+      case 'SELECT_INSTANCE':
+      case 'TOGGLE_SIDEBAR':
+      case 'SET_VIEW':
+      case 'SET_ACTIVE_PIPELINE':
+      case 'SET_CONNECTED':
+      case 'SET_USAGE':
+      case 'OPEN_FOLDER_BROWSER':
+      case 'CLOSE_FOLDER_BROWSER':
+      case 'OPEN_PROJECT_EDIT':
+      case 'CLOSE_PROJECT_EDIT':
+      case 'SET_PIPELINE_PROJECT':
+      case 'TOGGLE_TERMINAL':
+      case 'SET_TERMINAL_OPEN':
+      case 'OPEN_SETTINGS':
+      case 'CLOSE_SETTINGS':
+        uiDispatch(action)
+        break
+    }
+  }, []) // sub-dispatchers from useReducer are stable
 
   // Fetch initial state and connect WebSocket
   useEffect(() => {
     let mounted = true
-
     api.getState().then((data) => {
       if (mounted) {
         dispatch({ type: 'SET_STATE', payload: data })
-        // Restore selected instance from URL
         const urlInstance = new URLSearchParams(window.location.search).get('instance')
         if (urlInstance && data.instances.some((i: InstanceConfig) => i.id === urlInstance)) {
           dispatch({ type: 'SELECT_INSTANCE', payload: urlInstance })
@@ -429,24 +427,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }).catch(() => {})
         }
       }
-    }).catch((err) => {
-      console.error('Failed to fetch initial state:', err)
-    })
+    }).catch((err) => console.error('Failed to fetch initial state:', err))
 
     api.getUsage().then((usage) => {
-      if (mounted) {
-        dispatch({ type: 'SET_USAGE', payload: usage })
-      }
-    }).catch(() => {
-      // usage might not be connected yet
-    })
+      if (mounted) dispatch({ type: 'SET_USAGE', payload: usage })
+    }).catch(() => {})
 
     api.connect()
-
-    return () => {
-      mounted = false
-    }
-  }, [])
+    return () => { mounted = false }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Subscribe to WebSocket events
   useEffect(() => {
@@ -455,9 +444,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(
       api.onConnection((payload: { connected: boolean; reconnected?: boolean }) => {
         dispatch({ type: 'SET_CONNECTED', payload: payload.connected })
-        // On reconnect, re-fetch history for selected instance to fill any event gap
-        if (payload.connected && payload.reconnected && selectedIdRef.current) {
-          const id = selectedIdRef.current
+        if (payload.connected && payload.reconnected && uiStateRef.current.selectedInstanceId) {
+          const id = uiStateRef.current.selectedInstanceId
           api.getHistory(id, { limit: 50 }).then((data) => {
             const messages = (data as any).messages ?? data
             const hasMore = (data as any).hasMore ?? false
@@ -480,7 +468,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           } else if (event.type === 'tool-complete') {
             dispatch({ type: 'TOOL_COMPLETE', payload: { instanceId, toolId: event.toolId, output: event.output, isError: event.isError } })
           } else if (event.type === 'raw-line') {
-            if (stateRef.current.terminalPanelOpen) {
+            if (uiStateRef.current.terminalPanelOpen) {
               dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
             }
           }
@@ -492,33 +480,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       api.onClaudeProcessExit((payload: ClaudeProcessExitEvent) => {
         const { instanceId } = payload
         dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
-        dispatch({
-          type: 'UPDATE_INSTANCE',
-          payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId, activeTaskId: undefined, activeTaskTitle: undefined } },
-        })
-        // Refresh history to get the final messages
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId, activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
         api.getHistory(instanceId, { limit: 50 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages, hasMore } })
-        }).catch(() => {
-          // history fetch failed, streaming content already cleared
-        })
+        }).catch(() => {})
       })
     )
 
-    unsubs.push(
-      api.onUsageUpdated((payload: any) => {
-        dispatch({ type: 'SET_USAGE', payload })
-      })
-    )
+    unsubs.push(api.onUsageUpdated((payload: any) => dispatch({ type: 'SET_USAGE', payload })))
 
     unsubs.push(
       api.onOrchestratorAssigned((payload: { folderId: string; instanceId: string; taskId: string; taskTitle: string }) => {
-        dispatch({
-          type: 'UPDATE_INSTANCE',
-          payload: { id: payload.instanceId, updates: { state: 'running', activeTaskId: payload.taskId, activeTaskTitle: payload.taskTitle } },
-        })
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.instanceId, updates: { state: 'running', activeTaskId: payload.taskId, activeTaskTitle: payload.taskTitle, taskStartedAt: Date.now() } } })
       })
     )
 
@@ -537,30 +512,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
     )
 
-    return () => {
-      unsubs.forEach((unsub) => unsub())
-    }
-  }, [])
+    return () => { unsubs.forEach(u => u()) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Ref to avoid selectInstance depending on state.messages (which changes on every stream delta)
-  const messagesRef = useRef(state.messages)
-  messagesRef.current = state.messages
-
-  // Refs for keyboard navigation (avoids stale closures)
-  const instancesRef = useRef(state.instances)
-  instancesRef.current = state.instances
-  const selectedIdRef = useRef(state.selectedInstanceId)
-  selectedIdRef.current = state.selectedInstanceId
-  const stateRef = useRef(state)
-  stateRef.current = state
-
-  // Restore selected instance from URL on initial load (runs once after instances load)
+  // Restore selected instance from URL on initial load
   const restoredFromUrl = useRef(false)
   useEffect(() => {
-    if (restoredFromUrl.current || state.instances.length === 0 || state.selectedInstanceId !== null) return
+    if (restoredFromUrl.current || instState.instances.length === 0 || uiState.selectedInstanceId !== null) return
     restoredFromUrl.current = true
     const urlId = new URLSearchParams(location.search).get('instance')
-    if (urlId && state.instances.some(i => i.id === urlId)) {
+    if (urlId && instState.instances.some(i => i.id === urlId)) {
       dispatch({ type: 'SELECT_INSTANCE', payload: urlId })
       dispatch({ type: 'CLEAR_UNREAD', payload: urlId })
       api.getHistory(urlId, { limit: 50 }).then((data) => {
@@ -569,20 +530,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages, hasMore } })
       }).catch(() => {})
     }
-  }, [state.instances, state.selectedInstanceId])
+  }, [instState.instances, uiState.selectedInstanceId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dynamic page title
   useEffect(() => {
-    const id = state.selectedInstanceId
+    const id = uiState.selectedInstanceId
     if (!id) { document.title = 'NasKlaude'; return }
-    const instance = state.instances.find(i => i.id === id)
+    const instance = instState.instances.find(i => i.id === id)
     if (!instance) { document.title = 'NasKlaude'; return }
-    const folder = state.folders.find(f => f.id === instance.folderId)
+    const folder = instState.folders.find(f => f.id === instance.folderId)
     const parts: string[] = []
     if (folder) parts.push(folder.displayName || folder.name)
     if (instance.agentRole) parts.push(instance.agentRole.charAt(0).toUpperCase() + instance.agentRole.slice(1))
     parts.push(instance.name)
-    const msgs = state.messages[id]
+    const msgs = msgState.messages[id]
     if (msgs && msgs.length > 0) {
       const last = msgs[msgs.length - 1]
       const textBlock = last.content.find(b => b.type === 'text')
@@ -592,26 +553,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     }
     document.title = parts.join(' | ')
-  }, [state.selectedInstanceId, state.instances, state.folders, state.messages])
+  }, [uiState.selectedInstanceId, instState.instances, instState.folders, msgState.messages])
 
   // Global Alt+↑/↓ to cycle between instances
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
-      const instances = instancesRef.current
+      const instances = instStateRef.current.instances
       if (instances.length === 0) return
       e.preventDefault()
-      const currentId = selectedIdRef.current
+      const currentId = uiStateRef.current.selectedInstanceId
       const idx = instances.findIndex(i => i.id === currentId)
-      let next: number
-      if (e.key === 'ArrowUp') {
-        next = idx <= 0 ? instances.length - 1 : idx - 1
-      } else {
-        next = idx >= instances.length - 1 ? 0 : idx + 1
-      }
+      const next = e.key === 'ArrowUp'
+        ? (idx <= 0 ? instances.length - 1 : idx - 1)
+        : (idx >= instances.length - 1 ? 0 : idx + 1)
       dispatch({ type: 'SELECT_INSTANCE', payload: instances[next].id })
       dispatch({ type: 'CLEAR_UNREAD', payload: instances[next].id })
-      if (!messagesRef.current[instances[next].id]) {
+      if (!msgStateRef.current.messages[instances[next].id]) {
         api.getHistory(instances[next].id, { limit: 50 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
@@ -621,66 +579,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Select instance and fetch history
-  const selectInstance = useCallback(
-    (id: string | null) => {
-      dispatch({ type: 'SELECT_INSTANCE', payload: id })
-      // Persist selection in URL
-      if (id) {
-        window.history.replaceState(null, '', `?instance=${id}`)
-      } else {
-        window.history.replaceState(null, '', location.pathname)
+  // Stable action callbacks
+  const selectInstance = useCallback((id: string | null) => {
+    dispatch({ type: 'SELECT_INSTANCE', payload: id })
+    if (id) {
+      window.history.replaceState(null, '', `?instance=${id}`)
+      dispatch({ type: 'CLEAR_UNREAD', payload: id })
+      if (!msgStateRef.current.messages[id]) {
+        api.getHistory(id, { limit: 50 }).then((data) => {
+          const messages = (data as any).messages ?? data
+          const hasMore = (data as any).hasMore ?? false
+          dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
+        }).catch((err) => console.error('Failed to fetch history:', err))
       }
-      if (id) {
-        dispatch({ type: 'CLEAR_UNREAD', payload: id })
-        if (!messagesRef.current[id]) {
-          api.getHistory(id, { limit: 50 }).then((data) => {
-            const messages = (data as any).messages ?? data
-            const hasMore = (data as any).hasMore ?? false
-            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
-          }).catch((err) => {
-            console.error('Failed to fetch history:', err)
-          })
-        }
-      }
-    },
-    [] // dispatch is stable from useReducer; messagesRef is a ref
-  )
+    } else {
+      window.history.replaceState(null, '', location.pathname)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Send a message to an instance
-  const sendMessage = useCallback(
-    async (instanceId: string, text: string, images?: string[], flags?: string[]) => {
-      // Add user message locally
-      const userMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        instanceId,
-        role: 'user',
-        content: [{ type: 'text', text }],
-        createdAt: Date.now(),
-      }
-      dispatch({ type: 'ADD_MESSAGE', payload: userMessage })
-
-      // Update instance state to running
-      dispatch({
-        type: 'UPDATE_INSTANCE',
-        payload: { id: instanceId, updates: { state: 'running' } },
-      })
-
-      // Send to API
-      await api.sendMessage(instanceId, { text, images, flags })
-    },
-    []
-  )
+  const sendMessage = useCallback(async (instanceId: string, text: string, images?: string[], flags?: string[]) => {
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      instanceId,
+      role: 'user',
+      content: [{ type: 'text', text }],
+      createdAt: Date.now(),
+    }
+    dispatch({ type: 'ADD_MESSAGE', payload: userMessage })
+    dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'running' } } })
+    await api.sendMessage(instanceId, { text, images, flags })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const deleteInstance = useCallback(async (id: string) => {
     await api.deleteInstance(id)
     dispatch({ type: 'REMOVE_INSTANCE', payload: id })
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadOlderMessages = useCallback(async (instanceId: string) => {
-    const currentMsgs = stateRef.current.messages[instanceId]
+    const currentMsgs = msgStateRef.current.messages[instanceId]
     if (!currentMsgs || currentMsgs.length === 0) return
     const earliest = currentMsgs[0].createdAt
     const data = await api.getHistory(instanceId, { limit: 50, before: earliest })
@@ -689,20 +627,107 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (messages.length > 0) {
       dispatch({ type: 'PREPEND_MESSAGES', payload: { instanceId, messages, hasMore } })
     }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const value = useMemo<AppContextValue>(
-    () => ({ state, dispatch, selectInstance, deleteInstance, sendMessage, loadOlderMessages }),
-    [state, dispatch, selectInstance, deleteInstance, sendMessage, loadOlderMessages]
+  // Memoized context values — each slice only re-renders its consumers
+  const instancesValue = useMemo(
+    () => ({ folders: instState.folders, instances: instState.instances }),
+    [instState.folders, instState.instances]
   )
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>
+  const messagesValue = useMemo(
+    () => ({
+      messages: msgState.messages,
+      hasMore: msgState.hasMore,
+      streamingContent: msgState.streamingContent,
+      streamingToolCalls: msgState.streamingToolCalls,
+      unreadCounts: msgState.unreadCounts,
+      rawOutput: msgState.rawOutput,
+    }),
+    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput]
+  )
+
+  const uiValue = useMemo(
+    () => ({
+      view: uiState.view,
+      selectedInstanceId: uiState.selectedInstanceId,
+      sidebarCollapsed: uiState.sidebarCollapsed,
+      terminalPanelOpen: uiState.terminalPanelOpen,
+      showSettings: uiState.showSettings,
+      showFolderBrowser: uiState.showFolderBrowser,
+      editingFolderId: uiState.editingFolderId,
+      activePipelineId: uiState.activePipelineId,
+      connected: uiState.connected,
+      usage: uiState.usage,
+      settings: instState.settings,
+    }),
+    [uiState, instState.settings]
+  )
+
+  const dispatchValue = useMemo(
+    () => ({ dispatch, selectInstance, sendMessage, deleteInstance, loadOlderMessages }),
+    [dispatch, selectInstance, sendMessage, deleteInstance, loadOlderMessages]
+  )
+
+  return (
+    <AppDispatchContext.Provider value={dispatchValue}>
+      <InstancesContext.Provider value={instancesValue}>
+        <MessagesContext.Provider value={messagesValue}>
+          <UIContext.Provider value={uiValue}>
+            {children}
+          </UIContext.Provider>
+        </MessagesContext.Provider>
+      </InstancesContext.Provider>
+    </AppDispatchContext.Provider>
+  )
 }
 
-// === Hook ===
+// === Backward-Compatible useApp() shim ===
+// Used by components not yet migrated to domain hooks.
+
+interface AppContextValue {
+  state: State
+  dispatch: React.Dispatch<Action>
+  selectInstance: (id: string | null) => void
+  deleteInstance: (id: string) => Promise<void>
+  sendMessage: (instanceId: string, text: string, images?: string[], flags?: string[]) => Promise<void>
+  loadOlderMessages: (instanceId: string) => Promise<void>
+}
 
 export function useApp(): AppContextValue {
-  const ctx = useContext(AppContext)
-  if (!ctx) throw new Error('useApp must be used within an AppProvider')
-  return ctx
+  const { folders, instances } = useInstances()
+  const msgs = useMessages()
+  const ui = useUI()
+  const { dispatch, selectInstance, sendMessage, deleteInstance, loadOlderMessages } = useAppDispatch()
+
+  const state = useMemo<State>(
+    () => ({
+      folders,
+      instances,
+      settings: ui.settings,
+      messages: msgs.messages,
+      messageOrder: [],
+      hasMore: msgs.hasMore,
+      streamingContent: msgs.streamingContent,
+      streamingToolCalls: msgs.streamingToolCalls,
+      unreadCounts: msgs.unreadCounts,
+      rawOutput: msgs.rawOutput,
+      selectedInstanceId: ui.selectedInstanceId,
+      sidebarCollapsed: ui.sidebarCollapsed,
+      showFolderBrowser: ui.showFolderBrowser,
+      editingFolderId: ui.editingFolderId,
+      view: ui.view,
+      activePipelineId: ui.activePipelineId,
+      connected: ui.connected,
+      usage: ui.usage,
+      terminalPanelOpen: ui.terminalPanelOpen,
+      showSettings: ui.showSettings,
+    }),
+    [folders, instances, ui, msgs]
+  )
+
+  return useMemo(
+    () => ({ state, dispatch, selectInstance, sendMessage, deleteInstance, loadOlderMessages }),
+    [state, dispatch, selectInstance, sendMessage, deleteInstance, loadOlderMessages]
+  )
 }
