@@ -1,7 +1,8 @@
 import { Container, Application } from 'pixi.js'
 import type { InstanceConfig, FolderConfig } from '@shared/types'
-import { ProjectilePool } from './projectile'
+import { ProjectilePool, ROLE_COLOR } from './projectile'
 import type { ProjectileRole } from './projectile'
+import { trail } from './particles'
 import { LEFT_ZONE, GAME_H } from './constants'
 
 const SILO_PADDING  = 8
@@ -12,8 +13,11 @@ const SILO_GAP      = 16
 const MAX_SPRITES   = 6
 
 const ROLE_TRAVEL_MS: Record<string, number> = {
-  planner: 600, builder: 400, tester: 500, promoter: 700,
+  planner: 700, builder: 300, tester: 500, promoter: 600,
 }
+
+// Trail spawn interval (ms) — spawn a trail particle every N ms during travel
+const TRAIL_INTERVAL_MS = 40
 
 /**
  * Compute stage-space center of an instance's character sprite.
@@ -44,6 +48,7 @@ export function getCharacterCenter(
 
 export class AttackAnimator {
   private app: Application
+  private stage: Container
   private pool: ProjectilePool
   private queue: Array<() => void> = []
   private activeCount = 0
@@ -51,6 +56,7 @@ export class AttackAnimator {
 
   constructor(stage: Container, app: Application) {
     this.app = app
+    this.stage = stage
     this.pool = new ProjectilePool(10, stage)
   }
 
@@ -79,16 +85,52 @@ export class AttackAnimator {
 
       const travelMs = ROLE_TRAVEL_MS[role] ?? 500
       const startTime = Date.now()
+      let lastTrailTime = startTime
       this.activeCount++
+
+      const color = ROLE_COLOR[r] ?? 0xaaaaaa
 
       const tick = () => {
         const elapsed = Date.now() - startTime
         const t = Math.min(elapsed / travelMs, 1)
-        projectile.gfx.x = from.x + (to.x - from.x) * t
-        projectile.gfx.y = from.y + (to.y - from.y) * t
+
+        // Base linear interpolation
+        const baseX = from.x + (to.x - from.x) * t
+        const baseY = from.y + (to.y - from.y) * t
+
+        // Per-role trajectory offset
+        let yOffset = 0
+        switch (r) {
+          case 'tester':
+            // Arc trajectory — parabolic y offset
+            yOffset = -Math.sin(t * Math.PI) * 40
+            break
+          case 'promoter':
+            // Slight upward curve
+            yOffset = -Math.sin(t * Math.PI) * 15
+            break
+        }
+
+        projectile.gfx.x = baseX
+        projectile.gfx.y = baseY + yOffset
+
+        // Rotation for arrow-type projectiles
+        if (r === 'builder' || r === 'tester') {
+          const dx = to.x - from.x
+          const dy = (to.y - from.y) + (r === 'tester' ? -Math.cos(t * Math.PI) * 40 * Math.PI / travelMs : 0)
+          projectile.gfx.rotation = Math.atan2(dy, dx)
+        }
+
+        // Spawn trail particles
+        const now = Date.now()
+        if (now - lastTrailTime >= TRAIL_INTERVAL_MS && t < 0.95) {
+          trail(this.stage, projectile.gfx.x, projectile.gfx.y, color, this.app)
+          lastTrailTime = now
+        }
 
         if (t >= 1) {
           this.app.ticker.remove(tick)
+          projectile.gfx.rotation = 0
           projectile.reset()
           this.activeCount--
           onHit()

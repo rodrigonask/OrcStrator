@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { Application, Container, Graphics, Text } from 'pixi.js'
+import { Application, Container, Graphics, Sprite, Text } from 'pixi.js'
+import { SpriteManager } from './SpriteManager'
 import { useInstances } from '../../context/InstancesContext'
 import { useAppDispatch } from '../../context/AppDispatchContext'
 import { usePipeline } from '../../context/PipelineContext'
@@ -53,6 +54,11 @@ export function GameScreen() {
       canvas.style.width  = '100%'
       canvas.style.height = '100%'
       containerRef.current.appendChild(canvas)
+
+      // Load sprite sheets (non-blocking — panels use Graphics until later tasks swap to sprites)
+      SpriteManager.load().catch(err =>
+        console.warn('[GameScreen] Sprite sheet load failed:', err.message)
+      )
 
       // Enable root stage events
       app.stage.eventMode = 'static'
@@ -170,7 +176,7 @@ export function GameScreen() {
         if (!from || !to) continue
 
         animator.fire(from, to, role, () => {
-          panel.triggerHit(task.id, app)
+          panel.triggerHit(task.id, app, role)
         })
       }
     }

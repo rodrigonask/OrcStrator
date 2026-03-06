@@ -2,6 +2,9 @@ import { Container, Graphics, Text, Application } from 'pixi.js'
 import { MonsterSprite, MONSTER_SIZES } from './MonsterSprite'
 import type { PipelineTask } from '@shared/types'
 import { RIGHT_ZONE } from './constants'
+import { ROLE_COLOR } from './projectile'
+import type { ProjectileRole } from './projectile'
+import { burst } from './particles'
 
 function idHash(id: string): number {
   let h = 0
@@ -88,7 +91,7 @@ export class MonsterPanel {
         s.container.x = x
         s.container.y = y
       } else {
-        const sprite = new MonsterSprite(task, x, y, hp)
+        const sprite = new MonsterSprite(task, x, y, hp, this.app.ticker)
         this.frontSprites.set(task.id, sprite)
         this.frontContainer.addChild(sprite.container)
       }
@@ -138,6 +141,9 @@ export class MonsterPanel {
   }
 
   private _playDeathAnim(taskId: string, sprite: MonsterSprite) {
+    // Play hurt animation during death sequence
+    sprite.playHurt()
+
     const c = sprite.container
     const startTime = Date.now()
     const DURATION = 500
@@ -177,15 +183,26 @@ export class MonsterPanel {
    * Plays a white flash + horizontal shake on the monster for the given taskId.
    * Calls onDone() when the animation finishes.
    */
-  triggerHit(taskId: string, app: Application, onDone?: () => void): void {
+  triggerHit(taskId: string, app: Application, role?: string, onDone?: () => void): void {
     const sprite = this.frontSprites.get(taskId)
     if (!sprite) { onDone?.(); return }
 
+    // Play hurt sprite animation if available
+    sprite.playHurt()
+
     const c = sprite.container
-    // container children order: 0=label(Text), 1=body(Graphics), 2=healthbar(Container)
-    const body = c.getChildAt(1) as Graphics
+    // container children order: 0=label(Text), 1=body(Graphics|AnimatedSprite), 2=healthbar(Container)
+    const body = c.getChildAt(1)
     const origTint = body.tint
     body.tint = 0xffffff
+
+    // Spawn impact burst particles at monster center
+    const center = this.getMonsterCenter(taskId)
+    if (center) {
+      const r = (role as ProjectileRole) || 'default'
+      const color = ROLE_COLOR[r] ?? 0xaaaaaa
+      burst(this.stage, center.x, center.y, color, 5, app)
+    }
 
     const origX = c.x
     const startTime = Date.now()

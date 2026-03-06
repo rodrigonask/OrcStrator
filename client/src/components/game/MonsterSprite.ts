@@ -1,5 +1,6 @@
-import { Container, Graphics, Text } from 'pixi.js'
+import { AnimatedSprite, Container, Graphics, Text, Texture, Ticker } from 'pixi.js'
 import { HealthBar } from './HealthBar'
+import { SpriteManager } from './SpriteManager'
 import type { PipelineTask } from '@shared/types'
 
 const MONSTER_COLORS: Record<number, number> = {
@@ -17,10 +18,18 @@ export class MonsterSprite {
   readonly priority: number
   private _hp: HealthBar
   private _taskId: string
+  private _ticker: Ticker | null
+  private _lastHp: number
+  private _animSprite: AnimatedSprite | null = null
+  private _idleTextures: Texture[] = []
+  private _hurtTextures: Texture[] = []
+  private _hurtTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(task: PipelineTask, x: number, y: number, hp: number) {
+  constructor(task: PipelineTask, x: number, y: number, hp: number, ticker?: Ticker) {
     this._taskId = task.id
     this.priority = task.priority
+    this._ticker = ticker ?? null
+    this._lastHp = hp
     this.container = new Container()
     this.container.x = x
     this.container.y = y
@@ -38,23 +47,96 @@ export class MonsterSprite {
     label.y = 14
     this.container.addChild(label)
 
-    // Body graphic
-    const body = new Graphics()
-    this._drawMonster(body, task.priority, size, color)
-    body.x = 0
-    body.y = 16
-    this.container.addChild(body)
+    // Body: AnimatedSprite if available, fallback to Graphics
+    this._idleTextures = SpriteManager.getMonsterFrames(task.priority, 'idle')
+    this._hurtTextures = SpriteManager.getMonsterFrames(task.priority, 'hurt')
+
+    if (this._idleTextures.length > 0) {
+      const sprite = new AnimatedSprite(this._idleTextures)
+      sprite.animationSpeed = 6 / 60 // ~6fps at 60fps ticker
+      sprite.play()
+      // Scale 32px sprite frames to fit MONSTER_SIZES
+      const scale = size / 32
+      sprite.scale.set(scale)
+      sprite.x = 0
+      sprite.y = 16
+      this._animSprite = sprite
+      this.container.addChild(sprite)
+    } else {
+      // Fallback: geometric Graphics
+      const body = new Graphics()
+      this._drawMonster(body, task.priority, size, color)
+      body.x = 0
+      body.y = 16
+      this.container.addChild(body)
+    }
 
     // Health bar below monster
     const barW = Math.max(size, 32)
-    this._hp = new HealthBar(0, 16 + size + 4, barW)
+    this._hp = new HealthBar(0, 16 + size + 4, barW, ticker ?? new Ticker())
     this._hp.update(hp)
     this.container.addChild(this._hp.container)
   }
 
   get taskId() { return this._taskId }
 
-  updateHp(hp: number) { this._hp.update(hp) }
+  updateHp(hp: number) {
+    const dmg = this._lastHp - hp
+    if (dmg > 0 && this._ticker) {
+      this._spawnDmgText(dmg)
+    }
+    this._lastHp = hp
+    this._hp.update(hp)
+  }
+
+  /** Swap to hurt animation for 300ms, then return to idle. */
+  playHurt() {
+    if (!this._animSprite || this._hurtTextures.length === 0) return
+    if (this._hurtTimer) clearTimeout(this._hurtTimer)
+
+    this._animSprite.textures = this._hurtTextures
+    this._animSprite.animationSpeed = 6 / 60
+    this._animSprite.play()
+
+    this._hurtTimer = setTimeout(() => {
+      if (this._animSprite && this._idleTextures.length > 0) {
+        this._animSprite.textures = this._idleTextures
+        this._animSprite.animationSpeed = 6 / 60
+        this._animSprite.play()
+      }
+      this._hurtTimer = null
+    }, 300)
+  }
+
+  /** Whether this monster uses an animated sprite (vs fallback graphics). */
+  get hasSprite(): boolean {
+    return this._animSprite !== null
+  }
+
+  private _spawnDmgText(dmg: number) {
+    const size = MONSTER_SIZES[this.priority] ?? 28
+    const txt = new Text({
+      text: `-${dmg}`,
+      style: { fontFamily: 'monospace', fontSize: 10, fill: 0xdd4422 },
+    })
+    txt.anchor.set(0.5, 0.5)
+    txt.x = size / 2
+    txt.y = 16 + size / 2
+    this.container.addChild(txt)
+
+    const startTime = Date.now()
+    const tick = () => {
+      const t = Math.min((Date.now() - startTime) / 600, 1)
+      txt.y = (16 + size / 2) - t * 20
+      txt.alpha = 1 - t
+      if (t >= 1) {
+        this._ticker!.remove(tick)
+        this.container.removeChild(txt)
+        txt.destroy()
+      }
+    }
+    this._ticker!.add(tick)
+  }
 
   private _drawMonster(g: Graphics, priority: number, size: number, color: number) {
     switch (priority) {
@@ -90,6 +172,7 @@ export class MonsterSprite {
   }
 
   destroy() {
+    if (this._hurtTimer) clearTimeout(this._hurtTimer)
     this._hp.destroy()
     this.container.destroy()
   }

@@ -1,0 +1,33 @@
+{
+  "frames": {
+    "test-0": {
+      "frame": { "x": 0, "y": 0, "w": 32, "h": 32 },
+      "sourceSize": { "w": 32, "h": 32 },
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 }
+    },
+    "test-1": {
+      "frame": { "x": 32, "y": 0, "w": 32, "h": 32 },
+      "sourceSize": { "w": 32, "h": 32 },
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 }
+    },
+    "test-2": {
+      "frame": { "x": 64, "y": 0, "w": 32, "h": 32 },
+      "sourceSize": { "w": 32, "h": 32 },
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 }
+    },
+    "test-3": {
+      "frame": { "x": 96, "y": 0, "w": 32, "h": 32 },
+      "sourceSize": { "w": 32, "h": 32 },
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 }
+    }
+  },
+  "meta": {
+    "image": "test.png",
+    "format": "RGBA8888",
+    "size": { "w": 128, "h": 32 },
+    "scale": 1
+  },
+  "animations": {
+    "test-idle": ["test-0", "test-1", "test-2", "test-3"]
+  }
+}
