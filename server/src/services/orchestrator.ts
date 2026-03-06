@@ -22,7 +22,7 @@ export interface ResumeSnapshot {
 }
 
 const ROLE_COLUMNS: Record<string, string[]> = {
-  planner: ['backlog', 'spec'],
+  planner: ['spec'],
   builder: ['build'],
   tester: ['qa'],
   promoter: ['ship'],
@@ -248,8 +248,7 @@ class OrchestratorService {
     const role = instance.agent_role as string
     const now = Date.now()
 
-    // Planner picks up backlog tasks → promote to spec
-    const finalColumn = (role === 'planner' && task.column === 'backlog') ? 'spec' : (task.column as string)
+    const finalColumn = task.column as string
 
     // Collect bundle tasks (builders only)
     let tasksToLock: Record<string, unknown>[] = [task]
@@ -455,7 +454,7 @@ class OrchestratorService {
     parts.push(`Task ID: ${primaryTask.id as string}`)
     parts.push(`Pipeline API base: http://localhost:3333/api`)
     parts.push(`Move task:   POST http://localhost:3333/api/pipelines/${projectId}/tasks/${primaryTask.id as string}/move  body: { "column": "<target>" }`)
-    parts.push(`Valid columns: backlog | spec | build | qa | staging | ship | done`)
+    parts.push(`Valid columns (use these exact keys in API calls): backlog (Inbox — human-only intake, do NOT move tasks here) | staging (Staging/Stuck — escalation inbox, use for [ACTION NEEDED] tasks) | spec (Planning — Planner picks from here) | build (Building — Builder picks from here) | qa (Testing — Tester picks from here) | ship (Publishing — Promoter picks from here) | done`)
     parts.push('')
     parts.push('**DO NOT use Todoist, HyperTask, or any external task management tool.** Your task is above. Use the Pipeline API URLs above to move it when done.')
     parts.push('')
@@ -531,7 +530,7 @@ class OrchestratorService {
       const idleAgents = db.prepare(`SELECT COUNT(*) as count FROM instances WHERE folder_id = ? AND agent_role IS NOT NULL AND state = 'idle'`)
         .get(folderId) as { count: number }
 
-      const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','spec','build','qa','ship') AND locked_by IS NULL`)
+      const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('spec','build','qa','ship') AND locked_by IS NULL`)
         .get(folderId) as { count: number }
 
       broadcastEvent({ type: 'orchestrator:status', payload: { folderId, active, idleAgents: idleAgents.count, pendingTasks: pendingTasks.count } })
