@@ -197,6 +197,9 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
             : instance.name
           }
           {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orc-managed">⚡</span>}
+          {(instance.level ?? 1) > 1 && (
+            <span className="instance-level-tag">Lv.{instance.level}</span>
+          )}
         </div>
         {instance.orchestratorManaged && instance.activeTaskTitle && instance.state === 'running' && (
           <div className="instance-active-task">

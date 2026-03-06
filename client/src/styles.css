@@ -841,6 +841,21 @@ body {
   color: var(--warning);
 }
 
+.chat-level-badge {
+  font-size: 11px;
+  font-weight: 600;
+  margin: 0 4px;
+  opacity: 0.9;
+  font-family: monospace;
+}
+
+.instance-level-tag {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: 4px;
+  font-family: monospace;
+}
+
 .chat-header-right {
   display: flex;
   align-items: center;
@@ -3939,6 +3954,7 @@ body {
   position: absolute;
   top: 8px;
   right: 8px;
+  z-index: 2;
   background: none;
   border: 1px solid transparent;
   color: var(--text-tertiary);

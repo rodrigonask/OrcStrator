@@ -4,10 +4,13 @@ import { SpriteManager } from './SpriteManager'
 import { useInstances } from '../../context/InstancesContext'
 import { useAppDispatch } from '../../context/AppDispatchContext'
 import { usePipeline } from '../../context/PipelineContext'
+import { useUI } from '../../context/UIContext'
+import { api } from '../../api'
 import { GAME_W, GAME_H, LEFT_ZONE, CENTER_ZONE, RIGHT_ZONE } from './constants'
 import { buildAgentPanel } from './AgentPanel'
 import { MonsterPanel } from './monsterPanel'
 import { AttackAnimator, getCharacterCenter } from './attackAnimator'
+import { burst } from './particles'
 import type { InstanceConfig, FolderConfig, PipelineTask } from '@shared/types'
 
 export function GameScreen() {
@@ -30,6 +33,10 @@ export function GameScreen() {
   const { dispatch } = useAppDispatch()
   const dispatchRef  = useRef(dispatch)
   useEffect(() => { dispatchRef.current = dispatch }, [dispatch])
+
+  const { settings } = useUI()
+  const settingsRef = useRef(settings)
+  useEffect(() => { settingsRef.current = settings }, [settings])
 
   // Effect 1: Initialize PixiJS Application (runs once)
   useEffect(() => {
@@ -227,6 +234,61 @@ export function GameScreen() {
     }
     buildAgentPanel(panelRef.current, instances, folders, onInstanceClick)
   }, [instances, folders])
+
+  // Effect 4: Level-up animation on instance:levelup WS event
+  useEffect(() => {
+    const unsub = api.onInstanceLevelUp((payload: { instanceId: string; newLevel: number }) => {
+      const app   = appRef.current
+      const stage = app?.stage?.children[0] as Container | undefined
+      if (!app || !stage) return
+
+      const pos = getCharacterCenter(payload.instanceId, instancesRef.current, foldersRef.current)
+      if (!pos) return
+
+      // Gold particle burst
+      burst(stage, pos.x, pos.y, 0xffd700, 12, app)
+
+      // Floating "LEVEL UP!" text
+      const lvlUpText = new Text({
+        text: 'LEVEL UP!',
+        style: { fontFamily: 'monospace', fontSize: 14, fill: 0xffd700, fontWeight: 'bold' },
+      })
+      lvlUpText.anchor.set(0.5, 0.5)
+      lvlUpText.x = pos.x
+      lvlUpText.y = pos.y - 20
+      stage.addChild(lvlUpText)
+
+      const start = Date.now()
+      const tick = () => {
+        const t = Math.min((Date.now() - start) / 1500, 1)
+        lvlUpText.y = pos.y - 20 - t * 40
+        lvlUpText.alpha = 1 - t
+        if (t >= 1) {
+          app.ticker.remove(tick)
+          stage.removeChild(lvlUpText)
+          lvlUpText.destroy()
+        }
+      }
+      app.ticker.add(tick)
+
+      // Optional ascending tone
+      if (settingsRef.current.soundsEnabled === true) {
+        try {
+          const actx = new AudioContext()
+          const osc = actx.createOscillator()
+          const gain = actx.createGain()
+          osc.connect(gain).connect(actx.destination)
+          osc.frequency.setValueAtTime(440, actx.currentTime)
+          osc.frequency.linearRampToValueAtTime(880, actx.currentTime + 0.3)
+          gain.gain.setValueAtTime(0.15, actx.currentTime)
+          gain.gain.linearRampToValueAtTime(0, actx.currentTime + 0.4)
+          osc.start()
+          osc.stop(actx.currentTime + 0.4)
+        } catch { /* audio not available */ }
+      }
+    })
+    return unsub
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div

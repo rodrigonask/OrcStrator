@@ -1,5 +1,6 @@
 import { AnimatedSprite, Container, Graphics, Text } from 'pixi.js'
 import { SpriteManager } from './SpriteManager'
+import { LEVELS } from '@shared/constants'
 import type { InstanceConfig } from '@shared/types'
 
 const ROLE_COLORS: Record<string, number> = {
@@ -123,6 +124,25 @@ export function createCharSprite(
   label.x = 0
   label.y = size + 2
   charContainer.addChild(label)
+
+  // Level label below name (only for level > 1)
+  const instLevel = instance.level ?? 1
+  if (instLevel > 1) {
+    const TIER_COLORS_HEX: Record<string, number> = {
+      Beginner: 0x10b981, Intermediate: 0x3b82f6, Advanced: 0x8b5cf6,
+      Elite: 0xf59e0b, Mythic: 0xef4444, Cosmic: 0xec4899,
+    }
+    const instTier = [...LEVELS].reverse().find(l => (instance.xpTotal ?? 0) >= l.xpRequired)
+    const lvlColor = TIER_COLORS_HEX[instTier?.tier ?? 'Beginner'] ?? 0x10b981
+
+    const levelLabel = new Text({
+      text: `Lv.${instLevel}`,
+      style: { fontFamily: 'monospace', fontSize: 7, fill: lvlColor },
+    })
+    levelLabel.x = 0
+    levelLabel.y = size + 12
+    charContainer.addChild(levelLabel)
+  }
 
   parent.addChild(charContainer)
 }

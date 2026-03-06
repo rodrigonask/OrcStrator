@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import type { ChatMessage } from '@shared/types'
+import { LEVELS } from '@shared/constants'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useInstances } from '../context/InstancesContext'
@@ -56,6 +57,12 @@ export function ChatHeader() {
     }
   }, [instanceId, dispatch])
 
+  const instanceLevel = instance ? LEVELS.slice().reverse().find(l => (instance.xpTotal ?? 0) >= l.xpRequired) : undefined
+  const tierColor: Record<string, string> = {
+    Beginner: '#10b981', Intermediate: '#3b82f6', Advanced: '#8b5cf6',
+    Elite: '#f59e0b', Mythic: '#ef4444', Cosmic: '#ec4899',
+  }
+
   if (!instance) return null
 
   return (
@@ -65,6 +72,11 @@ export function ChatHeader() {
           <span className={`role-pill role-${instance.agentRole} compact header-role-pill ${isOrchestratorLocked ? 'locked' : ''}`}>
             {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
             {instance.specialization && <span className="role-spec-label">{instance.specialization}</span>}
+          </span>
+        )}
+        {(instance.level ?? 1) > 1 && (
+          <span className="chat-level-badge" style={{ color: tierColor[instanceLevel?.tier ?? 'Beginner'] ?? '#10b981' }}>
+            Lv.{instance.level}
           </span>
         )}
         {instance.agentRole && <span className="chat-instance-name-sep"> | </span>}
