@@ -92,7 +92,7 @@ export function WelcomeOverlay() {
   const steps = [
     // Step 1: Welcome
     <div key="welcome" className="welcome-wizard-step">
-      <div className="welcome-logo">NasKlaude</div>
+      <div className="welcome-logo">OrcStrator</div>
       <h2 className="welcome-wizard-title">Use Claude Code like a game.</h2>
       <p className="welcome-wizard-desc">
         Every message earns 15 XP. Complex tasks earn bonus XP.
@@ -235,7 +235,7 @@ export function WelcomeOverlay() {
         onClick={handleFinish}
         style={{ width: '100%', padding: '12px', fontSize: 15, marginTop: 24 }}
       >
-        Launch NasKlaude {'\u2192'}
+        Launch OrcStrator {'\u2192'}
       </button>
     </div>
   ]

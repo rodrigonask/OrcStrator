@@ -136,7 +136,7 @@ export function GameScreen() {
 
       // CENTER_ZONE title
       const title = new Text({
-        text: 'NASKLAUDE',
+        text: 'ORCSTRATOR',
         style: {
           fontFamily: 'monospace',
           fontSize: 28,

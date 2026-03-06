@@ -23,7 +23,7 @@ function AppContent() {
   useEffect(() => {
     const instance = instances.find(i => i.id === selectedInstanceId)
     if (!instance) {
-      document.title = 'NasKlaude'
+      document.title = 'OrcStrator'
       return
     }
     const folder = folders.find(f => f.id === instance.folderId)

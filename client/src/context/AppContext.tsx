@@ -550,9 +550,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Dynamic page title
   useEffect(() => {
     const id = uiState.selectedInstanceId
-    if (!id) { document.title = 'NasKlaude'; return }
+    if (!id) { document.title = 'OrcStrator'; return }
     const instance = instState.instances.find(i => i.id === id)
-    if (!instance) { document.title = 'NasKlaude'; return }
+    if (!instance) { document.title = 'OrcStrator'; return }
     const folder = instState.folders.find(f => f.id === instance.folderId)
     const parts: string[] = []
     if (folder) parts.push(folder.displayName || folder.name)

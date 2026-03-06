@@ -67,7 +67,7 @@ export function Sidebar() {
                 dispatch({ type: 'SET_VIEW', payload: 'chat' })
               }}
             >
-              NasKlaude
+              OrcStrator
             </button>
           </div>
           <button
