@@ -619,14 +619,6 @@ body {
   text-overflow: ellipsis;
 }
 
-.instance-preview {
-  font-size: 15px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .instance-active-task {
   font-size: 11px;
   color: var(--text-tertiary);
@@ -653,6 +645,12 @@ body {
 .instance-active-task-link:hover {
   color: var(--accent-hover, var(--accent));
   text-decoration-style: solid;
+}
+
+.instance-active-task-elapsed {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
 }
 
 .instance-badge {
