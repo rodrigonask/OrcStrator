@@ -1,6 +1,7 @@
 import { db } from '../db.js'
 import { sendMessage } from './claude-process.js'
 import { broadcastEvent } from '../ws/handler.js'
+import { awardInstanceXp } from './xp.js'
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
@@ -62,6 +63,7 @@ class OrchestratorService {
       console.error('[orchestrator] onProcessExit error:', err)
     }
     this.pruneMessages(instanceId)
+    awardInstanceXp(instanceId, 'session-done')
   }
 
   private pruneOldMessages(instanceId: string): void {

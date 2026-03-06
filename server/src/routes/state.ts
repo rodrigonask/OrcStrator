@@ -50,6 +50,8 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       agentRole: r.agent_role as InstanceConfig['agentRole'],
       specialization: r.specialization as string | undefined,
       orchestratorManaged: Boolean(r.orchestrator_managed),
+      xpTotal: (r.xp_total as number) ?? 0,
+      level: (r.level as number) ?? 1,
       activeTaskId: lockedByInstance.get(r.id as string)?.taskId,
       activeTaskTitle: lockedByInstance.get(r.id as string)?.taskTitle,
     }))

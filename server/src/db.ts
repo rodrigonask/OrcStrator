@@ -257,6 +257,12 @@ function migration009(): void {
   setSchemaVersion(9)
 }
 
+function migration010(): void {
+  db.prepare('ALTER TABLE instances ADD COLUMN xp_total INTEGER DEFAULT 0').run()
+  db.prepare('ALTER TABLE instances ADD COLUMN level INTEGER DEFAULT 1').run()
+  setSchemaVersion(10)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -294,6 +300,10 @@ function runMigrations(): void {
 
   if (currentVersion < 9) {
     migration009()
+  }
+
+  if (currentVersion < 10) {
+    migration010()
   }
 }
 

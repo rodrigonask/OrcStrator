@@ -67,6 +67,15 @@ export const LEVELS: Array<{ level: number; name: string; xpRequired: number; ti
   { level: 30, name: 'Singularity', xpRequired: 1400000, tier: 'Cosmic' },
 ]
 
+export const AGENT_XP_TABLE: Record<string, number> = {
+  'task-spec':    50,   // planner finished spec (task moved to build)
+  'task-build':   100,  // builder finished build (task moved to qa)
+  'task-qa':      75,   // tester passed QA (task moved to ship)
+  'task-ship':    125,  // promoter shipped (task moved to done)
+  'task-bounce':  25,   // task bounced back (partial credit)
+  'session-done': 30,   // claude process exited normally
+}
+
 export const ALLOWED_FLAG_PREFIXES = [
   '--dangerously-skip-permissions',
   '--system-prompt',

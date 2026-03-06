@@ -221,5 +221,7 @@ function rowToInstance(r: Record<string, unknown>) {
     agentRole: r.agent_role as string | undefined,
     specialization: r.specialization as string | undefined,
     orchestratorManaged: Boolean(r.orchestrator_managed),
+    xpTotal: (r.xp_total as number) ?? 0,
+    level: (r.level as number) ?? 1,
   }
 }

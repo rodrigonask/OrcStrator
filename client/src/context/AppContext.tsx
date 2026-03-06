@@ -513,6 +513,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
 
     unsubs.push(
+      api.onInstanceXp((payload: { instanceId: string; xpTotal: number; level: number }) => {
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.instanceId, updates: { xpTotal: payload.xpTotal, level: payload.level } } })
+      })
+    )
+
+    unsubs.push(
       api.onMessageAdded((payload: { instanceId: string; message: ChatMessage }) => {
         dispatch({ type: 'ADD_MESSAGE', payload: payload.message })
         if (payload.message.role === 'assistant') {

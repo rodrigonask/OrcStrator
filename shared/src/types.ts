@@ -36,6 +36,8 @@ export interface InstanceConfig {
   activeTaskId?: string
   activeTaskTitle?: string
   taskStartedAt?: number
+  xpTotal?: number
+  level?: number
 }
 
 // === CHAT MESSAGES ===
