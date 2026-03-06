@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -191,9 +192,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     <div className={`folder-group${folder.stealthMode ? ' stealth' : ''}`}>
       <div
         className="folder-header"
+        {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
         onClick={toggleExpanded}
         onContextMenu={handleContextMenu}
-        {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
       >
         <div
           className="folder-color-bar"
@@ -294,15 +295,17 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
         </div>
       )}
 
-      {contextMenu && (
+      {contextMenu && createPortal(
         <>
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 199 }}
             onClick={closeContextMenu}
+            onContextMenu={(e) => { e.preventDefault(); closeContextMenu() }}
           />
           <div
             className="context-menu"
             style={{ top: contextMenu.y, left: contextMenu.x }}
+            onClick={e => e.stopPropagation()}
           >
             <button className="context-menu-item" onClick={handleEdit}>
               Edit Project
@@ -328,7 +331,8 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
               Hide Folder
             </button>
           </div>
-        </>
+        </>,
+        document.body
       )}
 
       {/* Orchestrate confirmation modal */}

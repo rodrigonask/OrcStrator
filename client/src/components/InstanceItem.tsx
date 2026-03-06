@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
@@ -172,12 +173,12 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   return (
     <div
       className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${activeAnimClass}`}
+      {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
       onClick={() => {
         selectInstance(instance.id)
         if (view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
       }}
       onContextMenu={handleContextMenu}
-      {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
     >
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
@@ -225,11 +226,12 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
         ×
       </button>
 
-      {contextMenu && (
+      {contextMenu && createPortal(
         <>
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 199 }}
             onClick={(e) => { e.stopPropagation(); setContextMenu(null) }}
+            onContextMenu={(e) => { e.preventDefault(); setContextMenu(null) }}
           />
           <div
             className="context-menu"
@@ -315,7 +317,8 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
               Close Session
             </button>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   )
