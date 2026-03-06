@@ -60,7 +60,15 @@ export function Sidebar() {
         <div className="sidebar-header">
           <div className="sidebar-header-left">
             <ConnectionStatus />
-            <span className="sidebar-title">NasKlaude</span>
+            <button
+              className="sidebar-title"
+              onClick={() => {
+                dispatch({ type: 'SELECT_INSTANCE', payload: null })
+                dispatch({ type: 'SET_VIEW', payload: 'chat' })
+              }}
+            >
+              NasKlaude
+            </button>
           </div>
           <button
             className="sidebar-collapse-btn"
