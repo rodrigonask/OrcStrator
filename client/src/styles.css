@@ -3901,6 +3901,61 @@ body {
   cursor: default;
 }
 
+.rs-collapsed-icons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 40px;
+}
+
+.rs-icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.rs-icon-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--bg-elevated);
+}
+
+.rs-icon-sword {
+  color: var(--text-muted);
+}
+
+.rs-switch-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+  line-height: 1;
+}
+
+.rs-switch-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--bg-elevated);
+}
+
 /* Scrollable content area */
 .right-sidebar > *:not(.rs-collapse-btn) {
   flex-shrink: 0;
@@ -3931,6 +3986,7 @@ body {
 
 /* Identity */
 .rs-identity {
+  position: relative;
   padding-top: 40px;
   text-align: center;
 }
@@ -4133,30 +4189,6 @@ body {
   align-items: center;
   gap: 4px;
   z-index: 1;
-}
-
-.rs-orc-toggle-btn {
-  background: none;
-  border: 1px solid transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  font-size: 13px;
-  padding: 3px 6px;
-  border-radius: var(--radius-sm);
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
-  line-height: 1;
-}
-
-.rs-orc-toggle-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--border);
-  background: var(--bg-elevated);
-}
-
-.rs-orc-toggle-btn.active {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-muted);
 }
 
 /* Orc POV panel */

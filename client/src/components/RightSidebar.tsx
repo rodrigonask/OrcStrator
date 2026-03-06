@@ -86,15 +86,6 @@ export function RightSidebar() {
     <aside className={`right-sidebar${collapsed ? ' rs-collapsed' : ''}`}>
       {/* Header buttons */}
       <div className="rs-header-btns">
-        {!collapsed && (
-          <button
-            className={`rs-orc-toggle-btn${orcMode ? ' active' : ''}`}
-            onClick={() => setOrcMode(v => !v)}
-            title={orcMode ? 'Hide Orc activity' : 'Show Orc activity'}
-          >
-            ⚔
-          </button>
-        )}
         <button
           className="rs-collapse-btn"
           onClick={() => setCollapsed(c => !c)}
@@ -105,7 +96,14 @@ export function RightSidebar() {
       </div>
 
       {collapsed ? (
-        <div className="rs-collapsed-avatar" title={userName}>{userEmoji}</div>
+        <div className="rs-collapsed-icons">
+          <button className="rs-icon-btn" onClick={() => { setCollapsed(false); setOrcMode(false) }} title="User stats">
+            {userEmoji}
+          </button>
+          <button className="rs-icon-btn rs-icon-sword" onClick={() => { setCollapsed(false); setOrcMode(true) }} title="Orc activity">
+            ⚔
+          </button>
+        </div>
       ) : orcMode ? (
         /* Orc POV panel */
         <div className="rs-orc-pov">
@@ -156,6 +154,7 @@ export function RightSidebar() {
         <>
           {/* Identity card */}
           <div className="rs-section rs-identity">
+            <button className="rs-switch-btn" onClick={() => setOrcMode(true)} title="Show Orc activity">⚔</button>
             <div className="rs-avatar">{userEmoji}</div>
             <div className="rs-name">{userName}</div>
             <div className="rs-tier-badge" style={{ color: tierColor, borderColor: tierColor }}>
