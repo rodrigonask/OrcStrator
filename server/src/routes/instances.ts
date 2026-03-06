@@ -223,5 +223,8 @@ function rowToInstance(r: Record<string, unknown>) {
     orchestratorManaged: Boolean(r.orchestrator_managed),
     xpTotal: (r.xp_total as number) ?? 0,
     level: (r.level as number) ?? 1,
+    overdriveTasks: (r.overdrive_tasks as number) ?? 0,
+    overdriveStartedAt: r.overdrive_started_at as number | undefined,
+    lastTaskAt: r.last_task_at as number | undefined,
   }
 }

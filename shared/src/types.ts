@@ -38,6 +38,9 @@ export interface InstanceConfig {
   taskStartedAt?: number
   xpTotal?: number
   level?: number
+  overdriveTasks?: number
+  overdriveStartedAt?: number
+  lastTaskAt?: number
 }
 
 // === CHAT MESSAGES ===

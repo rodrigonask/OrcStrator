@@ -5,12 +5,12 @@ import type { ProjectileRole } from './projectile'
 import { trail } from './particles'
 import { LEFT_ZONE, GAME_H } from './constants'
 
-const SILO_PADDING  = 8
-const CHAR_SIZE     = 48
-const CHAR_GAP      = 6
-const SILO_HEADER_H = 20
-const SILO_GAP      = 16
-const MAX_SPRITES   = 6
+const SILO_PADDING  = 10
+const CHAR_SIZE     = 80
+const CHAR_GAP      = 8
+const SILO_HEADER_H = 22
+const SILO_GAP      = 14
+const MAX_SPRITES   = 5
 
 const ROLE_TRAVEL_MS: Record<string, number> = {
   planner: 700, builder: 300, tester: 500, promoter: 600,

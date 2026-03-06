@@ -519,6 +519,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
 
     unsubs.push(
+      api.onInstanceOverdrive((payload: { instanceId: string; overdriveTasks: number; overdriveStartedAt?: number; lastTaskAt?: number }) => {
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.instanceId, updates: { overdriveTasks: payload.overdriveTasks, overdriveStartedAt: payload.overdriveStartedAt, lastTaskAt: payload.lastTaskAt } } })
+      })
+    )
+
+    unsubs.push(
       api.onMessageAdded((payload: { instanceId: string; message: ChatMessage }) => {
         dispatch({ type: 'ADD_MESSAGE', payload: payload.message })
         if (payload.message.role === 'assistant') {
@@ -528,6 +534,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
 
     return () => { unsubs.forEach(u => u()) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Client-side overdrive expiry sweep — reset instances whose cache window has expired
+  useEffect(() => {
+    const CACHE_WINDOW_MS = 3_600_000
+    const intervalId = setInterval(() => {
+      const now = Date.now()
+      for (const inst of instStateRef.current.instances) {
+        if (inst.lastTaskAt && (now - inst.lastTaskAt) > CACHE_WINDOW_MS) {
+          dispatch({ type: 'UPDATE_INSTANCE', payload: { id: inst.id, updates: { overdriveTasks: 0, overdriveStartedAt: undefined, lastTaskAt: undefined } } })
+        }
+      }
+    }, 60_000)
+    return () => clearInterval(intervalId)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Restore selected instance from URL on initial load

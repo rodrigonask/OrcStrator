@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import type { ChatMessage } from '@shared/types'
-import { LEVELS } from '@shared/constants'
+import { OVERDRIVE_LEVELS } from '@shared/constants'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useInstances } from '../context/InstancesContext'
@@ -57,11 +57,16 @@ export function ChatHeader() {
     }
   }, [instanceId, dispatch])
 
-  const instanceLevel = instance ? LEVELS.slice().reverse().find(l => (instance.xpTotal ?? 0) >= l.xpRequired) : undefined
-  const tierColor: Record<string, string> = {
-    Beginner: '#10b981', Intermediate: '#3b82f6', Advanced: '#8b5cf6',
-    Elite: '#f59e0b', Mythic: '#ef4444', Cosmic: '#ec4899',
+  // Overdrive badge computation
+  const odTasks = instance?.overdriveTasks ?? 0
+  let overdriveLevel = 0
+  for (const od of OVERDRIVE_LEVELS) {
+    if (odTasks >= od.minTasks) overdriveLevel = od.level
+    else break
   }
+  const overdrive = OVERDRIVE_LEVELS[overdriveLevel]
+  const minsLeft = Math.max(0, 60 - Math.floor((Date.now() - (instance?.lastTaskAt ?? 0)) / 60_000))
+  const isExpiringSoon = overdriveLevel > 0 && minsLeft < 10
 
   if (!instance) return null
 
@@ -74,9 +79,12 @@ export function ChatHeader() {
             {instance.specialization && <span className="role-spec-label">{instance.specialization}</span>}
           </span>
         )}
-        {(instance.level ?? 1) > 1 && (
-          <span className="chat-level-badge" style={{ color: tierColor[instanceLevel?.tier ?? 'Beginner'] ?? '#10b981' }}>
-            Lv.{instance.level}
+        {overdriveLevel > 0 && (
+          <span
+            className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
+            title={`Overdrive Lv.${overdriveLevel} — ${overdrive.label} | ${instance.overdriveTasks} tasks | Cache expires in ${minsLeft}min | ~${overdrive.savings}% token savings`}
+          >
+            OD-{overdriveLevel}
           </span>
         )}
         {instance.agentRole && <span className="chat-instance-name-sep"> | </span>}

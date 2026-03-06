@@ -21,6 +21,10 @@ const SHEETS: SheetEntry[] = [
   { alias: 'warrior', src: '/spritesheets/warrior.json' },
   { alias: 'archer', src: '/spritesheets/archer.json' },
   { alias: 'paladin', src: '/spritesheets/paladin.json' },
+  { alias: 'mage-projectile', src: '/spritesheets/mage-projectile.json' },
+  { alias: 'warrior-projectile', src: '/spritesheets/warrior-projectile.json' },
+  { alias: 'archer-projectile', src: '/spritesheets/archer-projectile.json' },
+  { alias: 'paladin-projectile', src: '/spritesheets/paladin-projectile.json' },
 ]
 
 const PRIORITY_SHEET: Record<number, string> = {
@@ -35,6 +39,13 @@ const ROLE_SHEET: Record<string, string> = {
   builder: 'warrior',
   tester: 'archer',
   promoter: 'paladin',
+}
+
+const ROLE_PROJECTILE_SHEET: Record<string, string> = {
+  planner: 'mage-projectile',
+  builder: 'warrior-projectile',
+  tester: 'archer-projectile',
+  promoter: 'paladin-projectile',
 }
 
 const PLAIN_TEXTURES: SheetEntry[] = [
@@ -68,14 +79,11 @@ export const SpriteManager = {
         }
       }
       const results = await Assets.load<Spritesheet>(SHEETS.map(s => s.alias))
-      if (!Array.isArray(results)) {
-        // Single sheet returns the sheet directly
-        if (SHEETS.length === 1) {
-          cache.set(SHEETS[0].alias, results)
-        }
-      } else {
-        for (let i = 0; i < SHEETS.length; i++) {
-          cache.set(SHEETS[i].alias, results[i])
+      if (results && typeof results === 'object' && !Array.isArray(results)) {
+        // Assets.load with multiple aliases returns Record<alias, Spritesheet>
+        for (const { alias } of SHEETS) {
+          const sheet = (results as Record<string, Spritesheet>)[alias]
+          if (sheet) cache.set(alias, sheet)
         }
       }
       loaded = true
@@ -108,6 +116,15 @@ export const SpriteManager = {
     const sheet = cache.get(sheetName)
     if (!sheet) return []
     return sheet.animations?.[`${sheetName}-idle`] ?? []
+  },
+
+  /** Get projectile animation frames for a character role. */
+  getProjectileFrames(role: string): Texture[] {
+    const sheetName = ROLE_PROJECTILE_SHEET[role]
+    if (!sheetName) return []
+    const sheet = cache.get(sheetName)
+    if (!sheet) return []
+    return sheet.animations?.[sheetName] ?? []
   },
 
   /** Get a single loaded texture by alias (e.g. 'battlefield'). */

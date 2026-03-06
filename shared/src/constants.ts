@@ -67,14 +67,14 @@ export const LEVELS: Array<{ level: number; name: string; xpRequired: number; ti
   { level: 30, name: 'Singularity', xpRequired: 1400000, tier: 'Cosmic' },
 ]
 
-export const AGENT_XP_TABLE: Record<string, number> = {
-  'task-spec':    50,   // planner finished spec (task moved to build)
-  'task-build':   100,  // builder finished build (task moved to qa)
-  'task-qa':      75,   // tester passed QA (task moved to ship)
-  'task-ship':    125,  // promoter shipped (task moved to done)
-  'task-bounce':  25,   // task bounced back (partial credit)
-  'session-done': 30,   // claude process exited normally
-}
+export const OVERDRIVE_LEVELS = [
+  { level: 0, label: 'Cold',      minTasks: 0,  savings: 0,  color: 'transparent' },
+  { level: 1, label: 'Warm',      minTasks: 1,  savings: 40, color: '#60a5fa' },
+  { level: 2, label: 'Hot',       minTasks: 2,  savings: 60, color: '#22d3ee' },
+  { level: 3, label: 'Blazing',   minTasks: 4,  savings: 70, color: '#f97316' },
+  { level: 4, label: 'Overdrive', minTasks: 7,  savings: 80, color: '#ef4444' },
+  { level: 5, label: 'Supernova', minTasks: 12, savings: 85, color: '#e879f9' },
+] as const
 
 export const ALLOWED_FLAG_PREFIXES = [
   '--dangerously-skip-permissions',
@@ -88,7 +88,9 @@ export const ALLOWED_FLAG_PREFIXES = [
   '--input-format',
   '--resume',
   '--session-id',
-  '--no-cache'
+  '--no-cache',
+  '--mcp-config',
+  '--strict-mcp-config'
 ]
 
 export const DEFAULT_COLUMN_LABELS: Record<PipelineColumn, string> = {

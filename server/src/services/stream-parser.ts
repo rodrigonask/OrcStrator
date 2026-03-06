@@ -99,13 +99,19 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
 
     if (eventType === 'result') {
       indexToToolId.clear()
+      const usage = data.usage as Record<string, unknown> | undefined
+      // Total input = uncached + cache_creation + cache_read
+      const rawInput = (usage?.input_tokens as number) ?? 0
+      const cacheCreation = (usage?.cache_creation_input_tokens as number) ?? 0
+      const cacheRead = (usage?.cache_read_input_tokens as number) ?? 0
+      const totalInput = rawInput + cacheCreation + cacheRead
       return {
         type: 'result',
         instanceId,
         sessionId: data.session_id as string | undefined,
-        costUsd: data.cost_usd as number | undefined,
-        inputTokens: data.input_tokens as number | undefined,
-        outputTokens: data.output_tokens as number | undefined,
+        costUsd: (data.total_cost_usd ?? data.cost_usd) as number | undefined,
+        inputTokens: totalInput || (data.input_tokens as number | undefined),
+        outputTokens: (usage?.output_tokens ?? data.output_tokens) as number | undefined,
         durationMs: data.duration_ms as number | undefined
       }
     }

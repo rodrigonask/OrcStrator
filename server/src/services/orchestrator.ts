@@ -1,9 +1,10 @@
 import { db } from '../db.js'
 import { sendMessage } from './claude-process.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { awardInstanceXp } from './xp.js'
+import { updateOverdriveOnComplete, resetOverdriveIfExpired } from './overdrive.js'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import crypto from 'crypto'
 
 const LOCK_TIMEOUT_MS = 20 * 60 * 1000 // 20 minutes (was 10)
@@ -13,7 +14,26 @@ const SAFETY_POLL_MS = 60 * 1000        // 60 seconds
 const LOCK_SWEEP_MS = 2 * 60 * 1000    // 2 minutes
 const MAX_RETRIES = 3
 
-const MASTER_PROMPTS_DIR = 'C:/Agents/.claude/agents'
+// Master prompts live in nasklaude's source, not in Claude Code's config directory
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const MASTER_PROMPTS_DIR = path.resolve(__dirname, '../../agents')
+
+// Model tiering: Opus for complex implementation, Sonnet for everything else
+const ROLE_MODELS: Record<string, string> = {
+  planner: 'sonnet',
+  builder: 'opus',
+  tester: 'sonnet',
+  promoter: 'sonnet',
+}
+
+// MCP scoping: tester gets playwriter, everyone else gets --strict-mcp-config only (zero servers)
+const AGENTS_DIR = path.resolve(__dirname, '../../agents')
+const ROLE_MCP_CONFIG: Record<string, string> = {
+  planner: 'none',
+  builder: 'none',
+  tester: path.join(AGENTS_DIR, 'mcp-tester.json'),
+  promoter: 'none',
+}
 
 export interface ResumeSnapshot {
   instanceId: string
@@ -63,7 +83,8 @@ class OrchestratorService {
       console.error('[orchestrator] onProcessExit error:', err)
     }
     this.pruneMessages(instanceId)
-    awardInstanceXp(instanceId, 'session-done')
+    updateOverdriveOnComplete(instanceId)
+    // Keep session_id so next task resumes the session (cache hits on pinned context)
   }
 
   private pruneOldMessages(instanceId: string): void {
@@ -288,10 +309,17 @@ class OrchestratorService {
     const prompt = this.buildPrompt(tasksToLock, task, instance, folder)
 
     const cwd = (instance.cwd as string) || (folder.path as string)
-    const sessionId = instance.session_id as string | undefined
+    const sessionId = (instance.session_id as string) || undefined  // Resume session for cache hits on pinned context
 
     const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
     const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
+
+    // Model tiering — inject --model flag if not already set
+    // Use --model=value format so filterFlags() doesn't strip the value
+    const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
+    if (!hasModelFlag && ROLE_MODELS[role]) {
+      globalFlags.push(`--model=${ROLE_MODELS[role]}`)
+    }
 
     let agentPrompt: string | undefined
     if (instance.agent_id) {
@@ -299,7 +327,9 @@ class OrchestratorService {
       agentPrompt = agent?.content
     }
 
-    console.log(`[orchestrator] Assigning "${task.title}" → instance ${instanceId} (${role})`)
+    resetOverdriveIfExpired(instanceId)
+
+    console.log(`[orchestrator] Assigning "${task.title}" → instance ${instanceId} (${role}, model: ${ROLE_MODELS[role] || 'default'})`)
 
     // Extract images from task attachments
     let taskImages: Array<{ base64: string; mediaType: string }> | undefined
@@ -339,7 +369,7 @@ class OrchestratorService {
     this.pruneOldMessages(instanceId)
 
     try {
-      sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt })
+      sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: ROLE_MCP_CONFIG[role] })
     } catch (err) {
       console.error(`[orchestrator] sendMessage failed for ${instanceId}:`, err)
       for (const t of tasksToLock) {
@@ -356,248 +386,109 @@ class OrchestratorService {
   private buildPrompt(tasksToLock: Record<string, unknown>[], primaryTask: Record<string, unknown>, instance: Record<string, unknown>, folder: Record<string, unknown>): string {
     const role = instance.agent_role as string
     const masterPrompt = this.loadMasterPrompt(role)
-    const projectContext = this.loadProjectContext(folder.path as string)
-    const folderName = path.basename(folder.path as string).toLowerCase().replace(/[^a-z0-9]/g, '-')
-    const memory = this.loadMemory(role, folderName)
     const skills = this.loadInstanceSkills(instance)
     const isBundle = tasksToLock.length > 1
+    const projectId = folder.id as string
+    const taskId = primaryTask.id as string
+    const instanceCwd = (instance.cwd as string) || (folder.path as string)
 
     const priorityLabels: Record<number, string> = { 1: 'critical', 2: 'high', 3: 'normal', 4: 'low' }
     const priorityLabel = priorityLabels[primaryTask.priority as number] || 'normal'
 
-    let assignment = `Title: ${primaryTask.title as string}\n`
-    if (isBundle) {
-      assignment += `Group: ${primaryTask.group_index as number}/${primaryTask.group_total as number} — complete all tasks in this group\n`
+    const parts: string[] = []
+
+    // Scope constraint — condensed (was ~18 lines, now ~3)
+    parts.push(`## Scope: ${instanceCwd}`)
+    parts.push(`Only access files under this directory. If cross-scope access needed, create "[ACTION NEEDED]" task in staging and stop.`)
+    parts.push('')
+
+    // Master prompt (already slimmed in Phase 1C)
+    if (masterPrompt) {
+      parts.push(masterPrompt)
+      parts.push('')
     }
-    assignment += `Priority: ${primaryTask.priority as number} (${priorityLabel})\n`
+
+    // Agent skills (from DB — only if assigned)
+    if (skills.length > 0) {
+      for (const skill of skills) {
+        parts.push(`### Skill: ${skill.name}`)
+        parts.push(skill.content)
+      }
+      parts.push('')
+    }
+
+    // Tester: playwriter rules (condensed from ~40 lines to ~10)
+    if (role === 'tester') {
+      parts.push('## Browser Testing: use `playwriter` CLI via Bash only')
+      parts.push('NEVER use `mcp__playwright__*` tools. Use `playwriter session new` then `playwriter -e "..."` with the `page` global.')
+      parts.push('NEVER call `context.newPage()`. Screenshots use relative paths.')
+      parts.push('After QA passes, read the `## Proof of Completion Screenshot` section of the spec and take the proof screenshot.')
+      parts.push('Post proof comment before moving to ship.')
+      parts.push('')
+    }
+
+    // Task assignment
+    parts.push('## YOUR ASSIGNMENT')
+    parts.push(`Title: ${primaryTask.title as string}`)
+    if (isBundle) {
+      parts.push(`Group: ${primaryTask.group_index as number}/${primaryTask.group_total as number} — complete all tasks in this group`)
+    }
+    parts.push(`Priority: ${primaryTask.priority as number} (${priorityLabel})`)
 
     if (primaryTask.description) {
-      assignment += `\n${primaryTask.description as string}\n`
+      parts.push('')
+      parts.push(primaryTask.description as string)
     }
 
     const rawAttachmentsForNote = JSON.parse((primaryTask.attachments as string) || '[]') as Array<{ name: string }>
     if (rawAttachmentsForNote.length > 0) {
-      assignment += `\nAttachments: ${rawAttachmentsForNote.length} screenshot(s) included with this message.\n`
+      parts.push(`\nAttachments: ${rawAttachmentsForNote.length} screenshot(s) included with this message.`)
     }
 
     const dependsOn = JSON.parse((primaryTask.depends_on as string) || '[]') as string[]
     if (dependsOn.length > 0) {
-      assignment += `\nPrerequisites (must be Done): ${dependsOn.join(', ')}\n`
+      parts.push(`\nPrerequisites (must be Done): ${dependsOn.join(', ')}`)
     }
 
-    const priorComments = this.loadTaskComments(primaryTask.id as string)
+    const priorComments = this.loadTaskComments(taskId)
     if (priorComments) {
-      assignment += '\n### Prior Comments\n'
-      assignment += priorComments + '\n'
+      parts.push('\n### Prior Comments')
+      parts.push(priorComments)
     }
 
     if (isBundle) {
-      assignment += '\n### All tasks in this bundle:\n'
+      parts.push('\n### All tasks in this bundle:')
       for (const t of tasksToLock) {
-        assignment += `- [${t.group_index}/${t.group_total}] ${t.title as string}\n`
+        parts.push(`- [${t.group_index}/${t.group_total}] ${t.title as string}`)
         if (t.description) {
           const desc = (t.description as string).slice(0, 100)
-          assignment += `  ${desc}${desc.length === 100 ? '...' : ''}\n`
+          parts.push(`  ${desc}${desc.length === 100 ? '...' : ''}`)
         }
       }
     }
 
-    const instanceCwd = (instance.cwd as string) || (folder.path as string)
-    const scopeConstraint = [
-      '## SCOPE CONSTRAINT — MANDATORY',
-      '',
-      `Your working directory: **${instanceCwd}**`,
-      '',
-      'BEFORE reading, writing, or executing any command on a file:',
-      '1. Verify the full path starts with the working directory above',
-      '2. If it does NOT — STOP and escalate (see below)',
-      '',
-      'You are FORBIDDEN from accessing these sibling directories or any path outside your working directory:',
-      '- Any path not starting with your working directory',
-      '- Examples of forbidden paths: C:/Agents/nask-ai-v2/, C:/Agents/naskminal/, C:/Agents/content-framework/, C:/Agents/meta-ads-uploader/',
-      '',
-      '**If a task requires cross-scope access:**',
-      '1. STOP — do not proceed with the out-of-scope action',
-      '2. Create an escalation task in Staging: POST http://localhost:3333/api/pipelines/{projectId}/tasks',
-      '   body: {"title":"[ACTION NEEDED] Cross-scope access required","column":"staging","priority":2,"description":"Task needs X from Y — human must copy or coordinate"}',
-      '3. Move the current task to staging with explanation',
-    ].join('\n')
-
-    const parts: string[] = []
-
-    // Scope constraint is always first (highest priority guard)
-    parts.push(scopeConstraint)
-    parts.push('---')
-
-    // Planner: require proof-of-completion screenshot section in every spec
-    if (role === 'planner') {
-      const proofReq = [
-        '## PROOF OF COMPLETION — MANDATORY SPEC SECTION',
-        '',
-        'Every spec you write MUST include a `## Proof of Completion Screenshot` section',
-        'placed immediately BEFORE the `## Acceptance Criteria` section.',
-        '',
-        '**For visual / UI tasks — use this format:**',
-        '  ## Proof of Completion Screenshot',
-        '  - URL: /pipeline  (or whichever route shows the feature)',
-        '  - State: describe the exact visible state',
-        '    e.g. "task detail panel is closed, pipeline board is fully visible"',
-        '  - Filename: proof-FIX06-esc-close.png  (task code must appear in the name)',
-        '',
-        '**For backend / non-visual tasks — use this format:**',
-        '  ## Proof of Completion Screenshot',
-        '  No screenshot needed.',
-        '  CI gate: `npx tsc --noEmit` in server/ exits 0 with zero errors.',
-        '',
-        'Rules:',
-        '- Filename must be unique per task (include the task code: FIX-06, UI-11, etc.)',
-        '- State description must be specific enough for the tester to reproduce mechanically',
-        '- When in doubt, require a screenshot — it costs the tester 1 playwriter command',
-      ].join('\n')
-      parts.push(proofReq)
-      parts.push('---')
-    }
-
-    // Tester: inject playwriter-only browser rules before master prompt
-    if (role === 'tester') {
-      const browserRules = [
-        '## BROWSER TESTING — MANDATORY TOOL RULES',
-        '',
-        '**Use `playwriter` CLI via Bash. NEVER use `mcp__playwright__*` tools.**',
-        '',
-        'Playwright MCP creates blank browser contexts and opens dozens of about:blank tabs,',
-        'breaking the user\'s Chrome session. It is FORBIDDEN.',
-        '',
-        'Playwriter connects to the existing logged-in Chrome (green-highlighted tab group).',
-        'It reuses one tab — no new tabs are created.',
-        '',
-        '### Correct playwriter pattern',
-        '```bash',
-        '# Start a session (once per task)',
-        'playwriter session new',
-        '',
-        '# Navigate and interact — use page global, NOT context.newPage()',
-        'playwriter -e "await page.goto(\'http://localhost:5173\')"',
-        'playwriter -e "await page.screenshot({ path: \'shot.png\' })"',
-        '```',
-        '',
-        '### Hard rules',
-        '- NEVER call `context.newPage()` — always use `page` (already bound to the active tab)',
-        '- NEVER use any `mcp__playwright__*` tool — treat them as if they do not exist',
-        '- If playwriter throws "Extension disconnected", fall back to static code review',
-        '  Do NOT switch to playwright MCP as a fallback',
-        '- Screenshots use relative paths (e.g. `"shot.png"`) — absolute paths outside nasklaude throw EPERM',
-        '- `page.evaluate()` multi-statement calls time out — use one return expression per call',
-        '',
-        '## PROOF SCREENSHOT — MANDATORY',
-        '',
-        'After all QA checks pass, read the `## Proof of Completion Screenshot` section',
-        'of your task spec (in the description).',
-        '',
-        'If a screenshot filename is specified:',
-        '1. Navigate to the specified URL in playwriter',
-        '2. Reproduce the specified state',
-        '3. `playwriter -e \'page.screenshot({ path: "proof-TASKCODE.png" })\'`',
-        '4. Post a task comment in EXACTLY this format (replace placeholders):',
-        '   Proof screenshot: proof-TASKCODE.png — [one sentence: what is visible]',
-        '',
-        'If the spec says "No screenshot needed":',
-        '- Run the specified CI gate command',
-        '- Post a comment: Proof screenshot: N/A — [CI gate result, e.g. "tsc exits 0"]',
-        '',
-        'DO NOT move the task to ship without posting the proof comment.',
-      ].join('\n')
-      parts.push(browserRules)
-      parts.push('---')
-    }
-
-    // Master prompt
-    if (masterPrompt) {
-      parts.push(masterPrompt)
-      parts.push('---')
-    }
-
-    // Agent memory — accumulated cross-session knowledge
-    if (memory) {
-      parts.push('## AGENT MEMORY')
-      parts.push('> Your accumulated knowledge from past tasks. Use it to avoid repeating mistakes and apply proven patterns.')
-      parts.push(memory)
-      parts.push('---')
-    }
-
-    // Agent skills — specialization content injected from assigned skills
-    if (skills.length > 0) {
-      parts.push('## AGENT SKILLS')
-      for (const skill of skills) {
-        parts.push(`### ${skill.name}`)
-        parts.push(skill.content)
-      }
-      parts.push('---')
-    }
-
-    // Project context (CLAUDE.md)
-    if (projectContext) {
-      parts.push('## PROJECT CONTEXT')
-      parts.push(projectContext)
-      parts.push('---')
-    }
-
-    // Builder context flood — inject BACKEND_REFERENCE.md if available
-    if (role === 'builder') {
-      const backendRef = this.loadBuilderContext(folder.path as string)
-      if (backendRef) {
-        parts.push('## BACKEND REFERENCE')
-        parts.push('> Auto-injected context. Study this before building — understanding the existing data model saves you from guessing.')
-        parts.push(backendRef)
-        parts.push('---')
-      }
-    }
-
-    const projectId = folder.id as string
-
-    const commentCurl = [
-      '## COMMENT REQUIREMENT — MANDATORY',
-      '',
-      'Before moving this task to any column, post a comment via:',
-      '',
-      `  curl -s -X POST http://localhost:3333/api/pipelines/${projectId}/tasks/${primaryTask.id as string}/comments \\`,
-      '    -H "Content-Type: application/json" \\',
-      `    -d \'{"author":"${role}","body":"YOUR 1-2 LINE NOTE"}\'`,
-      '',
-      'Rules:',
-      '- Normal completion: 1-2 lines describing what you did or what the outcome was.',
-      '  Good: "Implemented debounce fix in orchestrator.ts. TS passes, client build clean."',
-      '- Human action required — use this EXACT format (no variation):',
-      '  "HUMAN ACTION needed: [what the human must do] — then move this task to [column]"',
-      '  Example: "HUMAN ACTION needed: add STRIPE_SECRET_KEY to .env — then move this task to build"',
-      '- DO NOT skip this step. A task with no agent comment is invisible to the human reviewing the pipeline.',
-    ].join('\n')
-    parts.push(commentCurl)
-    parts.push('---')
-    parts.push('## YOUR ASSIGNMENT')
-    parts.push(assignment)
-
-    // Inject task metadata so agents can move tasks via the pipeline API
-    parts.push('## TASK METADATA')
-    parts.push(`Project ID: ${projectId}`)
-    parts.push(`Task ID: ${primaryTask.id as string}`)
-    parts.push(`Pipeline API base: http://localhost:3333/api`)
-    parts.push(`Move task:   POST http://localhost:3333/api/pipelines/${projectId}/tasks/${primaryTask.id as string}/move  body: { "column": "<target>" }`)
-    parts.push(`Valid columns (use these exact keys in API calls): backlog (Inbox — human-only intake, do NOT move tasks here) | staging (Staging/Stuck — escalation inbox, use for [ACTION NEEDED] tasks) | spec (Planning — Planner picks from here) | build (Building — Builder picks from here) | qa (Testing — Tester picks from here) | ship (Publishing — Promoter picks from here) | done`)
+    // Pipeline API (condensed — was ~15 lines, now ~5)
     parts.push('')
-    parts.push('**DO NOT use Todoist, HyperTask, or any external task management tool.** Your task is above. Use the Pipeline API URLs above to move it when done.')
-    parts.push('')
+    parts.push('## Pipeline API')
+    parts.push(`Task ID: ${taskId} | Project ID: ${projectId}`)
+    parts.push(`Move: POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/move  body: {"column":"<target>"}`)
+    parts.push(`Comment: POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/comments  body: {"author":"${role}","body":"..."}`)
+    parts.push(`Columns: backlog | spec | build | qa | staging | ship | done`)
+    parts.push(`Post a comment before moving. Do NOT use Todoist/HyperTask.`)
 
-    // Memory update instruction — agents append insights after each task
-    const memoryPath = path.join(MASTER_PROMPTS_DIR, `${role}-memory-${folderName}.md`).replace(/\\/g, '/')
-    parts.push('## MEMORY UPDATE (do this before moving the task)')
-    parts.push(`Append 2–4 bullet insights to your memory file at: \`${memoryPath}\``)
-    parts.push('Format each line as: `- [insight or pattern you learned]`')
-    parts.push('Keep each bullet short (1 sentence). Skip obvious things. Focus on surprises, gotchas, and reusable patterns.')
-    parts.push('')
-    parts.push('Good luck. The pipeline is watching.')
+    const prompt = parts.join('\n')
+    const promptChars = prompt.length
+    const estimatedTokens = Math.round(promptChars / 4)
+    console.log(`[orchestrator] Prompt size: ${promptChars} chars (~${estimatedTokens} tokens) for ${role} on "${primaryTask.title}"`)
 
-    return parts.join('\n')
+    // Persist prompt size for monitoring
+    try {
+      db.prepare(
+        'INSERT INTO token_usage (instance_id, role, task_id, prompt_chars, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(instance.id as string, role, taskId, promptChars, Date.now())
+    } catch { /* non-critical */ }
+
+    return prompt
   }
 
   private loadMasterPrompt(role: string): string {
@@ -605,28 +496,6 @@ class OrchestratorService {
     try {
       if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf-8')
     } catch { /* unreadable */ }
-    return ''
-  }
-
-  private loadProjectContext(folderPath: string): string {
-    const claudeMdPath = path.join(folderPath, 'CLAUDE.md')
-    try {
-      if (fs.existsSync(claudeMdPath)) return fs.readFileSync(claudeMdPath, 'utf-8')
-    } catch { /* not found */ }
-    return ''
-  }
-
-  private loadMemory(role: string, projectSlug?: string): string {
-    if (projectSlug) {
-      const projectPath = path.join(MASTER_PROMPTS_DIR, `${role}-memory-${projectSlug}.md`)
-      try {
-        if (fs.existsSync(projectPath)) return fs.readFileSync(projectPath, 'utf-8')
-      } catch { /* unreadable */ }
-    }
-    const filePath = path.join(MASTER_PROMPTS_DIR, `${role}-memory.md`)
-    try {
-      if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf-8')
-    } catch { /* not found */ }
     return ''
   }
 
@@ -646,27 +515,22 @@ class OrchestratorService {
 
   private loadTaskComments(taskId: string): string {
     try {
+      // Cap to last 3 comments, max ~500 tokens (~2000 chars)
       const rows = db.prepare(
-        'SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC'
+        'SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 3'
       ).all(taskId) as Array<{ author: string; body: string; created_at: number }>
       if (rows.length === 0) return ''
-      return rows.map(r => `  [@${r.author} ${new Date(r.created_at).toISOString()}]: ${r.body}`).join('\n')
+      const MAX_CHARS = 2000
+      let result = ''
+      for (const r of rows.reverse()) {
+        const line = `  [@${r.author} ${new Date(r.created_at).toISOString()}]: ${r.body}\n`
+        if (result.length + line.length > MAX_CHARS) break
+        result += line
+      }
+      return result.trimEnd()
     } catch {
       return ''
     }
-  }
-
-  private loadBuilderContext(folderPath: string): string {
-    const candidates = [
-      path.join(folderPath, 'agents', 'BACKEND_REFERENCE.md'),
-      path.join(folderPath, 'BACKEND_REFERENCE.md'),
-    ]
-    for (const p of candidates) {
-      try {
-        if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8')
-      } catch { /* skip */ }
-    }
-    return ''
   }
 
   broadcastStatus(folderId: string): void {
@@ -735,16 +599,23 @@ class OrchestratorService {
         const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
         const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
 
+        // Model tiering for resumed sessions
+        const role = instance.agent_role as string
+        const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
+        if (!hasModelFlag && role && ROLE_MODELS[role]) {
+          globalFlags.push(`--model=${ROLE_MODELS[role]}`)
+        }
+
         let agentPrompt: string | undefined
         if (instance.agent_id) {
           const agent = db.prepare('SELECT content FROM agents WHERE id = ?').get(instance.agent_id as string) as { content: string } | undefined
           agentPrompt = agent?.content
         }
 
-        console.log(`[orchestrator] Resuming "${primaryTask.title as string}" → instance ${snap.instanceId} (--resume ${snap.sessionId})`)
+        console.log(`[orchestrator] Resuming "${primaryTask.title as string}" → instance ${snap.instanceId} (--resume ${snap.sessionId}, model: ${ROLE_MODELS[role] || 'default'})`)
 
         try {
-          sendMessage({ instanceId: snap.instanceId, text: prompt, cwd, sessionId: snap.sessionId, flags: globalFlags, agentPrompt })
+          sendMessage({ instanceId: snap.instanceId, text: prompt, cwd, sessionId: snap.sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: ROLE_MCP_CONFIG[role] })
         } catch (err) {
           console.error(`[orchestrator] resumeStaleInstances sendMessage failed for ${snap.instanceId}:`, err)
           // Rollback: unlock tasks and reset instance to idle so triggerAll can reassign normally

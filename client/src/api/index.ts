@@ -25,6 +25,12 @@ export const api = {
     wsClient.on('orchestrator:status', cb),
   onMessageAdded: (cb: (payload: any) => void) =>
     wsClient.on('message:added', cb),
+  onInstanceXp: (cb: (payload: any) => void) =>
+    wsClient.on('instance:xp', cb),
+  onInstanceLevelUp: (cb: (payload: any) => void) =>
+    wsClient.on('instance:levelup', cb),
+  onInstanceOverdrive: (cb: (payload: any) => void) =>
+    wsClient.on('instance:overdrive', cb),
 
   // Connection management
   connect: () => wsClient.connect(),

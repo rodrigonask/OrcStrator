@@ -856,6 +856,36 @@ body {
   font-family: monospace;
 }
 
+/* Overdrive badge */
+.od-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+  cursor: default;
+  margin-left: 4px;
+}
+.od-level-1 { color: #60a5fa; border: 1px solid rgba(96,165,250,0.3);  box-shadow: 0 0  4px rgba(96,165,250,0.3); }
+.od-level-2 { color: #22d3ee; border: 1px solid rgba(34,211,238,0.35); box-shadow: 0 0  6px rgba(34,211,238,0.4); }
+.od-level-3 { color: #f97316; border: 1px solid rgba(249,115,22,0.4);  box-shadow: 0 0  8px rgba(249,115,22,0.45); }
+.od-level-4 { color: #ef4444; border: 1px solid rgba(239,68,68,0.45);  box-shadow: 0 0 12px rgba(239,68,68,0.5); }
+.od-level-5 { color: #e879f9; border: 1px solid rgba(232,121,249,0.5); box-shadow: 0 0 16px rgba(232,121,249,0.6); }
+
+@keyframes od-pulse-anim {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.od-pulse { animation: od-pulse-anim 1.2s ease-in-out infinite; }
+
+@keyframes od-levelup-anim {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.6); }
+  60%  { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+.od-levelup-anim { animation: od-levelup-anim 0.6s ease-out forwards; }
+
 .chat-header-right {
   display: flex;
   align-items: center;

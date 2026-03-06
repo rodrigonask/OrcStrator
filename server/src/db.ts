@@ -263,6 +263,42 @@ function migration010(): void {
   setSchemaVersion(10)
 }
 
+function migration011(): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      instance_id TEXT,
+      role TEXT,
+      task_id TEXT,
+      prompt_chars INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cost_usd REAL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_usage_created ON token_usage(created_at);
+    CREATE INDEX IF NOT EXISTS idx_token_usage_role ON token_usage(role);
+  `)
+  setSchemaVersion(11)
+}
+
+function migration012(): void {
+  const columns: Array<[string, string]> = [
+    ['instances', 'overdrive_tasks INTEGER DEFAULT 0'],
+    ['instances', 'overdrive_started_at INTEGER'],
+    ['instances', 'last_task_at INTEGER'],
+  ]
+  for (const [table, col] of columns) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
+    } catch {
+      // column already exists
+    }
+  }
+  setSchemaVersion(12)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -304,6 +340,14 @@ function runMigrations(): void {
 
   if (currentVersion < 10) {
     migration010()
+  }
+
+  if (currentVersion < 11) {
+    migration011()
+  }
+
+  if (currentVersion < 12) {
+    migration012()
   }
 }
 

@@ -3,12 +3,12 @@ import type { InstanceConfig, FolderConfig } from '@shared/types'
 import { LEFT_ZONE, GAME_H } from './constants'
 import { createCharSprite } from './CharacterSprite'
 
-const SILO_PADDING  = 8
-const CHAR_SIZE     = 48
-const CHAR_GAP      = 6
-const SILO_HEADER_H = 20
-const SILO_GAP      = 16
-const MAX_SPRITES   = 6
+const SILO_PADDING  = 10
+const CHAR_SIZE     = 80
+const CHAR_GAP      = 8
+const SILO_HEADER_H = 22
+const SILO_GAP      = 14
+const MAX_SPRITES   = 5
 
 /**
  * Clears and rebuilds the LEFT_ZONE silo boxes inside the given container.

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
+import { OVERDRIVE_LEVELS } from '@shared/constants'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
@@ -44,6 +45,18 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   const elapsedMins = instance.taskStartedAt
     ? Math.floor((Date.now() - instance.taskStartedAt) / 60_000)
     : 0
+
+  // Overdrive badge computation
+  const odTasks = instance.overdriveTasks ?? 0
+  let overdriveLevel = 0
+  for (const od of OVERDRIVE_LEVELS) {
+    if (odTasks >= od.minTasks) overdriveLevel = od.level
+    else break
+  }
+  const overdrive = OVERDRIVE_LEVELS[overdriveLevel]
+  const minsLeft = Math.max(0, 60 - Math.floor((Date.now() - (instance.lastTaskAt ?? 0)) / 60_000))
+  const isExpiringSoon = overdriveLevel > 0 && minsLeft < 10
+
   const prevStateRef = useRef<string | null>(null)
   const prevMsgCountRef = useRef(messages.length)
   const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -91,6 +104,17 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length])
+
+  // Overdrive level-up animation
+  const prevOdLevelRef = useRef(overdriveLevel)
+  useEffect(() => {
+    const prev = prevOdLevelRef.current
+    prevOdLevelRef.current = overdriveLevel
+    if (overdriveLevel > prev && prev >= 0) {
+      triggerAnim('od-levelup-anim', 600)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overdriveLevel])
 
   useEffect(() => {
     if (contextMenu) {
@@ -197,8 +221,13 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
             : instance.name
           }
           {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orc-managed">⚡</span>}
-          {(instance.level ?? 1) > 1 && (
-            <span className="instance-level-tag">Lv.{instance.level}</span>
+          {overdriveLevel > 0 && (
+            <span
+              className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
+              title={`Overdrive Lv.${overdriveLevel} — ${overdrive.label} | ${instance.overdriveTasks} tasks | Cache expires in ${minsLeft}min | ~${overdrive.savings}% token savings`}
+            >
+              OD-{overdriveLevel}
+            </span>
           )}
         </div>
         {instance.orchestratorManaged && instance.activeTaskTitle && instance.state === 'running' && (

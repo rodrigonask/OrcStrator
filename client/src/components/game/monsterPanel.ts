@@ -77,7 +77,7 @@ export class MonsterPanel {
 
     // Add / update front row sprites
     const COL_W = (this.zone.w - 16) / 3
-    const ROW_H = 110
+    const ROW_H = 140
     frontRow.forEach((task, i) => {
       const col = i % 3
       const row = Math.floor(i / 3)
@@ -231,6 +231,15 @@ export class MonsterPanel {
       }
     }
     app.ticker.add(tick)
+  }
+
+  /** Force re-creation of all monster sprites (e.g. after sprite sheets load). */
+  rebuild() {
+    for (const sprite of this.frontSprites.values()) {
+      this.frontContainer.removeChild(sprite.container)
+      sprite.destroy()
+    }
+    this.frontSprites.clear()
   }
 
   destroy() {

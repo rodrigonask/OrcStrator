@@ -3,7 +3,6 @@ import { broadcastEvent } from '../ws/handler.js'
 import type { PipelineTask, PipelineColumn, TaskHistoryEntry, TaskAttachment } from '@nasklaude/shared'
 import crypto from 'crypto'
 import { orchestrator } from './orchestrator.js'
-import { awardInstanceXp } from './xp.js'
 
 // Per-project mutex to serialize writes
 const locks = new Map<string, Promise<void>>()
@@ -146,16 +145,6 @@ export async function moveTask(taskId: string, column: PipelineColumn, agent?: s
       WHERE id = ?
     `).run(column, JSON.stringify(history), now, completedAt, taskId)
 
-    // Award XP to the instance that worked on this task
-    if (task.lockedBy) {
-      const xpEvent = column === 'build' ? 'task-spec'
-        : column === 'qa' ? 'task-build'
-        : column === 'ship' ? 'task-qa'
-        : column === 'done' ? 'task-ship'
-        : column === 'staging' ? 'task-bounce'
-        : null
-      if (xpEvent) awardInstanceXp(task.lockedBy, xpEvent)
-    }
 
     const updated = getTask(taskId)!
     broadcastPipeline(task.projectId, taskId, 'moved', column, {

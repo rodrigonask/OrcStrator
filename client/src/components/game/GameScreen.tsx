@@ -118,63 +118,15 @@ export function GameScreen() {
       divRight.fill({ color: 0x2a2a4a, alpha: 0.3 })
       overlays.addChild(divRight)
 
-      // Load sprite sheets + battlefield background
-      SpriteManager.load().then(() => {
-        if (cancelled) return
-        const bgTex = SpriteManager.getTexture('battlefield')
-        if (bgTex) {
-          const bgSprite = new Sprite(bgTex)
-          bgSprite.width  = GAME_W
-          bgSprite.height = GAME_H
-          // Insert at index 0 of stage (behind everything) and remove fallback
-          stage.addChildAt(bgSprite, 0)
-          fallbackBg.destroy({ children: true })
-        }
-      }).catch(err =>
-        console.warn('[GameScreen] Sprite sheet load failed:', err.message)
-      )
-
-      // CENTER_ZONE title
-      const title = new Text({
-        text: 'ORCSTRATOR',
-        style: {
-          fontFamily: 'monospace',
-          fontSize: 28,
-          fill: 0x7c9fcc,
-          letterSpacing: 6,
-          align: 'center',
-        },
-      })
-      title.anchor.set(0.5, 0.5)
-      title.x = 700
-      title.y = 310
-      stage.addChild(title)
-
-      const subtitle = new Text({
-        text: 'agents assemble. monsters await.',
-        style: {
-          fontFamily: 'monospace',
-          fontSize: 12,
-          fill: 0x4a6a8a,
-          align: 'center',
-        },
-      })
-      subtitle.anchor.set(0.5, 0.5)
-      subtitle.x = 700
-      subtitle.y = 360
-      stage.addChild(subtitle)
-
       // Agent panel container (LEFT_ZONE layer — sits above background)
       const panelContainer = new Container()
       stage.addChild(panelContainer)
       panelRef.current = panelContainer
 
-      // Build panel with whatever instances/folders are available right now
       const onInstanceClick = (id: string) => {
         dispatchRef.current({ type: 'SELECT_INSTANCE', payload: id })
         dispatchRef.current({ type: 'SET_VIEW', payload: 'chat' })
       }
-      buildAgentPanel(panelContainer, instancesRef.current, foldersRef.current, onInstanceClick)
 
       // Monster panel in RIGHT_ZONE
       const monsterPanel = new MonsterPanel(stage, app, RIGHT_ZONE)
@@ -183,6 +135,29 @@ export function GameScreen() {
       // Attack animator — projectile layer sits on top of everything
       const animator = new AttackAnimator(stage, app)
       attackAnimatorRef.current = animator
+
+      // Build panels immediately with fallback graphics
+      buildAgentPanel(panelContainer, instancesRef.current, foldersRef.current, onInstanceClick)
+
+      // Load sprite sheets, then rebuild panels with real sprites
+      SpriteManager.load().then(() => {
+        if (cancelled) return
+        // Apply battlefield background
+        const bgTex = SpriteManager.getTexture('battlefield')
+        if (bgTex) {
+          const bgSprite = new Sprite(bgTex)
+          bgSprite.width  = GAME_W
+          bgSprite.height = GAME_H
+          stage.addChildAt(bgSprite, 0)
+          fallbackBg.destroy({ children: true })
+        }
+        // Rebuild agent panel now that sprite sheets are loaded
+        buildAgentPanel(panelContainer, instancesRef.current, foldersRef.current, onInstanceClick)
+        // Rebuild monster panel with sprite-based monsters
+        monsterPanel.rebuild()
+      }).catch(err =>
+        console.warn('[GameScreen] Sprite sheet load failed:', err.message)
+      )
     })
 
     return () => {

@@ -1,7 +1,11 @@
 {
   "name": "nasklaude",
   "private": true,
-  "workspaces": ["shared", "server", "client"],
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
     "kill": "npx kill-port 3333 5173",
@@ -12,6 +16,7 @@
   },
   "devDependencies": {
     "concurrently": "^9",
+    "sharp": "^0.34.5",
     "typescript": "^5.6"
   }
 }

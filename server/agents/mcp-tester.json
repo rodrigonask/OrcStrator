@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "playwriter": {
+      "command": "playwriter",
+      "args": [],
+      "type": "stdio"
+    }
+  }
+}

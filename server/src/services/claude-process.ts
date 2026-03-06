@@ -28,6 +28,7 @@ interface SendMessageOpts {
   resume?: boolean
   flags?: string[]
   agentPrompt?: string
+  mcpConfigPath?: string
 }
 
 const ALLOWED_FLAGS = new Set([
@@ -35,7 +36,8 @@ const ALLOWED_FLAGS = new Set([
   '--system-prompt', '--append-system-prompt',
   '--permission-mode', '--model', '--max-tokens',
   '--verbose', '--output-format', '--input-format',
-  '--resume', '--session-id', '--no-cache'
+  '--resume', '--session-id', '--no-cache',
+  '--mcp-config', '--strict-mcp-config'
 ])
 
 function filterFlags(flags: string[]): string[] {
@@ -46,7 +48,7 @@ function filterFlags(flags: string[]): string[] {
 }
 
 export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
-  const { instanceId, text, images, cwd, sessionId, resume, flags = [], agentPrompt } = opts
+  const { instanceId, text, images, cwd, sessionId, resume, flags = [], agentPrompt, mcpConfigPath } = opts
 
   // Kill any existing process for this instance
   // Mark old child as superseded BEFORE killing so its exit handler is a no-op
@@ -56,6 +58,16 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
 
   // Build CLI args
   const args: string[] = ['--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json']
+
+  // MCP scoping — --strict-mcp-config alone blocks all global servers;
+  // --mcp-config adds back specific ones (e.g. playwriter for tester)
+  if (mcpConfigPath) {
+    args.push('--strict-mcp-config')
+    // Only add --mcp-config if the file has actual server definitions (not empty)
+    if (mcpConfigPath !== 'none') {
+      args.push('--mcp-config', mcpConfigPath)
+    }
+  }
 
   // Resume existing session or start new one
   if (sessionId) {
@@ -77,6 +89,8 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   // Environment — delete CLAUDECODE to prevent nested session issues
   const env = { ...process.env }
   delete env['CLAUDECODE']
+  // Trigger auto-compaction earlier to prevent runaway context growth
+  env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = '60'
 
   // Spawn the process
   const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
@@ -263,8 +277,18 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
 
     processes.delete(instanceId)
 
-    // Update instance state
+    // Update instance state, preserve session_id for resume on next task
     db.prepare('UPDATE instances SET state = ? WHERE id = ?').run('idle', instanceId)
+
+    // Persist token usage to DB for monitoring
+    if (lastInputTokens || lastOutputTokens) {
+      try {
+        const inst = db.prepare('SELECT agent_role FROM instances WHERE id = ?').get(instanceId) as { agent_role: string } | undefined
+        db.prepare(
+          'UPDATE token_usage SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)'
+        ).run(resolvedSessionId || null, lastInputTokens || 0, lastOutputTokens || 0, lastCostUsd || 0, instanceId, instanceId)
+      } catch { /* non-critical */ }
+    }
 
     // Broadcast exit event
     const exitEvent: ClaudeProcessExitEvent = {

@@ -10,7 +10,7 @@ const MONSTER_COLORS: Record<number, number> = {
   4: 0x4488cc,
 }
 export const MONSTER_SIZES: Record<number, number> = {
-  1: 48, 2: 36, 3: 28, 4: 24,
+  1: 80, 2: 64, 3: 52, 4: 44,
 }
 
 export class MonsterSprite {
