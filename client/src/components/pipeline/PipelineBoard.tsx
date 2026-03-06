@@ -11,7 +11,6 @@ import { TaskDetailPanel } from './TaskDetailPanel'
 import { CreateTaskModal } from './CreateTaskModal'
 
 const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
-  backlog: 'planner',
   spec: 'planner',
   build: 'builder',
   qa: 'tester',

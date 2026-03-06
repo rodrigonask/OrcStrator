@@ -1,7 +1,7 @@
 import type { PipelineColumn, XpEventType, AppSettings } from './types.js'
 
 export const PIPELINE_COLUMNS: PipelineColumn[] = [
-  'backlog', 'spec', 'build', 'qa', 'staging', 'ship', 'done'
+  'backlog', 'staging', 'spec', 'build', 'qa', 'ship', 'done'
 ]
 
 export const COLUMN_COLORS: Record<PipelineColumn, string> = {
@@ -9,7 +9,7 @@ export const COLUMN_COLORS: Record<PipelineColumn, string> = {
   spec: '#8b5cf6',
   build: '#3b82f6',
   qa: '#f59e0b',
-  staging: '#ef4444',
+  staging: '#f97316',
   ship: '#10b981',
   done: '#6b7280'
 }
@@ -83,12 +83,12 @@ export const ALLOWED_FLAG_PREFIXES = [
 ]
 
 export const DEFAULT_COLUMN_LABELS: Record<PipelineColumn, string> = {
-  backlog: 'Backlog',
-  spec: 'Spec',
-  build: 'Build',
-  qa: 'QA',
-  staging: 'Staging',
-  ship: 'Ship',
+  backlog: 'Inbox',
+  staging: 'Staging / Stuck',
+  spec: 'Planning',
+  build: 'Building',
+  qa: 'Testing',
+  ship: 'Publishing',
   done: 'Done',
 }
 

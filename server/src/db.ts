@@ -250,6 +250,13 @@ function migration008(): void {
   setSchemaVersion(8)
 }
 
+function migration009(): void {
+  db.prepare("UPDATE settings SET value = ? WHERE key = 'columnLabels'").run(
+    JSON.stringify({ backlog: 'Inbox', staging: 'Staging / Stuck', spec: 'Planning', build: 'Building', qa: 'Testing', ship: 'Publishing', done: 'Done' })
+  )
+  setSchemaVersion(9)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -283,6 +290,10 @@ function runMigrations(): void {
 
   if (currentVersion < 8) {
     migration008()
+  }
+
+  if (currentVersion < 9) {
+    migration009()
   }
 }
 
