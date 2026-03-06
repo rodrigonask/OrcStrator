@@ -259,16 +259,24 @@ class OrchestratorService {
       if (tasksToLock.length === 0) tasksToLock = [task]
     }
 
-    // Lock all tasks atomically
+    // Lock all tasks atomically — conditional on locked_by IS NULL to prevent double-assignment
     const lockTx = db.transaction(() => {
       for (const t of tasksToLock) {
         const history = JSON.parse((t.history as string) || '[]')
         history.push({ action: 'assigned', timestamp: now, agent: instanceId })
-        db.prepare(`UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, "column" = ?, history = ?, updated_at = ? WHERE id = ?`)
-          .run(instanceId, now, finalColumn, JSON.stringify(history), now, t.id)
+        const result = db.prepare(
+          `UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, "column" = ?, history = ?, updated_at = ?
+           WHERE id = ? AND locked_by IS NULL`
+        ).run(instanceId, now, finalColumn, JSON.stringify(history), now, t.id)
+        if (result.changes === 0) return false  // task already locked by someone else
       }
+      return true
     })
-    lockTx()
+    const locked = lockTx()
+    if (!locked) {
+      console.warn(`[orchestrator] Task ${task.id as string} already locked — skipping double-assignment for ${instanceId}`)
+      return
+    }
 
     // Mark as running immediately so concurrent assignWork calls see it as busy
     db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(instanceId)
@@ -363,6 +371,12 @@ class OrchestratorService {
     const dependsOn = JSON.parse((primaryTask.depends_on as string) || '[]') as string[]
     if (dependsOn.length > 0) {
       assignment += `\nPrerequisites (must be Done): ${dependsOn.join(', ')}\n`
+    }
+
+    const priorComments = this.loadTaskComments(primaryTask.id as string)
+    if (priorComments) {
+      assignment += '\n### Prior Comments\n'
+      assignment += priorComments + '\n'
     }
 
     if (isBundle) {
@@ -480,11 +494,31 @@ class OrchestratorService {
       }
     }
 
+    const projectId = folder.id as string
+
+    const commentCurl = [
+      '## COMMENT REQUIREMENT — MANDATORY',
+      '',
+      'Before moving this task to any column, post a comment via:',
+      '',
+      `  curl -s -X POST http://localhost:3333/api/pipelines/${projectId}/tasks/${primaryTask.id as string}/comments \\`,
+      '    -H "Content-Type: application/json" \\',
+      `    -d \'{"author":"${role}","body":"YOUR 1-2 LINE NOTE"}\'`,
+      '',
+      'Rules:',
+      '- Normal completion: 1-2 lines describing what you did or what the outcome was.',
+      '  Good: "Implemented debounce fix in orchestrator.ts. TS passes, client build clean."',
+      '- Human action required — use this EXACT format (no variation):',
+      '  "HUMAN ACTION needed: [what the human must do] — then move this task to [column]"',
+      '  Example: "HUMAN ACTION needed: add STRIPE_SECRET_KEY to .env — then move this task to build"',
+      '- DO NOT skip this step. A task with no agent comment is invisible to the human reviewing the pipeline.',
+    ].join('\n')
+    parts.push(commentCurl)
+    parts.push('---')
     parts.push('## YOUR ASSIGNMENT')
     parts.push(assignment)
 
     // Inject task metadata so agents can move tasks via the pipeline API
-    const projectId = folder.id as string
     parts.push('## TASK METADATA')
     parts.push(`Project ID: ${projectId}`)
     parts.push(`Task ID: ${primaryTask.id as string}`)
@@ -543,6 +577,18 @@ class OrchestratorService {
       if (skill?.content) results.push(skill)
     }
     return results
+  }
+
+  private loadTaskComments(taskId: string): string {
+    try {
+      const rows = db.prepare(
+        'SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC'
+      ).all(taskId) as Array<{ author: string; body: string; created_at: number }>
+      if (rows.length === 0) return ''
+      return rows.map(r => `  [@${r.author} ${new Date(r.created_at).toISOString()}]: ${r.body}`).join('\n')
+    } catch {
+      return ''
+    }
   }
 
   private loadBuilderContext(folderPath: string): string {
