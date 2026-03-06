@@ -60,7 +60,7 @@ export default async function orchestratorRoutes(app: FastifyInstance): Promise<
     const runningAgents = db.prepare(`SELECT COUNT(*) as count FROM instances WHERE folder_id = ? AND orchestrator_managed = 1 AND state = 'running'`)
       .get(folderId) as { count: number }
 
-    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','spec','build','qa','ship') AND locked_by IS NULL`)
+    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('spec','build','qa','ship') AND locked_by IS NULL`)
       .get(folderId) as { count: number }
 
     return {
@@ -82,7 +82,7 @@ export default async function orchestratorRoutes(app: FastifyInstance): Promise<
       return { error: 'Folder not found' }
     }
 
-    const columnRoles: Record<string, string> = { backlog: 'planner', spec: 'planner', build: 'builder', qa: 'tester', ship: 'promoter' }
+    const columnRoles: Record<string, string> = { spec: 'planner', build: 'builder', qa: 'tester', ship: 'promoter' }
     const bottlenecks: Array<{ column: string; waitingTasks: number; idleAgents: number; role: string }> = []
 
     for (const [col, role] of Object.entries(columnRoles)) {
