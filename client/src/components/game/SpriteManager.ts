@@ -17,6 +17,10 @@ const SHEETS: SheetEntry[] = [
   { alias: 'orc', src: '/spritesheets/orc.json' },
   { alias: 'goblin', src: '/spritesheets/goblin.json' },
   { alias: 'slime', src: '/spritesheets/slime.json' },
+  { alias: 'mage', src: '/spritesheets/mage.json' },
+  { alias: 'warrior', src: '/spritesheets/warrior.json' },
+  { alias: 'archer', src: '/spritesheets/archer.json' },
+  { alias: 'paladin', src: '/spritesheets/paladin.json' },
 ]
 
 const PRIORITY_SHEET: Record<number, string> = {
@@ -24,6 +28,13 @@ const PRIORITY_SHEET: Record<number, string> = {
   2: 'orc',
   3: 'goblin',
   4: 'slime',
+}
+
+const ROLE_SHEET: Record<string, string> = {
+  planner: 'mage',
+  builder: 'warrior',
+  tester: 'archer',
+  promoter: 'paladin',
 }
 
 const PLAIN_TEXTURES: SheetEntry[] = [
@@ -88,6 +99,15 @@ export const SpriteManager = {
     if (!sheet) return []
     const animKey = `${sheetName}-${anim}`
     return sheet.animations?.[animKey] ?? []
+  },
+
+  /** Get idle animation frames for a character role (planner/builder/tester/promoter). */
+  getIdleFrames(role: string): Texture[] {
+    const sheetName = ROLE_SHEET[role]
+    if (!sheetName) return []
+    const sheet = cache.get(sheetName)
+    if (!sheet) return []
+    return sheet.animations?.[`${sheetName}-idle`] ?? []
   },
 
   /** Get a single loaded texture by alias (e.g. 'battlefield'). */
