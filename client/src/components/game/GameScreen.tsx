@@ -55,11 +55,6 @@ export function GameScreen() {
       canvas.style.height = '100%'
       containerRef.current.appendChild(canvas)
 
-      // Load sprite sheets (non-blocking — panels use Graphics until later tasks swap to sprites)
-      SpriteManager.load().catch(err =>
-        console.warn('[GameScreen] Sprite sheet load failed:', err.message)
-      )
-
       // Enable root stage events
       app.stage.eventMode = 'static'
       app.stage.hitArea   = app.screen
@@ -67,32 +62,70 @@ export function GameScreen() {
       const stage = new Container()
       app.stage.addChild(stage)
 
-      // Zone backgrounds
+      // Fallback solid-color zone backgrounds (replaced once battlefield texture loads)
+      const fallbackBg = new Container()
+      stage.addChild(fallbackBg)
+
       const leftBg = new Graphics()
       leftBg.rect(LEFT_ZONE.x, 0, LEFT_ZONE.w, GAME_H)
       leftBg.fill({ color: 0x1a1a2e })
-      stage.addChild(leftBg)
+      fallbackBg.addChild(leftBg)
 
       const centerBg = new Graphics()
       centerBg.rect(CENTER_ZONE.x, 0, CENTER_ZONE.w, GAME_H)
       centerBg.fill({ color: 0x0d0d1a })
-      stage.addChild(centerBg)
+      fallbackBg.addChild(centerBg)
 
       const rightBg = new Graphics()
       rightBg.rect(RIGHT_ZONE.x, 0, RIGHT_ZONE.w, GAME_H)
       rightBg.fill({ color: 0x1a2e1a })
-      stage.addChild(rightBg)
+      fallbackBg.addChild(rightBg)
 
-      // Vertical dividers
+      // Dark overlays for readability (rendered above background, below game elements)
+      const overlays = new Container()
+      stage.addChild(overlays)
+
+      const leftOverlay = new Graphics()
+      leftOverlay.rect(LEFT_ZONE.x, 0, LEFT_ZONE.w, GAME_H)
+      leftOverlay.fill({ color: 0x000000, alpha: 0.4 })
+      overlays.addChild(leftOverlay)
+
+      const rightOverlay = new Graphics()
+      rightOverlay.rect(RIGHT_ZONE.x, 0, RIGHT_ZONE.w, GAME_H)
+      rightOverlay.fill({ color: 0x000000, alpha: 0.4 })
+      overlays.addChild(rightOverlay)
+
+      const centerOverlay = new Graphics()
+      centerOverlay.rect(CENTER_ZONE.x, 0, CENTER_ZONE.w, GAME_H)
+      centerOverlay.fill({ color: 0x000000, alpha: 0.2 })
+      overlays.addChild(centerOverlay)
+
+      // Semi-transparent vertical dividers
       const divLeft = new Graphics()
       divLeft.rect(LEFT_ZONE.x + LEFT_ZONE.w, 0, 1, GAME_H)
-      divLeft.fill({ color: 0x2a2a4a })
-      stage.addChild(divLeft)
+      divLeft.fill({ color: 0x2a2a4a, alpha: 0.3 })
+      overlays.addChild(divLeft)
 
       const divRight = new Graphics()
       divRight.rect(RIGHT_ZONE.x, 0, 1, GAME_H)
-      divRight.fill({ color: 0x2a2a4a })
-      stage.addChild(divRight)
+      divRight.fill({ color: 0x2a2a4a, alpha: 0.3 })
+      overlays.addChild(divRight)
+
+      // Load sprite sheets + battlefield background
+      SpriteManager.load().then(() => {
+        if (cancelled) return
+        const bgTex = SpriteManager.getTexture('battlefield')
+        if (bgTex) {
+          const bgSprite = new Sprite(bgTex)
+          bgSprite.width  = GAME_W
+          bgSprite.height = GAME_H
+          // Insert at index 0 of stage (behind everything) and remove fallback
+          stage.addChildAt(bgSprite, 0)
+          fallbackBg.destroy({ children: true })
+        }
+      }).catch(err =>
+        console.warn('[GameScreen] Sprite sheet load failed:', err.message)
+      )
 
       // CENTER_ZONE title
       const title = new Text({
