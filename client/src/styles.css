@@ -3743,9 +3743,6 @@ body {
 }
 
 .rs-collapse-btn {
-  position: absolute;
-  top: 10px;
-  left: 8px;
   background: none;
   border: none;
   color: var(--text-tertiary);
@@ -3754,8 +3751,8 @@ body {
   padding: 4px;
   border-radius: var(--radius-sm);
   transition: color var(--transition-fast), background var(--transition-fast);
-  z-index: 1;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .rs-collapse-btn:hover {
@@ -3994,6 +3991,171 @@ body {
 }
 
 /* Footer */
+/* Orc POV toggle */
+.rs-header-btns {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 1;
+}
+
+.rs-orc-toggle-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+  line-height: 1;
+}
+
+.rs-orc-toggle-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--bg-elevated);
+}
+
+.rs-orc-toggle-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+/* Orc POV panel */
+.rs-orc-pov {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  padding-top: 36px;
+}
+
+.rs-orc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.rs-orc-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.rs-orc-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.rs-orc-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.rs-orc-folder {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rs-orc-board-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.rs-orc-board-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.rs-orc-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.rs-orc-close-btn:hover {
+  color: var(--text-primary);
+}
+
+.rs-orc-agents {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rs-orc-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.rs-orc-agent-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.rs-orc-agent-task {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.rs-orc-idle {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  font-style: italic;
+}
+
+/* OrcFeed inside sidebar — allow it to fill remaining space */
+.rs-orc-pov .orc-feed {
+  flex: 1;
+  overflow-y: auto;
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+}
+
 .rs-footer {
   margin-top: auto;
   padding: 10px 14px;

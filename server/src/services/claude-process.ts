@@ -14,6 +14,7 @@ export function setOrchestratorCallback(fn: (instanceId: string) => void): void 
 
 const processes = new Map<string, ChildProcess>()
 const processTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const supersededProcesses = new Set<ChildProcess>()
 
 const PROCESS_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
 const BATCH_INTERVAL_MS = 32
@@ -48,6 +49,9 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   const { instanceId, text, images, cwd, sessionId, resume, flags = [], agentPrompt } = opts
 
   // Kill any existing process for this instance
+  // Mark old child as superseded BEFORE killing so its exit handler is a no-op
+  const oldChild = processes.get(instanceId)
+  if (oldChild) supersededProcesses.add(oldChild)
   killProcess(instanceId)
 
   // Build CLI args
@@ -230,6 +234,12 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
 
   // Handle exit
   child.on('exit', (code) => {
+    // Guard: skip cleanup if this process was replaced by a newer sendMessage call
+    if (supersededProcesses.has(child)) {
+      supersededProcesses.delete(child)
+      return
+    }
+
     // Clear timeout
     const t = processTimeouts.get(instanceId)
     if (t) {

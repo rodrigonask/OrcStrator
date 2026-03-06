@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useUI } from '../context/UIContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
+import { OrcFeed } from './pipeline/OrcFeed'
 
 const TIER_COLORS: Record<string, string> = {
   Beginner: '#10b981',
@@ -37,11 +38,32 @@ const SHORTCUTS = [
 ]
 
 export function RightSidebar() {
-  const { settings, usage } = useUI()
+  const { settings, usage, activePipelineId } = useUI()
   const { instances, folders } = useInstances()
   const { dispatch } = useAppDispatch()
   const { profile, currentLevel, nextLevel, xpProgress } = useGame()
   const [collapsed, setCollapsed] = useState(false)
+  const [orcMode, setOrcMode] = useState(false)
+
+  // Derive which folder to show in Orc POV
+  const orcFolderId = activePipelineId
+    || folders.find(f => f.orchestratorActive)?.id
+    || null
+  const activeFolder = orcFolderId ? folders.find(f => f.id === orcFolderId) : null
+
+  const agentNames = settings.orchestratorAgentNames || {
+    planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter',
+  }
+
+  const runningOrcAgents = orcFolderId
+    ? instances.filter(i => i.orchestratorManaged && i.folderId === orcFolderId && i.state === 'running')
+    : []
+
+  const handleGoToBoard = useCallback(() => {
+    if (!orcFolderId) return
+    dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
+    dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: orcFolderId })
+  }, [dispatch, orcFolderId])
 
   const userName = (settings.userName as string | undefined) || 'Nask'
   const userEmoji = (settings.userEmoji as string | undefined) || '🧠'
@@ -62,17 +84,74 @@ export function RightSidebar() {
 
   return (
     <aside className={`right-sidebar${collapsed ? ' rs-collapsed' : ''}`}>
-      {/* Collapse toggle */}
-      <button
-        className="rs-collapse-btn"
-        onClick={() => setCollapsed(c => !c)}
-        title={collapsed ? 'Expand panel' : 'Collapse panel'}
-      >
-        {collapsed ? '◀' : '▶'}
-      </button>
+      {/* Header buttons */}
+      <div className="rs-header-btns">
+        {!collapsed && (
+          <button
+            className={`rs-orc-toggle-btn${orcMode ? ' active' : ''}`}
+            onClick={() => setOrcMode(v => !v)}
+            title={orcMode ? 'Hide Orc activity' : 'Show Orc activity'}
+          >
+            ⚔
+          </button>
+        )}
+        <button
+          className="rs-collapse-btn"
+          onClick={() => setCollapsed(c => !c)}
+          title={collapsed ? 'Expand panel' : 'Collapse panel'}
+        >
+          {collapsed ? '◀' : '▶'}
+        </button>
+      </div>
 
       {collapsed ? (
         <div className="rs-collapsed-avatar" title={userName}>{userEmoji}</div>
+      ) : orcMode ? (
+        /* Orc POV panel */
+        <div className="rs-orc-pov">
+          {!orcFolderId ? (
+            <div className="rs-orc-idle" style={{ padding: '16px 12px' }}>
+              No Orc is active right now
+            </div>
+          ) : (
+            <>
+              <div className="rs-orc-header">
+                <div className="rs-orc-header-left">
+                  <span className="rs-orc-title">The Orc</span>
+                  <span className="rs-orc-folder">{activeFolder?.displayName || activeFolder?.name}</span>
+                </div>
+                <div className="rs-orc-header-right">
+                  <button className="rs-orc-board-btn" onClick={handleGoToBoard}>Board</button>
+                  <button className="rs-orc-close-btn" onClick={() => setOrcMode(false)} title="Close Orc view">✕</button>
+                </div>
+              </div>
+              <div className="rs-orc-agents">
+                {runningOrcAgents.length === 0 ? (
+                  <div className="rs-orc-idle">All agents idle</div>
+                ) : (
+                  runningOrcAgents.map(inst => (
+                    <div key={inst.id} className="rs-orc-agent-row">
+                      {inst.agentRole && (
+                        <span className={`role-pill role-${inst.agentRole} compact`}>
+                          {(agentNames as Record<string, string>)[inst.agentRole] || inst.agentRole}
+                        </span>
+                      )}
+                      <span className="rs-orc-agent-name">{inst.name}</span>
+                      {inst.activeTaskTitle && (
+                        <span className="rs-orc-agent-task">
+                          {inst.activeTaskTitle.length > 35
+                            ? inst.activeTaskTitle.slice(0, 35) + '…'
+                            : inst.activeTaskTitle}
+                        </span>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+              <OrcFeed folderId={orcFolderId} />
+            </>
+          )}
+        </div>
       ) : (
         <>
           {/* Identity card */}
