@@ -31,6 +31,7 @@ const ROLE_COLUMNS: Record<string, string[]> = {
 class OrchestratorService {
   private safetyPollTimer: ReturnType<typeof setInterval> | null = null
   private lockSweepTimer: ReturnType<typeof setInterval> | null = null
+  private folderTriggerTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   start(): void {
     if (this.safetyPollTimer) return
@@ -402,6 +403,41 @@ class OrchestratorService {
     parts.push(scopeConstraint)
     parts.push('---')
 
+    // Tester: inject playwriter-only browser rules before master prompt
+    if (role === 'tester') {
+      const browserRules = [
+        '## BROWSER TESTING — MANDATORY TOOL RULES',
+        '',
+        '**Use `playwriter` CLI via Bash. NEVER use `mcp__playwright__*` tools.**',
+        '',
+        'Playwright MCP creates blank browser contexts and opens dozens of about:blank tabs,',
+        'breaking the user\'s Chrome session. It is FORBIDDEN.',
+        '',
+        'Playwriter connects to the existing logged-in Chrome (green-highlighted tab group).',
+        'It reuses one tab — no new tabs are created.',
+        '',
+        '### Correct playwriter pattern',
+        '```bash',
+        '# Start a session (once per task)',
+        'playwriter session new',
+        '',
+        '# Navigate and interact — use page global, NOT context.newPage()',
+        'playwriter -e "await page.goto(\'http://localhost:5173\')"',
+        'playwriter -e "await page.screenshot({ path: \'shot.png\' })"',
+        '```',
+        '',
+        '### Hard rules',
+        '- NEVER call `context.newPage()` — always use `page` (already bound to the active tab)',
+        '- NEVER use any `mcp__playwright__*` tool — treat them as if they do not exist',
+        '- If playwriter throws "Extension disconnected", fall back to static code review',
+        '  Do NOT switch to playwright MCP as a fallback',
+        '- Screenshots use relative paths (e.g. `"shot.png"`) — absolute paths outside nasklaude throw EPERM',
+        '- `page.evaluate()` multi-statement calls time out — use one return expression per call',
+      ].join('\n')
+      parts.push(browserRules)
+      parts.push('---')
+    }
+
     // Master prompt
     if (masterPrompt) {
       parts.push(masterPrompt)
@@ -539,10 +575,16 @@ class OrchestratorService {
     }
   }
 
-  // Immediately check a folder when activated
+  // Immediately check a folder when activated — debounced to coalesce burst triggers
   triggerFolder(folderId: string): void {
-    this.assignWork(folderId)
-    this.broadcastStatus(folderId)
+    // 50ms debounce: coalesces rapid triggers (LaunchTeamModal 4x PATCH, onProcessExit + safetySweep bursts)
+    const existing = this.folderTriggerTimers.get(folderId)
+    if (existing) clearTimeout(existing)
+    this.folderTriggerTimers.set(folderId, setTimeout(() => {
+      this.folderTriggerTimers.delete(folderId)
+      this.assignWork(folderId)
+      this.broadcastStatus(folderId)
+    }, 50))
   }
 
   // Resume agents whose sessions were alive before server restart

@@ -103,6 +103,18 @@ export async function createTask(params: {
 
     const task = getTask(id)!
     broadcastPipeline(params.projectId, id, 'created', task.column)
+
+    // Immediately notify orchestrator for actionable columns so agents don't wait 60s for safety poll
+    // Exclude backlog (human-only intake) and staging (escalation inbox) — no agent should auto-pick from these
+    if (task.column !== 'backlog' && task.column !== 'staging' && task.column !== 'done') {
+      setImmediate(() => {
+        const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(params.projectId) as { orchestrator_active: number } | undefined
+        if (folder?.orchestrator_active) {
+          orchestrator.triggerFolder(params.projectId)
+        }
+      })
+    }
+
     return task
   })
 }
