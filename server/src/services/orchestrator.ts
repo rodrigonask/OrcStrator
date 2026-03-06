@@ -357,7 +357,8 @@ class OrchestratorService {
     const role = instance.agent_role as string
     const masterPrompt = this.loadMasterPrompt(role)
     const projectContext = this.loadProjectContext(folder.path as string)
-    const memory = this.loadMemory(role)
+    const folderName = path.basename(folder.path as string).toLowerCase().replace(/[^a-z0-9]/g, '-')
+    const memory = this.loadMemory(role, folderName)
     const skills = this.loadInstanceSkills(instance)
     const isBundle = tasksToLock.length > 1
 
@@ -588,7 +589,7 @@ class OrchestratorService {
     parts.push('')
 
     // Memory update instruction — agents append insights after each task
-    const memoryPath = path.join(MASTER_PROMPTS_DIR, `${role}-memory.md`).replace(/\\/g, '/')
+    const memoryPath = path.join(MASTER_PROMPTS_DIR, `${role}-memory-${folderName}.md`).replace(/\\/g, '/')
     parts.push('## MEMORY UPDATE (do this before moving the task)')
     parts.push(`Append 2–4 bullet insights to your memory file at: \`${memoryPath}\``)
     parts.push('Format each line as: `- [insight or pattern you learned]`')
@@ -615,7 +616,13 @@ class OrchestratorService {
     return ''
   }
 
-  private loadMemory(role: string): string {
+  private loadMemory(role: string, projectSlug?: string): string {
+    if (projectSlug) {
+      const projectPath = path.join(MASTER_PROMPTS_DIR, `${role}-memory-${projectSlug}.md`)
+      try {
+        if (fs.existsSync(projectPath)) return fs.readFileSync(projectPath, 'utf-8')
+      } catch { /* unreadable */ }
+    }
     const filePath = path.join(MASTER_PROMPTS_DIR, `${role}-memory.md`)
     try {
       if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf-8')
