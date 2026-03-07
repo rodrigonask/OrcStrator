@@ -606,7 +606,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (preview) parts.push(preview)
       }
     }
-    document.title = 'OrcStrator: ' + parts.join(' | ')
+    document.title = parts.join(' | ')
   }, [uiState.selectedInstanceId, instState.instances, instState.folders, msgState.messages])
 
   // Global Alt+↑/↓ to cycle between instances

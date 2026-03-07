@@ -6,7 +6,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { initDb, db, closeDb } from './db.js'
 import { registerWebSocket } from './ws/handler.js'
-import { killAll, setOrchestratorCallback } from './services/claude-process.js'
+import { setOrchestratorCallback } from './services/claude-process.js'
+import { processRegistry, isProcessAlive } from './services/process-registry.js'
 import { orchestrator, type ResumeSnapshot } from './services/orchestrator.js'
 import { schedulerService } from './services/scheduler-service.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
@@ -46,7 +47,8 @@ async function main(): Promise<void> {
   runMaintenance()
   setInterval(runMaintenance, 6 * 60 * 60 * 1000)
 
-  // Sweep expired overdrive indicators every 5 minutes
+  // Sweep expired overdrive indicators at startup and every 5 minutes
+  try { resetOverdriveForAll() } catch (err) { console.error('[maintenance] Overdrive sweep error:', err) }
   setInterval(() => {
     try {
       resetOverdriveForAll()
@@ -55,33 +57,80 @@ async function main(): Promise<void> {
     }
   }, 5 * 60 * 1000)
 
-  // Snapshot running instances BEFORE any resets — session IDs are wiped by the reset below
+  // ── Startup audit phase (assignments are locked by default) ──
+
+  // Full state dump BEFORE any changes — critical for post-mortem debugging
+  const allInstances = db.prepare("SELECT id, name, state, agent_role, folder_id, session_id, process_pid, orchestrator_managed FROM instances").all() as Record<string, unknown>[]
+  console.log(`[startup] ═══ DB STATE DUMP ═══`)
+  console.log(`[startup] Instances (${allInstances.length}):`)
+  for (const i of allInstances) {
+    console.log(`[startup]   ${i.name} | state=${i.state} | role=${i.agent_role || 'none'} | pid=${i.process_pid || 'null'} | session=${i.session_id ? (i.session_id as string).slice(0, 12) + '...' : 'null'} | managed=${i.orchestrator_managed} | id=${(i.id as string).slice(0, 8)}`)
+  }
+  const lockedTasks = db.prepare("SELECT id, title, \"column\", locked_by, locked_at, project_id FROM pipeline_tasks WHERE locked_by IS NOT NULL").all() as Record<string, unknown>[]
+  console.log(`[startup] Locked tasks (${lockedTasks.length}):`)
+  for (const t of lockedTasks) {
+    const age = t.locked_at ? Math.round((Date.now() - (t.locked_at as number)) / 1000) : '?'
+    console.log(`[startup]   "${t.title}" | col=${t.column} | locked_by=${(t.locked_by as string).slice(0, 8)} | locked ${age}s ago`)
+  }
+  console.log(`[startup] ═══ END STATE DUMP ═══`)
+
+  // Read all instances that were running before restart
   const staleRunning = db.prepare(
-    "SELECT id, session_id, folder_id FROM instances WHERE state = 'running' AND session_id IS NOT NULL"
-  ).all() as { id: string; session_id: string; folder_id: string }[]
+    "SELECT id, session_id, folder_id, process_pid FROM instances WHERE state = 'running'"
+  ).all() as { id: string; session_id: string | null; folder_id: string; process_pid: number | null }[]
 
-  const resumeSnapshots: ResumeSnapshot[] = staleRunning.map(i => {
-    const tasks = db.prepare(
-      "SELECT id FROM pipeline_tasks WHERE locked_by = ?"
-    ).all(i.id) as { id: string }[]
-    return {
-      instanceId: i.id,
-      sessionId: i.session_id,
-      folderId: i.folder_id,
-      lockedTaskIds: tasks.map(t => t.id)
+  const adoptedIds = new Set<string>()
+  const resumeSnapshots: ResumeSnapshot[] = []
+
+  for (const inst of staleRunning) {
+    const alive = inst.process_pid != null && isProcessAlive(inst.process_pid)
+    if (alive) {
+      adoptedIds.add(inst.id)
+      processRegistry.adoptProcess(inst.id, inst.process_pid!)
+      console.log(`[startup] Adopting alive process PID ${inst.process_pid} → instance ${inst.id}`)
+    } else {
+      // Dead — collect for resume if it had a session + locked tasks
+      if (inst.session_id) {
+        const tasks = db.prepare("SELECT id FROM pipeline_tasks WHERE locked_by = ?")
+          .all(inst.id) as { id: string }[]
+        if (tasks.length > 0) {
+          resumeSnapshots.push({
+            instanceId: inst.id, sessionId: inst.session_id,
+            folderId: inst.folder_id, lockedTaskIds: tasks.map(t => t.id)
+          })
+        }
+      }
     }
-  }).filter(s => s.lockedTaskIds.length > 0)
-
-  // Reset stale running instances — on restart no Claude processes exist
-  const resetCount = db.prepare("UPDATE instances SET state = 'idle' WHERE state = 'running'").run().changes
-  if (resetCount > 0) {
-    console.log(`[startup] Reset ${resetCount} stale running instances to idle`)
   }
 
-  // Release stale task locks — locked tasks from the previous session would never be claimed
-  const unlockCount = db.prepare("UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IS NOT NULL").run().changes
-  if (unlockCount > 0) {
-    console.log(`[startup] Released ${unlockCount} stale task locks`)
+  // Only reset DEAD instances (adopted ones stay 'running')
+  if (staleRunning.length > 0) {
+    const excluded = [...adoptedIds]
+    if (excluded.length > 0) {
+      const placeholders = excluded.map(() => '?').join(',')
+      const resetCount = db.prepare(
+        `UPDATE instances SET state = 'idle', process_pid = NULL
+         WHERE state = 'running' AND id NOT IN (${placeholders})`
+      ).run(...excluded).changes
+      if (resetCount > 0) console.log(`[startup] Reset ${resetCount} dead instances to idle`)
+
+      const unlockCount = db.prepare(
+        `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL
+         WHERE locked_by IS NOT NULL AND locked_by NOT IN (${placeholders})`
+      ).run(...excluded).changes
+      if (unlockCount > 0) console.log(`[startup] Released ${unlockCount} stale task locks`)
+    } else {
+      // No adopted processes — reset everything
+      const resetCount = db.prepare("UPDATE instances SET state = 'idle', process_pid = NULL WHERE state = 'running'").run().changes
+      if (resetCount > 0) console.log(`[startup] Reset ${resetCount} dead instances to idle`)
+
+      const unlockCount = db.prepare("UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IS NOT NULL").run().changes
+      if (unlockCount > 0) console.log(`[startup] Released ${unlockCount} stale task locks`)
+    }
+  }
+
+  if (adoptedIds.size > 0) {
+    console.log(`[startup] ${adoptedIds.size} agents still running — leaving undisturbed`)
   }
 
   // Resume usage polling if tokens are already stored from a previous session
@@ -89,7 +138,7 @@ async function main(): Promise<void> {
   const pollMinutes = pollRow ? (JSON.parse(pollRow.value) as number) : 10
   startPolling(pollMinutes)
 
-  // Wire orchestrator callback (event-driven dispatch)
+  // ── Start orchestrator (still locked) ──
   setOrchestratorCallback((instanceId, tokens) => {
     orchestrator.onProcessExit(instanceId, tokens)
     // Refresh usage meter after each session — credits are consumed at session end
@@ -97,13 +146,15 @@ async function main(): Promise<void> {
   })
   orchestrator.start()
   schedulerService.start()
-  if (resumeSnapshots.length > 0) {
-    orchestrator.resumeStaleInstances(resumeSnapshots)
-  } else {
-    orchestrator.triggerAll()
-  }
 
-  const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 * 20 }) // 20MB to support screenshot attachments
+  // Resume dead sessions, then unlock assignments
+  if (resumeSnapshots.length > 0) {
+    await orchestrator.resumeStaleInstances(resumeSnapshots)
+  }
+  orchestrator.unlockStartup()  // NOW assignments can proceed
+  await orchestrator.triggerAll()
+
+  const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 * 20 }) // 20MB to support screenshot attachments
 
   // Register plugins
   await app.register(fastifyCors, {
@@ -157,7 +208,18 @@ async function main(): Promise<void> {
     console.log('[server] Shutting down...')
     orchestrator.stop()
     schedulerService.stop()
-    killAll()
+
+    // Hard timeout: force exit after 20s
+    const forceExit = setTimeout(() => {
+      console.error('[server] FORCE EXIT: processes did not terminate in 20s')
+      process.exit(1)
+    }, 20_000)
+    forceExit.unref()
+
+    // Kill all processes and WAIT for them to die
+    await processRegistry.killAll()
+    console.log('[server] All processes confirmed dead')
+
     await app.close()
     closeDb()
     process.exit(0)
