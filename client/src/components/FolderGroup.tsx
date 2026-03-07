@@ -12,6 +12,8 @@ import { api } from '../api'
 import { InstanceItem } from './InstanceItem'
 import { LaunchTeamModal } from './LaunchTeamModal'
 import { CreateTaskModal } from './pipeline/CreateTaskModal'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
+import { useFeatureGate } from '../hooks/useFeatureGate'
 import { randomName } from '../utils/naming'
 
 function SortableInstanceItem({ instance, folderOrchestratorActive }: { instance: InstanceConfig; folderOrchestratorActive: boolean }) {
@@ -45,6 +47,10 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [orchStatus, setOrchStatus] = useState<{ idleAgents: number; pendingTasks: number } | null>(null)
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
+
+  const pipelineGate = useFeatureGate('pipeline')
+  const orcGate = useFeatureGate('the-orc')
+  const teamsGate = useFeatureGate('agent-teams')
 
   const instances = [...allInstances.filter(i => i.folderId === folder.id)]
     .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -162,7 +168,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     try {
       const result = await api.releaseAll(folder.id)
       for (const id of result.instanceIds) {
-        dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle', sessionId: undefined } } })
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle', sessionId: undefined, activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
       }
     } catch (err) {
       console.error('Failed to release all:', err)
@@ -224,20 +230,21 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
         <div className="folder-action-group">
           <button
             className="pipeline-board-btn"
+            data-tour-id="tour-pipeline"
             title="Open pipeline board"
-            onClick={(e) => { e.stopPropagation(); handlePipeline() }}
+            onClick={(e) => { e.stopPropagation(); if (pipelineGate.check()) handlePipeline() }}
           >
             ▤
           </button>
           <button
             className={`orchestrator-toggle-btn ${isOrchestratorActive ? 'active' : ''}`}
             title={isOrchestratorActive ? 'The Orc is active — click to stop' : 'Activate The Orc'}
-            onClick={handleOrchestrateClick}
+            onClick={(e) => { if (orcGate.check()) handleOrchestrateClick(e) }}
           >
             {isOrchestratorActive ? (
-              <span className="orch-pulse">⚡</span>
+              <span className="orch-pulse">{'\uD83D\uDC79'}</span>
             ) : (
-              '⚡'
+              '\uD83D\uDC79'
             )}
           </button>
           <div
@@ -315,10 +322,10 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             <button className="context-menu-item" onClick={handleAddInstance}>
               Add Instance
             </button>
-            <button className="context-menu-item" onClick={handlePipeline}>
+            <button className="context-menu-item" onClick={() => { if (pipelineGate.check()) handlePipeline(); else closeContextMenu() }}>
               Pipeline Board
             </button>
-            <button className="context-menu-item" onClick={() => { setShowLaunchTeam(true); closeContextMenu() }}>
+            <button className="context-menu-item" onClick={() => { if (teamsGate.check()) { setShowLaunchTeam(true); closeContextMenu() } else { closeContextMenu() } }}>
               Launch a Team
             </button>
             <div className="context-menu-separator" />
@@ -330,7 +337,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             </button>
             <div className="context-menu-separator" />
             <button className="context-menu-item danger" onClick={handleRemove}>
-              Hide Folder
+              Hide Project
             </button>
           </div>
         </>,
@@ -338,7 +345,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
       )}
 
       {/* Orchestrate confirmation modal */}
-      {confirmOrchestrate && (
+      {confirmOrchestrate && createPortal(
         <div className="modal-overlay" onClick={() => setConfirmOrchestrate(false)}>
           <div className="modal-panel orchestrate-confirm-modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
@@ -360,11 +367,12 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
                 Actually, Never Mind
               </button>
               <button className="btn btn-primary" onClick={handleConfirmActivate}>
-                Feed Them to the Machine
+                Feed Them to The Orc
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {showLaunchTeam && (
@@ -381,9 +389,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
         />
       )}
 
-      {showReleaseConfirm && (
+      {showReleaseConfirm && createPortal(
         <div className="modal-overlay" onClick={() => setShowReleaseConfirm(false)}>
-          <div className="modal-panel" onClick={e => e.stopPropagation()}>
+          <div className="modal-panel release-confirm-modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-title">Release All Sessions</span>
               <button className="modal-close" onClick={() => setShowReleaseConfirm(false)}>×</button>
@@ -391,17 +399,28 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             <div className="modal-body">
               <p>This will close {instances.length} session{instances.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
               {instances.length > 0 && (
-                <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13, color: 'var(--text-secondary)' }}>
                   {instances.map(i => <li key={i.id}>{i.name}</li>)}
                 </ul>
               )}
             </div>
             <div className="modal-footer">
-              <button className="btn" onClick={() => setShowReleaseConfirm(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={handleReleaseAll}>Release All</button>
+              <button className="btn btn-ghost" onClick={() => setShowReleaseConfirm(false)}>Cancel</button>
+              <button className="btn btn-danger-solid" onClick={handleReleaseAll}>Release All</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {pipelineGate.showLockedModal && pipelineGate.gate && (
+        <FeatureLockedModal gate={pipelineGate.gate} onClose={pipelineGate.dismissModal} />
+      )}
+      {orcGate.showLockedModal && orcGate.gate && (
+        <FeatureLockedModal gate={orcGate.gate} onClose={orcGate.dismissModal} />
+      )}
+      {teamsGate.showLockedModal && teamsGate.gate && (
+        <FeatureLockedModal gate={teamsGate.gate} onClose={teamsGate.dismissModal} />
       )}
     </div>
   )

@@ -483,7 +483,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       api.onClaudeProcessExit((payload: ClaudeProcessExitEvent) => {
         const { instanceId } = payload
         dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
-        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle', sessionId: payload.sessionId, activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle', activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
         api.getHistory(instanceId, { limit: 50 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
@@ -493,6 +493,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
 
     unsubs.push(api.onUsageUpdated((payload: any) => dispatch({ type: 'SET_USAGE', payload })))
+
+    unsubs.push(
+      api.onEvent('instance:updated', (payload: { id: string; state?: string; sessionId?: string | null }) => {
+        const updates: Record<string, unknown> = {}
+        if (payload.state !== undefined) updates.state = payload.state
+        if (payload.sessionId === null || payload.sessionId === undefined) {
+          updates.sessionId = undefined
+          updates.activeTaskId = undefined
+          updates.activeTaskTitle = undefined
+          updates.taskStartedAt = undefined
+        }
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.id, updates } })
+      })
+    )
 
     unsubs.push(
       api.onOrchestratorAssigned((payload: { folderId: string; instanceId: string; taskId: string; taskTitle: string }) => {
@@ -542,14 +556,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Client-side overdrive expiry sweep — reset instances whose cache window has expired
   useEffect(() => {
     const CACHE_WINDOW_MS = 3_600_000
-    const intervalId = setInterval(() => {
+    const sweep = () => {
       const now = Date.now()
       for (const inst of instStateRef.current.instances) {
         if (inst.lastTaskAt && (now - inst.lastTaskAt) > CACHE_WINDOW_MS) {
           dispatch({ type: 'UPDATE_INSTANCE', payload: { id: inst.id, updates: { overdriveTasks: 0, overdriveStartedAt: undefined, lastTaskAt: undefined } } })
         }
       }
-    }, 60_000)
+    }
+    sweep()
+    const intervalId = setInterval(sweep, 60_000)
     return () => clearInterval(intervalId)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -573,9 +589,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Dynamic page title
   useEffect(() => {
     const id = uiState.selectedInstanceId
-    if (!id) { document.title = 'Orcstrator'; return }
+    if (!id) { document.title = 'OrcStrator'; return }
     const instance = instState.instances.find(i => i.id === id)
-    if (!instance) { document.title = 'Orcstrator'; return }
+    if (!instance) { document.title = 'OrcStrator'; return }
     const folder = instState.folders.find(f => f.id === instance.folderId)
     const parts: string[] = []
     if (folder) parts.push(folder.displayName || folder.name)
@@ -590,7 +606,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (preview) parts.push(preview)
       }
     }
-    document.title = parts.join(' | ')
+    document.title = 'OrcStrator: ' + parts.join(' | ')
   }, [uiState.selectedInstanceId, instState.instances, instState.folders, msgState.messages])
 
   // Global Alt+↑/↓ to cycle between instances
