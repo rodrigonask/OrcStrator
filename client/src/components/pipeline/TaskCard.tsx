@@ -56,6 +56,11 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
             <span className="task-skill-badge">{task.skill}</span>
           )}
         </div>
+        {task.totalCostUsd != null && task.totalCostUsd > 0 && (
+          <span className="task-cost-badge" style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)' }}>
+            ${task.totalCostUsd < 0.01 ? task.totalCostUsd.toFixed(4) : task.totalCostUsd.toFixed(2)}
+          </span>
+        )}
         {isRunning ? (
           <span className="task-agent-badge" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--col-build)' }}>running</span>
         ) : !isStuck && task.assignedAgent ? (

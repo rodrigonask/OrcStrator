@@ -136,16 +136,26 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       return { error: 'Comment body is required' }
     }
     const now = Date.now()
-    // Dedup guard: reject if same body was posted for this task within 60s
-    const recent = db.prepare(
+    const author = body.author?.trim() || 'human'
+    // Dedup guard 1: exact body match within 60s
+    const exactDupe = db.prepare(
       'SELECT id FROM task_comments WHERE task_id = ? AND body = ? AND created_at > ?'
     ).get(taskId, body.body.trim(), now - 60_000) as Record<string, unknown> | undefined
-    if (recent) {
+    if (exactDupe) {
       reply.code(409)
-      return { error: 'Duplicate comment', existingId: recent.id }
+      return { error: 'Duplicate comment', existingId: exactDupe.id }
+    }
+    // Dedup guard 2: same non-human author on same task within 5 minutes (catches rephrased dupes)
+    if (author !== 'human') {
+      const recentByAuthor = db.prepare(
+        'SELECT id FROM task_comments WHERE task_id = ? AND author = ? AND created_at > ?'
+      ).get(taskId, author, now - 300_000) as Record<string, unknown> | undefined
+      if (recentByAuthor) {
+        reply.code(409)
+        return { error: 'Rate limited: same author commented recently', existingId: recentByAuthor.id }
+      }
     }
     const id = crypto.randomUUID()
-    const author = body.author?.trim() || 'human'
     db.prepare(
       'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
     ).run(id, taskId, author, body.body.trim(), now)

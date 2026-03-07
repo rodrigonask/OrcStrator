@@ -161,6 +161,7 @@ class OrchestratorService {
   private folderTriggerTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private lastSendTime = new Map<string, number>()  // instanceId → timestamp of last sendMessage
   private schedulerRunContexts = new Map<string, SchedulerRunContext>() // instanceId → run context
+  private instanceTaskIds = new Map<string, string[]>() // instanceId → task IDs assigned (survives moveTask clearing locked_by)
 
   start(): void {
     if (this.safetyPollTimer) return
@@ -193,17 +194,42 @@ class OrchestratorService {
     // Accumulate tokens on the locked task + post spend comment
     if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0)) {
       this.accumulateTaskTokens(instanceId, tokens)
+    } else {
+      this.instanceTaskIds.delete(instanceId) // cleanup if no tokens reported
     }
 
     // Release all task locks held by this instance — if the agent moved the task,
     // moveTask() already cleared the lock; this catches tasks the agent didn't move
     // (failed tests, context limit exits, crashes)
     try {
-      const released = db.prepare(
-        'UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by = ?'
-      ).run(instanceId)
-      if (released.changes > 0) {
-        console.log(`[orchestrator] Released ${released.changes} stale lock(s) for instance ${instanceId}`)
+      const lockedTasks = db.prepare(
+        'SELECT id, title, retry_count, labels, history, project_id FROM pipeline_tasks WHERE locked_by = ?'
+      ).all(instanceId) as Array<{ id: string; title: string; retry_count: number; labels: string; history: string; project_id: string }>
+
+      for (const task of lockedTasks) {
+        const newRetry = ((task.retry_count) || 0) + 1
+        const now = Date.now()
+        const history = JSON.parse(task.history || '[]')
+        history.push({ action: 'lock_released', timestamp: now, agent: instanceId, note: 'process exited without moving task' })
+
+        if (newRetry >= MAX_RETRIES) {
+          // Max retries — move to backlog with stuck label
+          let labels: string[]
+          try { labels = JSON.parse(task.labels || '[]') } catch { labels = [] }
+          if (!labels.includes('stuck')) labels.push('stuck')
+          history.push({ action: 'moved', timestamp: now, from: 'current', to: 'backlog', note: `${MAX_RETRIES} failures - stuck, needs human` })
+          db.prepare(
+            `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, "column" = 'backlog', labels = ?, history = ?, updated_at = ? WHERE id = ?`
+          ).run(newRetry, JSON.stringify(labels), JSON.stringify(history), now, task.id)
+          console.warn(`[orchestrator] Task "${task.title}" failed ${newRetry}x — moved to backlog as stuck`)
+          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: task.id, reason: 'max-retries-stuck' } })
+          broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
+        } else {
+          db.prepare(
+            'UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?'
+          ).run(newRetry, JSON.stringify(history), now, task.id)
+          console.log(`[orchestrator] Released lock on "${task.title}" (retry ${newRetry}/${MAX_RETRIES})`)
+        }
       }
     } catch (err) {
       console.error('[orchestrator] lock release error:', err)
@@ -266,10 +292,20 @@ class OrchestratorService {
 
   private accumulateTaskTokens(instanceId: string, tokens: ProcessExitTokens): void {
     try {
-      // Find task(s) locked by this instance
-      const tasks = db.prepare(
-        'SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE locked_by = ?'
-      ).all(instanceId) as Array<{ id: string; title: string; project_id: string; total_input_tokens: number; total_output_tokens: number; total_cost_usd: number }>
+      // Use tracked task IDs (survives moveTask clearing locked_by), fallback to DB query
+      const trackedIds = this.instanceTaskIds.get(instanceId)
+      let tasks: Array<{ id: string; title: string; project_id: string; total_input_tokens: number; total_output_tokens: number; total_cost_usd: number }>
+      if (trackedIds && trackedIds.length > 0) {
+        const placeholders = trackedIds.map(() => '?').join(',')
+        tasks = db.prepare(
+          `SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE id IN (${placeholders})`
+        ).all(...trackedIds) as typeof tasks
+        this.instanceTaskIds.delete(instanceId)
+      } else {
+        tasks = db.prepare(
+          'SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE locked_by = ?'
+        ).all(instanceId) as typeof tasks
+      }
 
       if (tasks.length === 0) return
 
@@ -536,6 +572,9 @@ class OrchestratorService {
       console.warn(`[orchestrator] Task ${task.id as string} already locked — skipping double-assignment for ${instanceId}`)
       return
     }
+
+    // Track task IDs so accumulateTaskTokens can find them even after moveTask clears locked_by
+    this.instanceTaskIds.set(instanceId, tasksToLock.map(t => t.id as string))
 
     // Mark as running immediately so concurrent assignWork calls see it as busy
     db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(instanceId)
