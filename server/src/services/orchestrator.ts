@@ -292,10 +292,10 @@ class OrchestratorService {
         ).run(newInput, newOutput, newCost, task.id)
 
         // Post token spend comment with cache hit info
-        const cacheRead = tokens.cacheReadTokens || 0
-        const cacheCreate = tokens.cacheCreationTokens || 0
+        const cacheRead = Math.round((tokens.cacheReadTokens || 0) / tasks.length)
+        const cacheCreate = Math.round((tokens.cacheCreationTokens || 0) / tasks.length)
         const cacheHitPct = perTask.input > 0 ? Math.round((cacheRead / perTask.input) * 100) : 0
-        const commentBody = `Token summary ${task.id.slice(0, 8)}: cost=$${perTask.cost.toFixed(4)} cache_hit=${cacheHitPct}% (read=${cacheRead} create=${cacheCreate})`
+        const commentBody = `Token summary ${task.id}: cost=$${perTask.cost.toFixed(4)} cache_hit=${cacheHitPct}% (read=${cacheRead} create=${cacheCreate})`
         const commentId = crypto.randomUUID()
         db.prepare(
           'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'

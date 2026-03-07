@@ -157,9 +157,9 @@ export function GameDashboard({ instances, tasks, projectId }: Props) {
   ]
 
   return (
-    <div style={{ display: 'flex', width: '100%', height: '100%', overflow: 'hidden' }}>
-      {/* Left: zone columns */}
-      <div className="gdb-root" style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden' }}>
+      {/* Top: zone columns */}
+      <div className="gdb-root" style={{ flex: 1, minHeight: 0 }}>
         {zones.map(z => (
           <div key={z.key} className="gdb-col">
             <div className="gdb-col-header" style={{ borderBottomColor: z.accent + '44' }}>
@@ -190,36 +190,33 @@ export function GameDashboard({ instances, tasks, projectId }: Props) {
         )}
       </div>
 
-      {/* Right: Process Monitor */}
+      {/* Bottom: Process Monitor bar */}
       <div style={{
-        width: 280,
-        minWidth: 280,
-        borderLeft: '1px solid var(--border)',
+        borderTop: '1px solid var(--border)',
         background: 'var(--bg-secondary)',
-        overflow: 'auto',
-        padding: '12px',
+        padding: '8px 12px',
         fontFamily: 'var(--font-mono)',
+        flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-          <span style={{ color: '#10b981', fontSize: 8 }}>■</span>
-          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2, color: 'var(--text-primary)' }}>PROCESS MONITOR</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: '#10b981', fontSize: 8 }}>■</span>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2, color: 'var(--text-primary)' }}>PROCESS MONITOR</span>
+          </div>
+
+          {/* Health stats — single horizontal row */}
+          <div style={{ display: 'flex', gap: 6, flex: 1 }}>
+            {healthStats.map(s => (
+              <div key={s.label} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 4, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: 1.5 }}>{s.label}</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: s.color || 'var(--text-primary)' }}>{s.value}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Health stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
-          {healthStats.map(s => (
-            <div key={s.label} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 4, padding: '6px 8px' }}>
-              <div style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: 1.5, marginBottom: 2 }}>{s.label}</div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: s.color || 'var(--text-primary)' }}>{s.value}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Instance list */}
-        <div style={{ fontSize: 8, color: 'var(--text-muted)', letterSpacing: 1.5, marginBottom: 6 }}>
-          INSTANCES ({sortedInstances.length})
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {/* Instance cards — horizontal scrollable row */}
+        <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}>
           {sortedInstances.map(inst => {
             const sc = STATE_COLOR[inst.state] ?? '#4a4a60'
             const rc = ROLE_COLOR[inst.agentRole ?? ''] ?? '#6b7280'
@@ -227,8 +224,9 @@ export function GameDashboard({ instances, tasks, projectId }: Props) {
             return (
               <div key={inst.id} style={{
                 display: 'flex', alignItems: 'center', gap: 6,
-                padding: '5px 8px', background: 'var(--bg-primary)',
+                padding: '4px 8px', background: 'var(--bg-primary)',
                 border: '1px solid var(--border)', borderRadius: 4,
+                flexShrink: 0, minWidth: 140, maxWidth: 220,
               }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: sc, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -270,7 +268,7 @@ export function GameDashboard({ instances, tasks, projectId }: Props) {
             )
           })}
           {sortedInstances.length === 0 && (
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>No instances</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', padding: 8 }}>No instances</div>
           )}
         </div>
       </div>
