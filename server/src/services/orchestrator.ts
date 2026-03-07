@@ -195,6 +195,20 @@ class OrchestratorService {
       this.accumulateTaskTokens(instanceId, tokens)
     }
 
+    // Release all task locks held by this instance — if the agent moved the task,
+    // moveTask() already cleared the lock; this catches tasks the agent didn't move
+    // (failed tests, context limit exits, crashes)
+    try {
+      const released = db.prepare(
+        'UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by = ?'
+      ).run(instanceId)
+      if (released.changes > 0) {
+        console.log(`[orchestrator] Released ${released.changes} stale lock(s) for instance ${instanceId}`)
+      }
+    } catch (err) {
+      console.error('[orchestrator] lock release error:', err)
+    }
+
     try {
       const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(instanceId) as Record<string, unknown> | undefined
       if (!instance || !instance.agent_role) return
@@ -277,9 +291,11 @@ class OrchestratorService {
           'UPDATE pipeline_tasks SET total_input_tokens = ?, total_output_tokens = ?, total_cost_usd = ? WHERE id = ?'
         ).run(newInput, newOutput, newCost, task.id)
 
-        // Post token spend comment
-        const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
-        const commentBody = `Session: ${fmtK(perTask.input)} in / ${fmtK(perTask.output)} out ($${perTask.cost.toFixed(4)}) | Total: ${fmtK(newInput)} in / ${fmtK(newOutput)} out ($${newCost.toFixed(4)})`
+        // Post token spend comment with cache hit info
+        const cacheRead = tokens.cacheReadTokens || 0
+        const cacheCreate = tokens.cacheCreationTokens || 0
+        const cacheHitPct = perTask.input > 0 ? Math.round((cacheRead / perTask.input) * 100) : 0
+        const commentBody = `Token summary ${task.id.slice(0, 8)}: cost=$${perTask.cost.toFixed(4)} cache_hit=${cacheHitPct}% (read=${cacheRead} create=${cacheCreate})`
         const commentId = crypto.randomUUID()
         db.prepare(
           'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'

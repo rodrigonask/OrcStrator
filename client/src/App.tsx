@@ -13,7 +13,6 @@ import { PipelineBoard } from './components/pipeline/PipelineBoard'
 import { SettingsPage } from './components/SettingsPage'
 import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
 import { GameScreen } from './components/game'
-import { MonitorView } from './components/MonitorView'
 import { api } from './api'
 
 function AppContent() {
@@ -63,8 +62,7 @@ function AppContent() {
           <>
             {view === 'chat' && selectedInstanceId && <ChatView />}
             {view === 'pipeline' && <PipelineBoard />}
-            {view === 'monitor' && <MonitorView />}
-            {!selectedInstanceId && view === 'chat' && <GameScreen />}
+{!selectedInstanceId && view === 'chat' && <GameScreen />}
           </>
         )}
       </main>

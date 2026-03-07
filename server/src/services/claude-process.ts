@@ -8,7 +8,7 @@ import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@nasklaude/share
 import crypto from 'crypto'
 
 // Lazily imported to avoid circular dependency at module init time
-export interface ProcessExitTokens { inputTokens: number; outputTokens: number; costUsd: number }
+export interface ProcessExitTokens { inputTokens: number; outputTokens: number; costUsd: number; cacheReadTokens?: number; cacheCreationTokens?: number }
 let _orchestratorNotify: ((instanceId: string, tokens?: ProcessExitTokens) => void) | null = null
 export function setOrchestratorCallback(fn: (instanceId: string, tokens?: ProcessExitTokens) => void): void {
   _orchestratorNotify = fn
@@ -360,7 +360,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     // Notify orchestrator — event-driven dispatch (with token data for task accumulation)
     if (_orchestratorNotify) {
       const tokens: ProcessExitTokens | undefined = (lastInputTokens || lastOutputTokens)
-        ? { inputTokens: lastInputTokens || 0, outputTokens: lastOutputTokens || 0, costUsd: lastCostUsd || 0 }
+        ? { inputTokens: lastInputTokens || 0, outputTokens: lastOutputTokens || 0, costUsd: lastCostUsd || 0, cacheReadTokens: lastCacheRead, cacheCreationTokens: lastCacheCreation }
         : undefined
       try { _orchestratorNotify(instanceId, tokens) } catch { /* ignore */ }
     }
