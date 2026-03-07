@@ -1,6 +1,6 @@
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { OVERDRIVE_LEVELS } from '@nasklaude/shared'
+import { OVERDRIVE_LEVELS } from '@orcstrator/shared'
 
 const CACHE_WINDOW_MS = 3_600_000 // 1 hour
 
@@ -74,4 +74,35 @@ export function resetOverdriveIfExpired(instanceId: string): void {
       },
     })
   }
+}
+
+export function resetOverdriveForAll(): void {
+  const now = Date.now()
+  const cutoff = now - CACHE_WINDOW_MS
+
+  const stale = db.prepare(
+    'SELECT id FROM instances WHERE overdrive_tasks > 0 AND last_task_at IS NOT NULL AND last_task_at < ?'
+  ).all(cutoff) as { id: string }[]
+
+  if (stale.length === 0) return
+
+  db.prepare(
+    'UPDATE instances SET overdrive_tasks = 0, overdrive_started_at = NULL, last_task_at = NULL WHERE overdrive_tasks > 0 AND last_task_at IS NOT NULL AND last_task_at < ?'
+  ).run(cutoff)
+
+  for (const { id } of stale) {
+    broadcastEvent({
+      type: 'instance:overdrive',
+      payload: {
+        instanceId: id,
+        overdriveLevel: 0,
+        overdriveTasks: 0,
+        overdriveStartedAt: undefined,
+        lastTaskAt: undefined,
+        savings: 0,
+      },
+    })
+  }
+
+  console.log(`[overdrive] Swept ${stale.length} expired overdrive instance(s)`)
 }

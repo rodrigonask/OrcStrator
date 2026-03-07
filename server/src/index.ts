@@ -11,6 +11,7 @@ import { orchestrator, type ResumeSnapshot } from './services/orchestrator.js'
 import { schedulerService } from './services/scheduler-service.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
 import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
+import { resetOverdriveForAll } from './services/overdrive.js'
 
 // Route modules
 import stateRoutes from './routes/state.js'
@@ -44,6 +45,15 @@ async function main(): Promise<void> {
   }
   runMaintenance()
   setInterval(runMaintenance, 6 * 60 * 60 * 1000)
+
+  // Sweep expired overdrive indicators every 5 minutes
+  setInterval(() => {
+    try {
+      resetOverdriveForAll()
+    } catch (err) {
+      console.error('[maintenance] Overdrive sweep error:', err)
+    }
+  }, 5 * 60 * 1000)
 
   // Snapshot running instances BEFORE any resets — session IDs are wiped by the reset below
   const staleRunning = db.prepare(
@@ -160,7 +170,7 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT || String(DEFAULT_PORT), 10)
   try {
     await app.listen({ port, host: '0.0.0.0' })
-    console.log(`[server] NasKlaude server listening on http://localhost:${port}`)
+    console.log(`[server] OrcStrator server listening on http://localhost:${port}`)
   } catch (err) {
     console.error('[server] Failed to start:', err)
     process.exit(1)
