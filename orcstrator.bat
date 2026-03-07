@@ -74,22 +74,22 @@ echo.
 
 :: ── Start server ─────────────────────────────────────────────
 echo  [run]  server  ^> http://localhost:%SERVER_PORT%
-start "OrcStrator Server [:3333]" cmd /k "cd /d "%BASE%server" && npm run dev"
+start "OrcStrator Server [:3333]" /d "%BASE%server" cmd /k npm run dev
 
 timeout /t 3 /nobreak >nul
 
 :: ── Start client ─────────────────────────────────────────────
 echo  [run]  client  ^> http://localhost:%CLIENT_PORT%
-start "OrcStrator Client [:5173]" cmd /k "cd /d "%BASE%client" && npm run dev"
+start "OrcStrator Client [:5173]" /d "%BASE%client" cmd /k npm run dev
 
 timeout /t 4 /nobreak >nul
 
 :: ── Open browser ─────────────────────────────────────────────
 echo  [open] http://localhost:%CLIENT_PORT%
-start "" "http://localhost:%CLIENT_PORT%"
+start "" http://localhost:%CLIENT_PORT%
 
 echo.
 echo  Server  : http://localhost:%SERVER_PORT%
 echo  Client  : http://localhost:%CLIENT_PORT%
-echo  Monitor : sidebar -> MONITOR button
+echo  Monitor : sidebar -^> MONITOR button
 echo.
