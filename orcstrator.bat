@@ -44,6 +44,21 @@ if not exist "%BASE%node_modules\" (
     echo.
 )
 
+:: ── Build shared package if needed ──────────────────────────
+if not exist "%BASE%shared\dist\" (
+    echo  [build] Compiling shared types...
+    cd /d "%BASE%"
+    call npm run build -w shared
+    if errorlevel 1 (
+        echo.
+        echo  [error] shared build failed. Check the output above.
+        pause
+        exit /b 1
+    )
+    echo  [ok]   Shared package built.
+    echo.
+)
+
 :: ── Kill server process (port 3333) ──────────────────────────
 for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr ":%SERVER_PORT%" ^| findstr "LISTENING"') do (
     if not "%%p"=="" (
