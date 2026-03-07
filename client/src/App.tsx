@@ -1,10 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useFontSize } from './hooks/useFontSize'
 import { AppProvider } from './context/AppContext'
 import { useInstances } from './context/InstancesContext'
 import { useMessages } from './context/MessagesContext'
 import { useUI } from './context/UIContext'
-import { GameProvider } from './context/GameContext'
+import { GameProvider, useGame } from './context/GameContext'
 import { PipelineProvider } from './context/PipelineContext'
 import { Sidebar } from './components/Sidebar'
 import { RightSidebar } from './components/RightSidebar'
@@ -12,6 +12,8 @@ import { ChatView } from './components/ChatView'
 import { PipelineBoard } from './components/pipeline/PipelineBoard'
 import { SettingsPage } from './components/SettingsPage'
 import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
+import { GuidedTour } from './components/tour/GuidedTour'
+import { LevelUpFeaturePopup } from './components/tour/LevelUpFeaturePopup'
 import { GameScreen } from './components/game'
 import { api } from './api'
 
@@ -20,6 +22,35 @@ function AppContent() {
   const { messages } = useMessages()
   const { selectedInstanceId, view, settings, showSettings } = useUI()
   const { zoom } = useFontSize()
+  const { profile } = useGame()
+  const [levelUpPopup, setLevelUpPopup] = useState<number | null>(null)
+
+  // Resolve 'system' theme to actual dark/light based on OS preference
+  const [osPrefersDark, setOsPrefersDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e: MediaQueryListEvent) => setOsPrefersDark(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  const resolvedTheme = settings.theme === 'system'
+    ? (osPrefersDark ? 'dark' : 'light')
+    : settings.theme
+
+  // Sync theme to <html> so portals outside .app inherit theme variables
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', resolvedTheme)
+  }, [resolvedTheme])
+
+  // Listen for level-up events from WebSocket
+  useEffect(() => {
+    const unsub = api.onEvent('profile:level-up', (payload: { level: number }) => {
+      setLevelUpPopup(payload.level)
+    })
+    return unsub
+  }, [])
   const scaleStyle = zoom !== 1 ? {
     transform: `scale(${zoom})`,
     transformOrigin: 'top left',
@@ -32,7 +63,7 @@ function AppContent() {
   useEffect(() => {
     const instance = instances.find(i => i.id === selectedInstanceId)
     if (!instance) {
-      document.title = 'Orcstrator'
+      document.title = 'OrcStrator'
       return
     }
     const folder = folders.find(f => f.id === instance.folderId)
@@ -49,13 +80,13 @@ function AppContent() {
         if (preview) parts.push(preview)
       }
     }
-    document.title = parts.join(' | ')
+    document.title = 'OrcStrator: ' + parts.join(' | ')
   }, [selectedInstanceId, instances, folders, messages])
 
   return (
-    <div className="app" data-theme={settings.theme} style={scaleStyle}>
+    <div className="app" data-theme={resolvedTheme} style={scaleStyle}>
       <Sidebar />
-      <main className="main-content">
+      <main className="main-content" data-tour-id="tour-chat">
         {showSettings ? (
           <SettingsPage />
         ) : (
@@ -68,6 +99,10 @@ function AppContent() {
       </main>
       <RightSidebar />
       <WelcomeOverlay />
+      <GuidedTour />
+      {levelUpPopup !== null && (
+        <LevelUpFeaturePopup level={levelUpPopup} onClose={() => setLevelUpPopup(null)} />
+      )}
     </div>
   )
 }
