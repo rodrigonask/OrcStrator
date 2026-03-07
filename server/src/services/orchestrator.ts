@@ -1,5 +1,5 @@
 import { db } from '../db.js'
-import { sendMessage } from './claude-process.js'
+import { sendMessage, type ProcessExitTokens } from './claude-process.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { updateOverdriveOnComplete, resetOverdriveIfExpired } from './overdrive.js'
 import { markScheduleRunning, appendExecution, updateScheduleAfterRun } from './task-manager.js'
@@ -179,7 +179,7 @@ class OrchestratorService {
   }
 
   // Primary trigger: called directly from claude-process.ts on process exit
-  onProcessExit(instanceId: string): void {
+  onProcessExit(instanceId: string, tokens?: ProcessExitTokens): void {
     // Scheduler instance: handle via scheduler exit path
     const schedulerCtx = this.schedulerRunContexts.get(instanceId)
     if (schedulerCtx) {
@@ -188,6 +188,11 @@ class OrchestratorService {
       this.onSchedulerExit(instanceId, schedulerCtx.taskId, schedulerCtx.runId, schedulerCtx.startedAt)
       this.pruneMessages(instanceId)
       return
+    }
+
+    // Accumulate tokens on the locked task + post spend comment
+    if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0)) {
+      this.accumulateTaskTokens(instanceId, tokens)
     }
 
     try {
@@ -242,6 +247,48 @@ class OrchestratorService {
       `).run(instanceId, instanceId, KEEP)
     } catch (err) {
       console.error('[orchestrator] pruneMessages error:', err)
+    }
+  }
+
+  private accumulateTaskTokens(instanceId: string, tokens: ProcessExitTokens): void {
+    try {
+      // Find task(s) locked by this instance
+      const tasks = db.prepare(
+        'SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE locked_by = ?'
+      ).all(instanceId) as Array<{ id: string; title: string; project_id: string; total_input_tokens: number; total_output_tokens: number; total_cost_usd: number }>
+
+      if (tasks.length === 0) return
+
+      // Split tokens evenly across bundle tasks (usually 1)
+      const perTask = {
+        input: Math.round(tokens.inputTokens / tasks.length),
+        output: Math.round(tokens.outputTokens / tasks.length),
+        cost: +(tokens.costUsd / tasks.length).toFixed(6),
+      }
+
+      const instance = db.prepare('SELECT name, agent_role FROM instances WHERE id = ?').get(instanceId) as { name: string; agent_role: string } | undefined
+
+      for (const task of tasks) {
+        const newInput = (task.total_input_tokens || 0) + perTask.input
+        const newOutput = (task.total_output_tokens || 0) + perTask.output
+        const newCost = +((task.total_cost_usd || 0) + perTask.cost).toFixed(6)
+
+        db.prepare(
+          'UPDATE pipeline_tasks SET total_input_tokens = ?, total_output_tokens = ?, total_cost_usd = ? WHERE id = ?'
+        ).run(newInput, newOutput, newCost, task.id)
+
+        // Post token spend comment
+        const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+        const commentBody = `Session: ${fmtK(perTask.input)} in / ${fmtK(perTask.output)} out ($${perTask.cost.toFixed(4)}) | Total: ${fmtK(newInput)} in / ${fmtK(newOutput)} out ($${newCost.toFixed(4)})`
+        const commentId = crypto.randomUUID()
+        db.prepare(
+          'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
+        ).run(commentId, task.id, instance?.agent_role || 'system', commentBody, Date.now())
+
+        console.log(`[orchestrator] Token accumulation: "${task.title}" → +${perTask.input}in/+${perTask.output}out (+$${perTask.cost.toFixed(4)}) | Total: $${newCost.toFixed(4)}`)
+      }
+    } catch (err) {
+      console.error('[orchestrator] accumulateTaskTokens error:', err)
     }
   }
 

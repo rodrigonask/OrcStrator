@@ -12,6 +12,7 @@ import { MonsterPanel } from './monsterPanel'
 import { GameDashboard } from './GameDashboard'
 import { AttackAnimator, getCharacterCenter } from './attackAnimator'
 import { burst } from './particles'
+import { sounds } from '../../utils/sounds'
 import type { InstanceConfig, FolderConfig, PipelineTask } from '@shared/types'
 
 export function GameScreen() {
@@ -25,6 +26,7 @@ export function GameScreen() {
   const activeIdsRef        = useRef<Set<string>>(new Set())
   const idleLabelRef        = useRef<{ bg: Graphics; text: Text } | null>(null)
   const activeLabelRef      = useRef<{ bg: Graphics; text: Text } | null>(null)
+  const periodicTimersRef   = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   const [spritesReady, setSpritesReady] = useState(SpriteManager.isReady())
   const [gameActive, setGameActive]     = useState<boolean>(() => {
@@ -376,6 +378,65 @@ export function GameScreen() {
     })
     return unsub
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Effect 8: Periodic attack animation for active agents with locked tasks
+  useEffect(() => {
+    if (!spritesReady) return
+
+    const timers = periodicTimersRef.current
+
+    // Clear all existing timers (deps changed)
+    for (const timer of timers.values()) clearTimeout(timer)
+    timers.clear()
+
+    // Determine which instances should fire: running + has a locked task
+    const firingPairs: { instanceId: string; taskId: string; role: string }[] = []
+    for (const inst of visibleInstances) {
+      if (inst.state !== 'running') continue
+      const lockedTask = visibleTasks.find(t => t.lockedBy === inst.id)
+      if (!lockedTask) continue
+      firingPairs.push({ instanceId: inst.id, taskId: lockedTask.id, role: inst.agentRole ?? 'default' })
+    }
+
+    const scheduleAttack = (instanceId: string) => {
+      const delay = 2000 + Math.random() * 13000 // 2–15s
+      const timer = setTimeout(() => {
+        timers.delete(instanceId)
+        const animator = attackAnimatorRef.current
+        const panel    = monsterPanelRef.current
+        if (!animator || !panel) return
+
+        // Re-check at fire time: still running with a locked task?
+        const inst = instancesRef.current.find(i => i.id === instanceId)
+        if (!inst || inst.state !== 'running') return
+        const task = tasksRef.current.find(t => t.lockedBy === instanceId)
+        if (!task) return
+
+        const from = getCharacterCenter(instanceId, activeIdsRef.current, instancesRef.current)
+        const to   = panel.getMonsterCenter(task.id)
+        if (from && to) {
+          const role = inst.agentRole ?? 'default'
+          animator.fire(from, to, role, () => {})
+          if (settingsRef.current.soundsEnabled !== false) {
+            try { sounds.attack(role) } catch { /* audio unavailable */ }
+          }
+        }
+
+        // Reschedule next attack
+        scheduleAttack(instanceId)
+      }, delay)
+      timers.set(instanceId, timer)
+    }
+
+    for (const { instanceId } of firingPairs) {
+      scheduleAttack(instanceId)
+    }
+
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    }
+  }, [visibleInstances, visibleTasks, spritesReady])
 
   const DISPLAY_MODES: { label: string; value: GameDisplayMode }[] = [
     { label: 'Code',   value: 'code'      },

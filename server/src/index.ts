@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   startPolling(pollMinutes)
 
   // Wire orchestrator callback (event-driven dispatch)
-  setOrchestratorCallback((instanceId) => {
-    orchestrator.onProcessExit(instanceId)
+  setOrchestratorCallback((instanceId, tokens) => {
+    orchestrator.onProcessExit(instanceId, tokens)
     // Refresh usage meter after each session — credits are consumed at session end
     fetchUsage().catch(() => {})
   })

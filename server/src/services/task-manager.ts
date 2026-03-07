@@ -46,6 +46,9 @@ function rowToTask(row: Record<string, unknown>): PipelineTask {
     schedule: row.schedule ? safeJsonParse(row.schedule as string, undefined) : undefined,
     executions: safeJsonParse(row.executions as string, []),
     skill: row.skill as string | undefined,
+    totalInputTokens: (row.total_input_tokens as number) || 0,
+    totalOutputTokens: (row.total_output_tokens as number) || 0,
+    totalCostUsd: (row.total_cost_usd as number) || 0,
   }
 }
 
@@ -321,7 +324,7 @@ export function getTasksForProject(projectId: string, includeDone = false): Pipe
 // Lightweight list: excludes history, description, and attachments to reduce payload
 export function getTasksForProjectLight(projectId: string): Array<Omit<PipelineTask, 'history' | 'description' | 'attachments'> & { description: string }> {
   const rows = db.prepare(
-    'SELECT id, project_id, title, "column", priority, labels, assigned_agent, group_id, group_index, group_total, depends_on, created_by, locked_by, completed_at, created_at, updated_at FROM pipeline_tasks WHERE project_id = ? AND "column" != \'done\' ORDER BY priority ASC, created_at ASC'
+    'SELECT id, project_id, title, "column", priority, labels, assigned_agent, group_id, group_index, group_total, depends_on, created_by, locked_by, completed_at, created_at, updated_at, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE project_id = ? AND "column" != \'done\' ORDER BY priority ASC, created_at ASC'
   ).all(projectId) as Record<string, unknown>[]
   return rows.map(row => ({
     id: row.id as string,
@@ -341,6 +344,9 @@ export function getTasksForProjectLight(projectId: string): Array<Omit<PipelineT
     completedAt: row.completed_at as number | undefined,
     createdAt: row.created_at as number,
     updatedAt: row.updated_at as number,
+    totalInputTokens: (row.total_input_tokens as number) || 0,
+    totalOutputTokens: (row.total_output_tokens as number) || 0,
+    totalCostUsd: (row.total_cost_usd as number) || 0,
   }))
 }
 

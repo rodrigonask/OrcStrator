@@ -38,13 +38,6 @@ function fmtNum(n: number): string {
   return String(n)
 }
 
-const SHORTCUTS = [
-  { keys: 'Ctrl+K', label: 'Command menu' },
-  { keys: 'Ctrl+,', label: 'Settings' },
-  { keys: 'Ctrl+Enter', label: 'Send message' },
-  { keys: 'Ctrl+L', label: 'Clear chat' },
-  { keys: 'Esc', label: 'Dismiss / cancel' },
-]
 
 export function RightSidebar() {
   const { settings, usage, activePipelineId, view } = useUI()
@@ -278,6 +271,43 @@ export function RightSidebar() {
             </div>
           </div>
 
+          {/* ── Overdrive Meter ── */}
+          {savings && (
+            <div className="rs-section">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <span style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  Overdrive
+                  <span
+                    title="Overdrive measures how often agents hit the Claude prompt cache, reducing token costs. Higher = more efficient."
+                    style={{ cursor: 'help', fontSize: 11, opacity: 0.5 }}
+                  >ⓘ</span>
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-pixel)',
+                  fontSize: 9,
+                  color: savings.overdrivePct >= 70 ? '#f97316'
+                       : savings.overdrivePct >= 50 ? '#22c55e'
+                       : savings.overdrivePct >= 30 ? '#eab308'
+                       : '#60a5fa',
+                }}>
+                  {Math.round(savings.overdrivePct)}%
+                </span>
+              </div>
+              <div style={{ width: '100%', height: 8, background: 'var(--bg-tertiary)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{
+                  width: `${Math.min(savings.overdrivePct, 100)}%`,
+                  height: '100%',
+                  borderRadius: 4,
+                  background: savings.overdrivePct >= 70 ? '#f97316'
+                             : savings.overdrivePct >= 50 ? '#22c55e'
+                             : savings.overdrivePct >= 30 ? '#eab308'
+                             : '#60a5fa',
+                  transition: 'width 0.4s ease',
+                }} />
+              </div>
+            </div>
+          )}
+
           {/* ── Usage (OAuth) ── */}
           {usage && usage.buckets.length > 0 && (
             <div className="rs-section">
@@ -302,19 +332,6 @@ export function RightSidebar() {
               })}
             </div>
           )}
-
-          {/* ── Shortcuts ── */}
-          <div className="rs-section rs-shortcuts">
-            <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Shortcuts</div>
-            <div className="rs-shortcut-list">
-              {SHORTCUTS.map(({ keys, label }) => (
-                <div key={keys} className="rs-shortcut-row">
-                  <kbd className="rs-kbd" style={{ fontFamily: 'var(--font-pixel)', fontSize: 7 }}>{keys}</kbd>
-                  <span className="rs-shortcut-label" style={{ fontFamily: 'var(--font-mono)' }}>{label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
 
           {/* ── Footer ── */}
           <div className="rs-footer">

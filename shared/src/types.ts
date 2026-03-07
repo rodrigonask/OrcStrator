@@ -182,6 +182,9 @@ export interface PipelineTask {
   schedule?: ScheduleConfig
   executions?: ScheduleExecution[]
   skill?: string
+  totalInputTokens?: number
+  totalOutputTokens?: number
+  totalCostUsd?: number
 }
 
 export interface TaskComment {

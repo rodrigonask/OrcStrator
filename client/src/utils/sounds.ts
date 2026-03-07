@@ -60,4 +60,35 @@ export const sounds = {
     osc(ctx, 'square', 80, 0.05, 30, 0.3, 0.2)
     osc(ctx, 'sine', 300, 0.1, 50, 0.5, 0.15)
   },
+
+  attack(role: string): void {
+    const ctx = getCtx()
+    switch (role) {
+      case 'planner':
+        // Magic whoosh: rising sine sweep + shimmer
+        osc(ctx, 'sine', 300, 0, 1200, 0.25, 0.1)
+        osc(ctx, 'sine', 800, 0.05, 1600, 0.2, 0.07)
+        break
+      case 'builder':
+        // Arrow twang: sharp triangle snap + decay
+        osc(ctx, 'triangle', 600, 0, 150, 0.12, 0.15)
+        osc(ctx, 'sawtooth', 200, 0.02, 80, 0.1, 0.08)
+        break
+      case 'tester':
+        // Sword clash: noise-like square burst + ring
+        osc(ctx, 'square', 800, 0, 200, 0.08, 0.12)
+        osc(ctx, 'sine', 1200, 0.02, 600, 0.15, 0.08)
+        break
+      case 'promoter':
+        // Lute strum: warm sine chord pluck
+        osc(ctx, 'sine', 330, 0, 320, 0.2, 0.1)
+        osc(ctx, 'sine', 440, 0.02, 430, 0.18, 0.08)
+        osc(ctx, 'sine', 550, 0.04, 540, 0.16, 0.06)
+        break
+      default:
+        // Generic pew
+        osc(ctx, 'sine', 500, 0, 300, 0.15, 0.1)
+        break
+    }
+  },
 }

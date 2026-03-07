@@ -353,6 +353,22 @@ function migration014(): void {
   setSchemaVersion(14)
 }
 
+function migration015(): void {
+  const columns: Array<[string, string]> = [
+    ['pipeline_tasks', 'total_input_tokens INTEGER DEFAULT 0'],
+    ['pipeline_tasks', 'total_output_tokens INTEGER DEFAULT 0'],
+    ['pipeline_tasks', 'total_cost_usd REAL DEFAULT 0'],
+  ]
+  for (const [table, col] of columns) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
+    } catch {
+      // column already exists
+    }
+  }
+  setSchemaVersion(15)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -410,6 +426,10 @@ function runMigrations(): void {
 
   if (currentVersion < 14) {
     migration014()
+  }
+
+  if (currentVersion < 15) {
+    migration015()
   }
 }
 

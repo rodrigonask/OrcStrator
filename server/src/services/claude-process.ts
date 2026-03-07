@@ -8,8 +8,9 @@ import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@nasklaude/share
 import crypto from 'crypto'
 
 // Lazily imported to avoid circular dependency at module init time
-let _orchestratorNotify: ((instanceId: string) => void) | null = null
-export function setOrchestratorCallback(fn: (instanceId: string) => void): void {
+export interface ProcessExitTokens { inputTokens: number; outputTokens: number; costUsd: number }
+let _orchestratorNotify: ((instanceId: string, tokens?: ProcessExitTokens) => void) | null = null
+export function setOrchestratorCallback(fn: (instanceId: string, tokens?: ProcessExitTokens) => void): void {
   _orchestratorNotify = fn
 }
 
@@ -356,9 +357,12 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     broadcastEvent({ type: 'claude:process-exit', payload: exitEvent })
     broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
 
-    // Notify orchestrator — event-driven dispatch
+    // Notify orchestrator — event-driven dispatch (with token data for task accumulation)
     if (_orchestratorNotify) {
-      try { _orchestratorNotify(instanceId) } catch { /* ignore */ }
+      const tokens: ProcessExitTokens | undefined = (lastInputTokens || lastOutputTokens)
+        ? { inputTokens: lastInputTokens || 0, outputTokens: lastOutputTokens || 0, costUsd: lastCostUsd || 0 }
+        : undefined
+      try { _orchestratorNotify(instanceId, tokens) } catch { /* ignore */ }
     }
 
     // Best-effort session sanitization
