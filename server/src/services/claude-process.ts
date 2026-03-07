@@ -4,8 +4,9 @@ import { createStreamParser } from './stream-parser.js'
 import { broadcastEvent, broadcastTerminalLine } from '../ws/handler.js'
 import { db } from '../db.js'
 import { sanitizeSession } from './session-sanitizer.js'
-import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@nasklaude/shared'
+import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@orcstrator/shared'
 import crypto from 'crypto'
+import { processRegistry } from './process-registry.js'
 
 // Lazily imported to avoid circular dependency at module init time
 export interface ProcessExitTokens { inputTokens: number; outputTokens: number; costUsd: number; cacheReadTokens?: number; cacheCreationTokens?: number }
@@ -14,11 +15,7 @@ export function setOrchestratorCallback(fn: (instanceId: string, tokens?: Proces
   _orchestratorNotify = fn
 }
 
-const processes = new Map<string, ChildProcess>()
-const processTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
-const supersededProcesses = new Set<ChildProcess>()
-
-const PROCESS_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+const PROCESS_TIMEOUT_MS = 20 * 60 * 1000 // 20 minutes — aligned with LOCK_TIMEOUT_MS
 const BATCH_INTERVAL_MS = 32
 
 interface SendMessageOpts {
@@ -59,14 +56,16 @@ function filterFlags(flags: string[]): string[] {
   return result
 }
 
-export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
+export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: string }> {
   const { instanceId, text, images, cwd, sessionId, resume, flags = [], agentPrompt, mcpConfigPath } = opts
 
-  // Kill any existing process for this instance
-  // Mark old child as superseded BEFORE killing so its exit handler is a no-op
-  const oldChild = processes.get(instanceId)
-  if (oldChild) supersededProcesses.add(oldChild)
-  killProcess(instanceId)
+  console.log(`[claude-process] sendMessage START instance=${instanceId} cwd=${cwd} resume=${!!sessionId} hasPrompt=${!!agentPrompt} mcpConfig=${mcpConfigPath || 'none'}`)
+
+  // Kill any existing process for this instance (await ensures it's dead before spawning)
+  if (processRegistry.isRunning(instanceId)) {
+    console.log(`[claude-process] Killing existing process for ${instanceId} before spawning new one`)
+    await processRegistry.killProcess(instanceId)
+  }
 
   // Build CLI args
   const args: string[] = ['--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json']
@@ -106,17 +105,32 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
 
   // Spawn the process
   const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
+  console.log(`[claude-process] SPAWNING: ${cmd} ${args.join(' ')}`)
   const child = spawn(cmd, args, {
     cwd,
     env,
     shell: process.platform === 'win32',
+    windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe']
   })
 
-  processes.set(instanceId, child)
+  // Wait for 'spawn' event to confirm PID before registering
+  await new Promise<void>((resolve, reject) => {
+    child.once('spawn', () => {
+      console.log(`[claude-process] SPAWNED: instance=${instanceId} PID=${child.pid}`)
+      resolve()
+    })
+    child.once('error', (err) => {
+      console.error(`[claude-process] SPAWN ERROR: instance=${instanceId}:`, err)
+      reject(err)
+    })
+  })
 
-  // Update instance state
-  db.prepare('UPDATE instances SET state = ? WHERE id = ?').run('running', instanceId)
+  // Register in ProcessRegistry (only after confirmed spawn)
+  processRegistry.registerProcess(instanceId, child)
+
+  // Update instance state + track PID
+  db.prepare('UPDATE instances SET state = ?, process_pid = ? WHERE id = ?').run('running', child.pid, instanceId)
   broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'running' } })
 
   // Stateful stream parser for this process (tracks index→toolId mapping)
@@ -221,6 +235,25 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
           lastCacheCreation = event.cacheCreationTokens
           lastCacheRead = event.cacheReadTokens
           console.log(`[claude-process] Result for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd} cache_create=${lastCacheCreation} cache_read=${lastCacheRead}`)
+
+          // Eagerly persist token data NOW — protects against server crash before exit handler runs
+          try {
+            db.prepare(
+              `UPDATE token_usage
+               SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
+                   cache_creation_tokens = ?, cache_read_tokens = ?
+               WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)`
+            ).run(
+              resolvedSessionId || null,
+              lastInputTokens || 0,
+              lastOutputTokens || 0,
+              lastCostUsd || 0,
+              lastCacheCreation || 0,
+              lastCacheRead || 0,
+              instanceId,
+              instanceId
+            )
+          } catch { /* non-critical — exit handler will retry */ }
         }
 
         enqueueEvent(event)
@@ -256,30 +289,31 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     session_id: resolvedSessionId,
     parent_tool_use_id: null
   }
-  child.stdin?.write(JSON.stringify(inputMessage) + '\n')
+  const stdinPayload = JSON.stringify(inputMessage)
+  console.log(`[claude-process] STDIN → ${instanceId}: ${stdinPayload.length} chars (text: ${text.slice(0, 100)}...)`)
+  child.stdin?.write(stdinPayload + '\n')
   child.stdin?.end()
 
-  // Set process timeout
+  // Set process timeout (tracked in registry for cleanup)
   const timeout = setTimeout(() => {
     console.warn(`[claude-process] Timeout for instance ${instanceId}, killing process`)
-    killProcess(instanceId)
+    processRegistry.killProcess(instanceId).catch(err => {
+      console.error(`[claude-process] Kill after timeout failed for ${instanceId}:`, err)
+    })
   }, PROCESS_TIMEOUT_MS)
-  processTimeouts.set(instanceId, timeout)
+  processRegistry.setTimeoutTimer(instanceId, timeout)
 
-  // Handle exit
+  // Idempotent cleanup dedup — prevents double cleanup if killProcess() already ran
+  const cleanedUp = new Set<string>()
+
+  // Handle exit — ALWAYS clean up DB state and record tokens, even if killed externally
   child.on('exit', (code) => {
-    // Guard: skip cleanup if this process was replaced by a newer sendMessage call
-    if (supersededProcesses.has(child)) {
-      supersededProcesses.delete(child)
+    console.log(`[claude-process] EXIT: instance=${instanceId} PID=${child.pid} code=${code}`)
+    if (cleanedUp.has(instanceId)) {
+      console.log(`[claude-process] EXIT DEDUP: instance ${instanceId} already cleaned up`)
       return
     }
-
-    // Clear timeout
-    const t = processTimeouts.get(instanceId)
-    if (t) {
-      clearTimeout(t)
-      processTimeouts.delete(instanceId)
-    }
+    cleanedUp.add(instanceId)
 
     // Flush remaining events (result line often arrives without trailing newline)
     if (stdoutBuffer.trim()) {
@@ -287,7 +321,6 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
       if (parsed) {
         const events = Array.isArray(parsed) ? parsed : [parsed]
         for (const event of events) {
-          // Extract token data from result events flushed from buffer
           if (event.type === 'result') {
             lastCostUsd = event.costUsd
             lastInputTokens = event.inputTokens
@@ -307,10 +340,11 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
       batchTimer = null
     }
 
-    processes.delete(instanceId)
+    // Unregister from ProcessRegistry (no-op if already removed by killProcess)
+    processRegistry.unregisterProcess(instanceId)
 
     // Update instance state, preserve session_id for resume on next task
-    db.prepare('UPDATE instances SET state = ? WHERE id = ?').run('idle', instanceId)
+    db.prepare('UPDATE instances SET state = ?, process_pid = NULL WHERE id = ?').run('idle', instanceId)
 
     // Persist token usage to DB for monitoring
     if (lastInputTokens || lastOutputTokens) {
@@ -341,7 +375,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     }
 
     // Clean up temp MCP config file if orchestrator generated one
-    if (mcpConfigPath && mcpConfigPath.includes('nasklaude-mcp-')) {
+    if (mcpConfigPath && mcpConfigPath.includes('orcstrator-mcp-')) {
       try { fs.unlinkSync(mcpConfigPath) } catch { /* already gone */ }
     }
 
@@ -362,7 +396,9 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
       const tokens: ProcessExitTokens | undefined = (lastInputTokens || lastOutputTokens)
         ? { inputTokens: lastInputTokens || 0, outputTokens: lastOutputTokens || 0, costUsd: lastCostUsd || 0, cacheReadTokens: lastCacheRead, cacheCreationTokens: lastCacheCreation }
         : undefined
-      try { _orchestratorNotify(instanceId, tokens) } catch { /* ignore */ }
+      try { _orchestratorNotify(instanceId, tokens) } catch (err) {
+        console.error(`[claude-process] orchestratorNotify error for ${instanceId}:`, err)
+      }
     }
 
     // Best-effort session sanitization
@@ -370,23 +406,6 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
       sanitizeSession(cwd, resolvedSessionId).catch(() => {})
     }
 
-  })
-
-  child.on('error', (err) => {
-    if (batchTimer) { clearTimeout(batchTimer); batchTimer = null }
-    console.error(`[claude-process] Spawn error for ${instanceId}:`, err.message)
-    processes.delete(instanceId)
-    const t = processTimeouts.get(instanceId)
-    if (t) {
-      clearTimeout(t)
-      processTimeouts.delete(instanceId)
-    }
-    db.prepare('UPDATE instances SET state = ? WHERE id = ?').run('idle', instanceId)
-    broadcastEvent({
-      type: 'claude:output-batch',
-      payload: { instanceId, events: [{ type: 'error', instanceId, message: `Failed to spawn claude: ${err.message}` }] }
-    })
-    broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
   })
 
   // Generate a session ID if we don't have one yet (will be updated by system event)
@@ -397,48 +416,5 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   return { sessionId: resolvedSessionId }
 }
 
-export function killProcess(instanceId: string): void {
-  const child = processes.get(instanceId)
-  if (!child) return
-
-  const t = processTimeouts.get(instanceId)
-  if (t) {
-    clearTimeout(t)
-    processTimeouts.delete(instanceId)
-  }
-
-  try {
-    child.kill('SIGTERM')
-  } catch {
-    // ignore
-  }
-
-  // Force kill after 5 seconds
-  const forceKillTimer = setTimeout(() => {
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      // ignore
-    }
-  }, 5000)
-
-  child.once('exit', () => {
-    clearTimeout(forceKillTimer)
-  })
-
-  processes.delete(instanceId)
-}
-
-export function killAll(): void {
-  for (const instanceId of processes.keys()) {
-    killProcess(instanceId)
-  }
-}
-
-export function isRunning(instanceId: string): boolean {
-  return processes.has(instanceId)
-}
-
-export function getActiveProcessCount(): number {
-  return processes.size
-}
+// Re-export registry methods for backwards compatibility in routes
+export { processRegistry } from './process-registry.js'

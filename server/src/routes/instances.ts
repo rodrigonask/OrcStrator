@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { sendMessage, killProcess, isRunning } from '../services/claude-process.js'
+import { sendMessage } from '../services/claude-process.js'
+import { processRegistry } from '../services/process-registry.js'
 import { preprocessImages, detectMediaType } from '../services/image-processor.js'
 import { getLastAssistantMessage } from '../services/session-sync.js'
 import { orchestrator } from '../services/orchestrator.js'
@@ -84,7 +85,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // Delete instance
   app.delete('/instances/:id', async (request) => {
     const { id } = request.params as { id: string }
-    killProcess(id)
+    await processRegistry.killProcess(id)
     db.prepare('DELETE FROM instances WHERE id = ?').run(id)
     broadcastEvent({ type: 'instance:deleted', payload: { id } })
     return { ok: true }
@@ -98,6 +99,11 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!instance) {
       throw { statusCode: 404, message: 'Instance not found' }
+    }
+
+    // Guard: reject if already running to prevent duplicate spawns from rapid clicks
+    if (processRegistry.isRunning(id)) {
+      throw { statusCode: 409, message: 'Instance already running' }
     }
 
     // Load settings for global flags
@@ -145,7 +151,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
       VALUES (?, ?, ?, ?, ?)
     `).run(msgId, id, 'user', JSON.stringify(content), now)
 
-    const result = sendMessage({
+    const result = await sendMessage({
       instanceId: id,
       text: imageTextPrefix + body.text,
       images: processedImages,
@@ -163,9 +169,9 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const { id } = request.params as { id: string }
     const row = db.prepare('SELECT id FROM instances WHERE id = ?').get(id) as { id: string } | undefined
     if (!row) { reply.code(404); return { error: 'Not found' } }
-    const wasRunning = isRunning(id)
-    killProcess(id)
-    db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(id)
+    const wasRunning = processRegistry.isRunning(id)
+    await processRegistry.killProcess(id)
+    db.prepare("UPDATE instances SET state = 'idle', process_pid = NULL WHERE id = ?").run(id)
     broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'idle' } })
     return { killed: wasRunning }
   })
@@ -173,8 +179,8 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // Pause instance
   app.post('/instances/:id/pause', async (request) => {
     const { id } = request.params as { id: string }
-    killProcess(id)
-    db.prepare("UPDATE instances SET state = 'paused' WHERE id = ?").run(id)
+    await processRegistry.killProcess(id)
+    db.prepare("UPDATE instances SET state = 'paused', process_pid = NULL WHERE id = ?").run(id)
     broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'paused' } })
     return { ok: true }
   })
