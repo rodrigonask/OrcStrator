@@ -55,9 +55,12 @@ async function del<T>(path: string): Promise<T> {
 // === REST API ===
 
 export const rest = {
+  get,
+
   // State
   getState: () => get<AppState>('/api/state'),
   getHealth: () => get<{ status: string; uptime: number; clients: number; processes: number; totalInstances: number; runningInstances: number; memoryMb: number; heapMb: number }>('/api/health'),
+  getProcesses: () => get<{ processes: Array<{ instanceId: string; instanceName: string; agentRole: string | null; pid: number; state: string; runningSec: number; taskId: string | null; taskTitle: string | null; lastCostUsd: number | null; lastInputTokens: number | null; lastOutputTokens: number | null }>; timestamp: number }>('/api/processes'),
 
   // Folders
   createFolder: (data: Partial<FolderConfig>) => post<FolderConfig>('/api/folders', data),
@@ -96,7 +99,9 @@ export const rest = {
 
   // Pipeline
   getPipelines: () => get<Record<string, PipelineTask[]>>('/api/pipelines'),
-  getProjectPipeline: (projectId: string) => get<PipelineTask[]>(`/api/pipelines/${projectId}`),
+  getProjectPipeline: (projectId: string, includeDone?: boolean) =>
+    get<PipelineTask[]>(`/api/pipelines/${projectId}${includeDone ? '?includeDone=true' : ''}`),
+  getTask: (projectId: string, taskId: string) => get<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}`),
   createTask: (projectId: string, data: Partial<PipelineTask>) =>
     post<PipelineTask>(`/api/pipelines/${projectId}/tasks`, data),
   updateTask: (projectId: string, taskId: string, data: Partial<PipelineTask>) =>
@@ -171,6 +176,7 @@ export const rest = {
   pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
   shutdownAll: () => post<{ killed: number; instanceIds: string[] }>('/api/shutdown'),
+  terminate: () => post<{ ok: true; killed: number; instanceIds: string[] }>('/api/terminate'),
   killInstance: (id: string) => post<{ killed: boolean }>(`/api/instances/${id}/kill`),
 
   // MCP server discovery
@@ -181,9 +187,9 @@ export const rest = {
     get<{ dir: string; items: Array<{ name: string; path: string; isDirectory: boolean; isFile: boolean }> }>(
       `/api/fs/browse?dir=${encodeURIComponent(dirPath)}`
     ),
-  getSubfolders: (dirPath: string) =>
+  getSubfolders: (dirPath?: string) =>
     get<{ dir: string; folders: Array<{ name: string; path: string }> }>(
-      `/api/fs/subfolders?dir=${encodeURIComponent(dirPath)}`
+      `/api/fs/subfolders${dirPath ? `?dir=${encodeURIComponent(dirPath)}` : ''}`
     ),
   checkClaudeMd: (dirPath: string) =>
     get<{ exists: boolean; path: string; content: string | null }>(
@@ -194,4 +200,21 @@ export const rest = {
       `/api/fs/claude-md?dir=${encodeURIComponent(dirPath)}`,
       { content }
     ),
+
+  // Usage log
+  getUsageLog: (limit = 100, days?: number) =>
+    get<Array<{ session_id: string; role: string; task_title: string | null; project_name: string | null; cost_usd: number; input_tokens: number; output_tokens: number; created_at: number }>>(
+      `/api/usage/log?limit=${limit}${days ? `&days=${days}` : ''}`
+    ),
+  getUsageByProject: (days?: number) =>
+    get<Array<{ project_name: string; total_cost_usd: number; session_count: number }>>(
+      `/api/usage/log/by-project${days ? `?days=${days}` : ''}`
+    ),
+  getUsageStats: (days = 7) =>
+    get<{
+      summary: { total_cost_usd: number; total_sessions: number; avg_cost_per_session: number; cache_hit_ratio: number; total_input_tokens: number; total_output_tokens: number };
+      byRole: Array<{ role: string; session_count: number; total_cost_usd: number; avg_cost_usd: number; cache_hit_ratio: number }>;
+      byWeekday: Array<{ weekday: number; label: string; session_count: number; total_cost_usd: number }>;
+      byDay: Array<{ day: string; session_count: number; total_cost_usd: number }>;
+    }>(`/api/usage/stats?days=${days}`),
 }

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import * as taskManager from '../services/task-manager.js'
-import type { PipelineColumn, PipelineTask, TaskAttachment, TaskComment, ScheduleConfig } from '@nasklaude/shared'
-import { computeNextRun } from '@nasklaude/shared'
+import type { PipelineColumn, PipelineTask, TaskAttachment, TaskComment, ScheduleConfig } from '@orcstrator/shared'
+import { computeNextRun } from '@orcstrator/shared'
 import crypto from 'crypto'
 
 export default async function pipelineRoutes(app: FastifyInstance): Promise<void> {
@@ -27,6 +27,17 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     return query.includeDone === 'true'
       ? taskManager.getTasksForProject(projectId, true)
       : taskManager.getTasksForProjectLight(projectId)
+  })
+
+  // Get single task (full payload with description)
+  app.get('/pipelines/:projectId/tasks/:taskId', async (request, reply) => {
+    const { taskId } = request.params as { projectId: string; taskId: string }
+    const task = taskManager.getTask(taskId)
+    if (!task) {
+      reply.code(404)
+      return { error: 'Task not found' }
+    }
+    return task
   })
 
   // Create task
