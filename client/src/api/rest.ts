@@ -13,6 +13,9 @@ import type {
   SkillConfig,
   XpEventType,
   PipelineColumn,
+  SavingsSummary,
+  McpServerInfo,
+  ScheduleConfig,
 } from '@shared/types'
 
 const BASE = import.meta.env.VITE_API_URL || ''
@@ -54,6 +57,7 @@ async function del<T>(path: string): Promise<T> {
 export const rest = {
   // State
   getState: () => get<AppState>('/api/state'),
+  getHealth: () => get<{ status: string; uptime: number; clients: number; processes: number; totalInstances: number; runningInstances: number; memoryMb: number; heapMb: number }>('/api/health'),
 
   // Folders
   createFolder: (data: Partial<FolderConfig>) => post<FolderConfig>('/api/folders', data),
@@ -113,6 +117,17 @@ export const rest = {
     get<TaskComment[]>(`/api/pipelines/${projectId}/tasks/${taskId}/comments`),
   addTaskComment: (projectId: string, taskId: string, data: { author?: string; body: string }) =>
     post<TaskComment>(`/api/pipelines/${projectId}/tasks/${taskId}/comments`, data),
+  updateTaskSchedule: (projectId: string, taskId: string, schedule: ScheduleConfig) =>
+    put<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/schedule`, schedule),
+  getScheduledUpcoming: (projectId: string, days = 30) =>
+    get<Array<{
+      id: string; title: string; skill?: string
+      schedule: ScheduleConfig | null
+      executions: unknown[]
+      nextRunAt?: number
+      withinHorizon: boolean
+      currentlyRunning: boolean
+    }>>(`/api/pipelines/${projectId}/scheduled-upcoming?days=${days}`),
 
   // Settings
   getSettings: () => get<AppSettings>('/api/settings'),
@@ -124,6 +139,7 @@ export const rest = {
   exchangeCode: (code: string) => post<{ ok: true }>('/api/usage/exchange', { code }),
   disconnectUsage: () => post<{ ok: true }>('/api/usage/disconnect'),
   refreshUsage: () => post<UsageData>('/api/usage/refresh'),
+  getSavings: (days = 7) => get<SavingsSummary>(`/api/usage/savings?days=${days}`),
 
   // Profile / Gamification
   getProfile: () => get<AccountProfile>('/api/profile'),
@@ -154,6 +170,11 @@ export const rest = {
   getOrchestratorStatus: (folderId: string) => get<{ folderId: string; active: boolean; idleAgents: number; runningAgents: number; pendingTasks: number }>(`/api/orchestrator/${folderId}/status`),
   pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
+  shutdownAll: () => post<{ killed: number; instanceIds: string[] }>('/api/shutdown'),
+  killInstance: (id: string) => post<{ killed: boolean }>(`/api/instances/${id}/kill`),
+
+  // MCP server discovery
+  getMcpAvailable: () => get<{ servers: McpServerInfo[] }>('/api/mcp/available'),
 
   // File browser
   browsePath: (dirPath: string) =>

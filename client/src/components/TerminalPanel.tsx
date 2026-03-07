@@ -82,16 +82,16 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="terminal-panel">
       <div className="terminal-panel-header">
-        <span className="terminal-panel-title">Terminal</span>
+        <span className="terminal-panel-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Terminal</span>
         <div className="terminal-tabs">
           <button
             className={`terminal-tab ${tab === 'bash' ? 'active' : ''}`}
             onClick={() => setTab('bash')}
-          >Bash</button>
+          ><span style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Bash</span></button>
           <button
             className={`terminal-tab ${tab === 'stream' ? 'active' : ''}`}
             onClick={() => setTab('stream')}
-          >Stream</button>
+          ><span style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Stream</span></button>
         </div>
         <button className="terminal-panel-close" onClick={onClose} title="Close terminal">✕</button>
       </div>

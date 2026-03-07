@@ -1,6 +1,7 @@
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import type { PipelineTask, PipelineColumn, TaskHistoryEntry, TaskAttachment } from '@nasklaude/shared'
+import type { PipelineTask, PipelineColumn, TaskHistoryEntry, TaskAttachment, ScheduleConfig, ScheduleExecution } from '@nasklaude/shared'
+import { computeNextRun } from '@nasklaude/shared'
 import crypto from 'crypto'
 import { orchestrator } from './orchestrator.js'
 
@@ -38,9 +39,13 @@ function rowToTask(row: Record<string, unknown>): PipelineTask {
     dependsOn: safeJsonParse(row.depends_on as string, []),
     createdBy: (row.created_by as string) || 'human',
     history: safeJsonParse(row.history as string, []),
+    lockedBy: row.locked_by as string | undefined,
     completedAt: row.completed_at as number | undefined,
     createdAt: row.created_at as number,
-    updatedAt: row.updated_at as number
+    updatedAt: row.updated_at as number,
+    schedule: row.schedule ? safeJsonParse(row.schedule as string, undefined) : undefined,
+    executions: safeJsonParse(row.executions as string, []),
+    skill: row.skill as string | undefined,
   }
 }
 
@@ -66,6 +71,8 @@ function broadcastPipeline(
   })
 }
 
+const MAX_DESCRIPTION_CHARS = 5000
+
 export async function createTask(params: {
   projectId: string
   title: string
@@ -79,20 +86,22 @@ export async function createTask(params: {
   groupTotal?: number
   dependsOn?: string[]
   createdBy?: string
+  skill?: string
 }): Promise<PipelineTask> {
   return withLock(params.projectId, () => {
     const now = Date.now()
     const id = crypto.randomUUID()
     const history: TaskHistoryEntry[] = [{ action: 'created', timestamp: now, agent: params.createdBy || 'human' }]
+    const desc = (params.description || '').slice(0, MAX_DESCRIPTION_CHARS)
 
     db.prepare(`
-      INSERT INTO pipeline_tasks (id, project_id, title, description, "column", priority, labels, attachments, assigned_agent, group_id, group_index, group_total, depends_on, created_by, history, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO pipeline_tasks (id, project_id, title, description, "column", priority, labels, attachments, assigned_agent, group_id, group_index, group_total, depends_on, created_by, history, skill, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       params.projectId,
       params.title,
-      params.description || '',
+      desc,
       params.column || 'backlog',
       params.priority || 4,
       JSON.stringify(params.labels || []),
@@ -103,6 +112,7 @@ export async function createTask(params: {
       JSON.stringify(params.dependsOn || []),
       params.createdBy || 'human',
       JSON.stringify(history),
+      params.skill || null,
       now,
       now
     )
@@ -111,8 +121,8 @@ export async function createTask(params: {
     broadcastPipeline(params.projectId, id, 'created', task.column)
 
     // Immediately notify orchestrator for actionable columns so agents don't wait 60s for safety poll
-    // Exclude backlog (human-only intake) and staging (escalation inbox) — no agent should auto-pick from these
-    if (task.column !== 'backlog' && task.column !== 'staging' && task.column !== 'done') {
+    // Exclude backlog (human-only intake), scheduled (managed by SchedulerService), and done
+    if (task.column !== 'backlog' && task.column !== 'scheduled' && task.column !== 'done') {
       setImmediate(() => {
         const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(params.projectId) as { orchestrator_active: number } | undefined
         if (folder?.orchestrator_active) {
@@ -249,6 +259,7 @@ export async function updateTask(taskId: string, updates: Partial<{
   priority: 1 | 2 | 3 | 4
   labels: string[]
   dependsOn: string[]
+  skill: string
 }>): Promise<PipelineTask> {
   const task = getTask(taskId)
   if (!task) throw new Error(`Task ${taskId} not found`)
@@ -259,10 +270,11 @@ export async function updateTask(taskId: string, updates: Partial<{
     const params: unknown[] = [now]
 
     if (updates.title !== undefined) { sets.push('title = ?'); params.push(updates.title) }
-    if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description) }
+    if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description.slice(0, MAX_DESCRIPTION_CHARS)) }
     if (updates.priority !== undefined) { sets.push('priority = ?'); params.push(updates.priority) }
     if (updates.labels !== undefined) { sets.push('labels = ?'); params.push(JSON.stringify(updates.labels)) }
     if (updates.dependsOn !== undefined) { sets.push('depends_on = ?'); params.push(JSON.stringify(updates.dependsOn)) }
+    if (updates.skill !== undefined) { sets.push('skill = ?'); params.push(updates.skill || null) }
 
     // Append edit history
     const history: TaskHistoryEntry[] = safeJsonParse(
@@ -298,9 +310,107 @@ export function getTask(taskId: string): PipelineTask | null {
   return rowToTask(row)
 }
 
-export function getTasksForProject(projectId: string): PipelineTask[] {
-  const rows = db.prepare('SELECT * FROM pipeline_tasks WHERE project_id = ? ORDER BY priority ASC, created_at ASC').all(projectId) as Record<string, unknown>[]
+export function getTasksForProject(projectId: string, includeDone = false): PipelineTask[] {
+  const query = includeDone
+    ? 'SELECT * FROM pipeline_tasks WHERE project_id = ? ORDER BY priority ASC, created_at ASC'
+    : 'SELECT * FROM pipeline_tasks WHERE project_id = ? AND "column" != \'done\' ORDER BY priority ASC, created_at ASC'
+  const rows = db.prepare(query).all(projectId) as Record<string, unknown>[]
   return rows.map(rowToTask)
+}
+
+// Lightweight list: excludes history, description, and attachments to reduce payload
+export function getTasksForProjectLight(projectId: string): Array<Omit<PipelineTask, 'history' | 'description' | 'attachments'> & { description: string }> {
+  const rows = db.prepare(
+    'SELECT id, project_id, title, "column", priority, labels, assigned_agent, group_id, group_index, group_total, depends_on, created_by, locked_by, completed_at, created_at, updated_at FROM pipeline_tasks WHERE project_id = ? AND "column" != \'done\' ORDER BY priority ASC, created_at ASC'
+  ).all(projectId) as Record<string, unknown>[]
+  return rows.map(row => ({
+    id: row.id as string,
+    projectId: row.project_id as string,
+    title: row.title as string,
+    description: '',
+    column: (row.column as PipelineColumn) || 'backlog',
+    priority: (row.priority as 1 | 2 | 3 | 4) || 4,
+    labels: safeJsonParse(row.labels as string, []),
+    assignedAgent: row.assigned_agent as string | undefined,
+    groupId: row.group_id as string | undefined,
+    groupIndex: row.group_index as number | undefined,
+    groupTotal: row.group_total as number | undefined,
+    dependsOn: safeJsonParse(row.depends_on as string, []),
+    createdBy: (row.created_by as string) || 'human',
+    lockedBy: row.locked_by as string | undefined,
+    completedAt: row.completed_at as number | undefined,
+    createdAt: row.created_at as number,
+    updatedAt: row.updated_at as number,
+  }))
+}
+
+export function updateTaskSchedule(taskId: string, schedule: ScheduleConfig): PipelineTask {
+  const task = getTask(taskId)
+  if (!task) throw new Error(`Task ${taskId} not found`)
+  const now = Date.now()
+  // Compute next run
+  const updated: ScheduleConfig = { ...schedule, nextRunAt: computeNextRun(schedule, now) }
+  db.prepare('UPDATE pipeline_tasks SET schedule = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(updated), now, taskId)
+  const result = getTask(taskId)!
+  broadcastPipeline(task.projectId, taskId, 'schedule-updated')
+  return result
+}
+
+export function getScheduledTasksDue(projectId: string, now: number): PipelineTask[] {
+  const rows = db.prepare(
+    "SELECT * FROM pipeline_tasks WHERE project_id = ? AND \"column\" = 'scheduled' AND schedule IS NOT NULL"
+  ).all(projectId) as Record<string, unknown>[]
+  return rows
+    .map(rowToTask)
+    .filter(t => {
+      if (!t.schedule) return false
+      if (!t.schedule.enabled) return false
+      if (t.schedule.currentlyRunning) return false
+      if (!t.schedule.nextRunAt) return false
+      return t.schedule.nextRunAt <= now
+    })
+}
+
+export function markScheduleRunning(taskId: string, running: boolean, instanceId?: string): void {
+  const task = getTask(taskId)
+  if (!task?.schedule) return
+  const updated: ScheduleConfig = { ...task.schedule, currentlyRunning: running, currentInstanceId: running ? instanceId : undefined }
+  db.prepare('UPDATE pipeline_tasks SET schedule = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(updated), Date.now(), taskId)
+  broadcastPipeline(task.projectId, taskId, 'schedule-running-changed')
+}
+
+export function appendExecution(taskId: string, exec: ScheduleExecution): void {
+  const task = getTask(taskId)
+  if (!task) return
+  const executions: ScheduleExecution[] = task.executions ?? []
+  executions.push(exec)
+  // Keep last 50 executions
+  const trimmed = executions.slice(-50)
+  db.prepare('UPDATE pipeline_tasks SET executions = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(trimmed), Date.now(), taskId)
+}
+
+export function updateScheduleAfterRun(taskId: string, now: number): void {
+  const task = getTask(taskId)
+  if (!task?.schedule) return
+  const schedule = task.schedule
+  const fireCount = (schedule.fireCount ?? 0) + 1
+  const lastRunAt = now
+  let enabled = schedule.enabled
+  // one-time tasks: disable after first run
+  if (schedule.type === 'once') enabled = false
+  const updated: ScheduleConfig = { ...schedule, lastRunAt, fireCount, currentlyRunning: false, currentInstanceId: undefined, enabled }
+  updated.nextRunAt = computeNextRun(updated, now)
+  db.prepare('UPDATE pipeline_tasks SET schedule = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(updated), now, taskId)
+  broadcastPipeline(task.projectId, taskId, 'schedule-after-run')
+}
+
+export function getAllProjectIds(): string[] {
+  const rows = db.prepare('SELECT DISTINCT project_id FROM pipeline_tasks').all() as Array<{ project_id: string }>
+  return rows.map(r => r.project_id)
 }
 
 export function getNextTask(projectId: string, column?: PipelineColumn, role?: string): PipelineTask | null {

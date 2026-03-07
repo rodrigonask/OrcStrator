@@ -198,11 +198,11 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
       >
         <div
           className="folder-color-bar"
-          style={{ backgroundColor: folder.stealthMode ? '#374151' : (folder.color || '#7c3aed') }}
+          style={{ backgroundColor: folder.stealthMode ? '#374151' : (folder.color || 'var(--accent)') }}
         />
         <span className="folder-emoji">{folder.emoji || (folder.stealthMode ? '👻' : '\uD83D\uDCC1')}</span>
         <div className="folder-info">
-          <div className="folder-name">
+          <div className="folder-name" style={{ fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
             {folder.displayName || folder.name}
             {folder.stealthMode && (
               <span
@@ -211,9 +211,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
               >👻</span>
             )}
           </div>
-          {folder.client && <div className="folder-client">{folder.client}</div>}
+          {folder.client && <div className="folder-client" style={{ fontFamily: 'var(--font-mono)' }}>{folder.client}</div>}
           {isOrchestratorActive && orchStatus && (
-            <div className={`orchestrator-status-line${orchStatus.pendingTasks === 0 ? ' idle' : ''}`}>
+            <div className={`orchestrator-status-line${orchStatus.pendingTasks === 0 ? ' idle' : ''}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
               {orchStatus.pendingTasks} tasks queued
             </div>
           )}
@@ -255,12 +255,14 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
               <div className="folder-add-menu" onClick={e => e.stopPropagation()}>
                 <button
                   className="folder-add-menu-item"
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}
                   onClick={() => { setShowAddMenu(false); setShowCreateTask(true) }}
                 >
                   New Task
                 </button>
                 <button
                   className="folder-add-menu-item"
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}
                   onClick={() => { setShowAddMenu(false); handleAddInstance() }}
                 >
                   New Instance
@@ -286,9 +288,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             </SortableContext>
           </DndContext>
           {instances.length === 0 && (
-            <div className="instance-item" style={{ opacity: 0.5, cursor: 'default' }}>
+            <div className="instance-item" style={{ cursor: 'default' }}>
               <span className="instance-info">
-                <span className="instance-preview">No instances</span>
+                <span className="instance-preview" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>No instances</span>
               </span>
             </div>
           )}

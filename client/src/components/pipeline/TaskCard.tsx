@@ -14,6 +14,9 @@ const PRIORITY_CLASSES: Record<number, string> = {
 }
 
 export function TaskCard({ task, onClick }: TaskCardProps) {
+  const isStuck = task.labels.includes('stuck')
+  const isRunning = task.schedule?.currentlyRunning
+
   const handleDragStart = useCallback((e: React.DragEvent) => {
     e.dataTransfer.setData('text/plain', task.id)
     e.dataTransfer.effectAllowed = 'move'
@@ -26,32 +29,42 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
 
   return (
     <div
-      className="task-card"
+      className={`task-card${isStuck ? ' stuck' : ''}`}
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onClick={onClick}
+      style={{ '--card-glow': `var(--col-${task.column})` } as React.CSSProperties}
     >
       <div className="task-card-header">
         <div className={`task-priority-dot ${PRIORITY_CLASSES[task.priority] || 'p4'}`} />
-        <div className="task-card-title">{task.title}</div>
+        <div className="task-card-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}>{task.title}</div>
       </div>
       <div className="task-card-footer">
         <div className="task-labels">
-          {task.labels.slice(0, 3).map(label => (
-            <span key={label} className="task-label">{label}</span>
-          ))}
-          {task.labels.length > 3 && (
-            <span className="task-label">+{task.labels.length - 3}</span>
+          {isStuck ? (
+            <span className="task-stuck-badge">STUCK</span>
+          ) : (
+            task.labels.slice(0, 3).map(label => (
+              <span key={label} className="task-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{label}</span>
+            ))
+          )}
+          {!isStuck && task.labels.length > 3 && (
+            <span className="task-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>+{task.labels.length - 3}</span>
+          )}
+          {task.skill && (
+            <span className="task-skill-badge">{task.skill}</span>
           )}
         </div>
-        {task.assignedAgent && (
-          <span className="task-agent-badge">{task.assignedAgent}</span>
-        )}
+        {isRunning ? (
+          <span className="task-agent-badge" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--col-build)' }}>running</span>
+        ) : !isStuck && task.assignedAgent ? (
+          <span className="task-agent-badge" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: `var(--role-${task.assignedAgent})` }}>{task.assignedAgent}</span>
+        ) : null}
       </div>
       {task.groupId && task.groupIndex !== undefined && task.groupTotal !== undefined && (
         <div style={{
-          fontSize: 10,
+          fontSize: 11,
           color: 'var(--text-muted)',
           marginTop: 4,
           fontFamily: 'var(--font-mono)',

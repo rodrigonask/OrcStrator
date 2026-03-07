@@ -57,6 +57,9 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       lastTaskAt: r.last_task_at as number | undefined,
       activeTaskId: lockedByInstance.get(r.id as string)?.taskId,
       activeTaskTitle: lockedByInstance.get(r.id as string)?.taskTitle,
+      // Context health: fresh (0-3 tasks), warm (4-10), heavy (11-20), stale (20+)
+      // Helps users know when a session might benefit from a fresh start
+      contextHealth: computeContextHealth(r),
     }))
 
     const settings: Record<string, unknown> = {}
@@ -72,11 +75,40 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.get('/health', async () => {
+    const memUsage = process.memoryUsage()
+    const instanceRows = db.prepare('SELECT id, name, state, agent_role FROM instances').all() as Array<{ id: string; name: string; state: string; agent_role: string | null }>
     return {
       status: 'ok',
       uptime: Date.now() - startTime,
       clients: getClientCount(),
-      processes: getActiveProcessCount()
+      processes: getActiveProcessCount(),
+      totalInstances: instanceRows.length,
+      runningInstances: instanceRows.filter(i => i.state === 'running').length,
+      memoryMb: Math.round(memUsage.rss / 1024 / 1024),
+      heapMb: Math.round(memUsage.heapUsed / 1024 / 1024),
     }
   })
+
+}
+
+
+type ContextHealth = 'cold' | 'fresh' | 'warm' | 'heavy' | 'stale'
+
+function computeContextHealth(row: Record<string, unknown>): ContextHealth {
+  const sessionId = row.session_id as string | null
+  const tasks = (row.overdrive_tasks as number) ?? 0
+  const lastTaskAt = row.last_task_at as number | undefined
+  const CACHE_TTL_MS = 60 * 60 * 1000
+
+  // No session = cold
+  if (!sessionId) return 'cold'
+
+  // Cache expired = cold
+  if (lastTaskAt && (Date.now() - lastTaskAt) > CACHE_TTL_MS) return 'cold'
+
+  // Fewer tasks = fresher context
+  if (tasks <= 3) return 'fresh'
+  if (tasks <= 10) return 'warm'
+  if (tasks <= 20) return 'heavy'
+  return 'stale'  // 20+ tasks in same session — compaction summaries stacking up
 }

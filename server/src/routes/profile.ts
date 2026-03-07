@@ -8,7 +8,14 @@ export default async function profileRoutes(app: FastifyInstance): Promise<void>
   // Get profile
   app.get('/profile', async () => {
     const row = db.prepare('SELECT * FROM profile WHERE id = 1').get() as Record<string, unknown>
-    return rowToProfile(row)
+    const profile = rowToProfile(row)
+
+    // Compute live stats from real tables
+    const msgCount = (db.prepare(`SELECT COUNT(*) AS cnt FROM messages WHERE role = 'user'`).get() as { cnt: number }).cnt
+    const tokenStats = db.prepare(`SELECT COALESCE(SUM(input_tokens), 0) AS tin, COALESCE(SUM(output_tokens), 0) AS tout FROM token_usage`).get() as { tin: number; tout: number }
+    const tasksDone = (db.prepare(`SELECT COUNT(*) AS cnt FROM pipeline_tasks WHERE "column" = 'done'`).get() as { cnt: number }).cnt
+
+    return { ...profile, messagesSent: msgCount, tokensSent: tokenStats.tin, tokensReceived: tokenStats.tout, tasksDone }
   })
 
   // Update profile
@@ -153,7 +160,8 @@ function rowToProfile(row: Record<string, unknown>): AccountProfile {
     totalXp: row.total_xp as number,
     messagesSent: row.messages_sent as number,
     tokensSent: row.tokens_sent as number,
-    tokensReceived: row.tokens_received as number
+    tokensReceived: row.tokens_received as number,
+    tasksDone: 0,
   }
 }
 

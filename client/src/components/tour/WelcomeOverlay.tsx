@@ -92,9 +92,9 @@ export function WelcomeOverlay() {
   const steps = [
     // Step 1: Welcome
     <div key="welcome" className="welcome-wizard-step">
-      <div className="welcome-logo">OrcStrator</div>
-      <h2 className="welcome-wizard-title">Use Claude Code like a game.</h2>
-      <p className="welcome-wizard-desc">
+      <div className="welcome-logo" style={{ fontFamily: 'var(--font-pixel)' }}>Orcstrator</div>
+      <h2 className="welcome-wizard-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Use Claude Code like a game.</h2>
+      <p className="welcome-wizard-desc" style={{ fontFamily: 'var(--font-mono)' }}>
         Every message earns 15 XP. Complex tasks earn bonus XP.
         Level up to unlock agents, skills, lessons, and knowledge bases.
       </p>
@@ -106,8 +106,8 @@ export function WelcomeOverlay() {
 
     // Step 2: Select Folder
     <div key="folder" className="welcome-wizard-step">
-      <h2 className="welcome-wizard-title">Choose your root folder</h2>
-      <p className="welcome-wizard-desc">
+      <h2 className="welcome-wizard-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Choose your root folder</h2>
+      <p className="welcome-wizard-desc" style={{ fontFamily: 'var(--font-mono)' }}>
         Pick the root folder where all your Claude Code projects live.
         {isWindows ? ' For example: C:\\Projects or C:\\Agents' : ' For example: ~/dev or ~/projects'}
       </p>
@@ -200,7 +200,7 @@ export function WelcomeOverlay() {
 
     // Step 3: What You'll Unlock
     <div key="unlock" className="welcome-wizard-step">
-      <h2 className="welcome-wizard-title">What you will unlock</h2>
+      <h2 className="welcome-wizard-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>What you will unlock</h2>
       <div className="welcome-features">
         {[
           { icon: '\uD83E\uDD16', title: 'Agents', desc: 'Reusable AI personalities you assign to any project.' },
@@ -221,8 +221,8 @@ export function WelcomeOverlay() {
     // Step 4: Let's Go!
     <div key="go" className="welcome-wizard-step" style={{ textAlign: 'center' }}>
       <div style={{ fontSize: 64, marginBottom: 16 }}>{'\uD83D\uDE80'}</div>
-      <h2 className="welcome-wizard-title">Ready to begin!</h2>
-      <p className="welcome-wizard-desc">
+      <h2 className="welcome-wizard-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Ready to begin!</h2>
+      <p className="welcome-wizard-desc" style={{ fontFamily: 'var(--font-mono)' }}>
         {selectedPath
           ? `Starting with: ${selectedPath.replace(/^.*[\\/]/, '')}`
           : 'You can add folders anytime from the sidebar.'}
@@ -233,9 +233,9 @@ export function WelcomeOverlay() {
       <button
         className="btn btn-primary"
         onClick={handleFinish}
-        style={{ width: '100%', padding: '12px', fontSize: 15, marginTop: 24 }}
+        style={{ width: '100%', padding: '12px', fontSize: 10, marginTop: 24, fontFamily: 'var(--font-mono)' }}
       >
-        Launch OrcStrator {'\u2192'}
+        Launch Orcstrator {'\u2192'}
       </button>
     </div>
   ]
@@ -252,7 +252,7 @@ export function WelcomeOverlay() {
         {!isLast && (
           <div className="welcome-nav">
             {step > 0 && (
-              <button className="btn" onClick={() => setStep(s => s - 1)}>
+              <button className="btn" onClick={() => setStep(s => s - 1)} style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>
                 Back
               </button>
             )}
@@ -270,13 +270,14 @@ export function WelcomeOverlay() {
               className="btn btn-primary"
               onClick={() => canAdvance && setStep(s => s + 1)}
               disabled={!canAdvance}
+              style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}
             >
               Next
             </button>
           </div>
         )}
 
-        <div className="welcome-step-title">
+        <div className="welcome-step-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>
           {['Welcome', 'Select Folder', 'Features', 'Launch'][step]}
           {' \u00B7 '}Step {step + 1} of {steps.length}
         </div>

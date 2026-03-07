@@ -61,10 +61,10 @@ function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, create
   }
 
   return (
-    <div className="orc-brief-bubble">
+    <div className="orc-brief-bubble" style={{ boxShadow: '0 0 12px 2px rgba(168, 85, 247, 0.4), 0 0 4px 1px rgba(168, 85, 247, 0.2)' }}>
       <div className="orc-brief-header">
         <span className="orc-brief-icon">⚡</span>
-        <span className="orc-brief-quip">
+        <span className="orc-brief-quip" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
           {parts.map((part, i) => (
             <span key={i}>
               {part}
@@ -81,7 +81,7 @@ function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, create
           ))}
         </span>
       </div>
-      <button className="orc-brief-toggle" onClick={() => setExpanded(e => !e)}>
+      <button className="orc-brief-toggle" onClick={() => setExpanded(e => !e)} style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>
         {expanded ? 'Hide brief ↑' : 'View full brief ↓'}
       </button>
       {expanded && (
@@ -90,7 +90,7 @@ function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, create
         </div>
       )}
       {createdAt && (
-        <div className="message-timestamp">{formatTimestamp(createdAt)}</div>
+        <div className="message-timestamp" style={{ fontFamily: 'var(--font-mono)' }}>{formatTimestamp(createdAt)}</div>
       )}
     </div>
   )
@@ -146,7 +146,7 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
     return (
       <div className="tool-chip" onClick={() => setToolsExpanded(e => !e)}>
         <span className="tool-chip-icon">🔧</span>
-        <span className="tool-chip-text">{chipLabel}</span>
+        <span className="tool-chip-text" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>{chipLabel}</span>
         <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
         {toolsExpanded && (
           <div className="tool-chip-expanded" onClick={e => e.stopPropagation()}>
@@ -161,14 +161,14 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
 
   return (
     <div className={`message-bubble ${role}`}>
-      {role === 'system' && <div className="message-role-label">System</div>}
+      {role === 'system' && <div className="message-role-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>System</div>}
       {nonToolContent.map((block, i) => (
         <ContentBlock key={i} block={block} toolResults={toolResults} />
       ))}
       {hasSummary && (
         <div className="tool-summary" onClick={() => setToolsExpanded(e => !e)}>
           <span className="tool-summary-icon">🔧</span>
-          <span className="tool-summary-text">{summary}</span>
+          <span className="tool-summary-text" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>{summary}</span>
           <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
         </div>
       )}
@@ -176,7 +176,7 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
         <ContentBlock key={`tc-${i}`} block={block} toolResults={toolResults} defaultExpanded={false} />
       ))}
       {createdAt && (
-        <div className="message-timestamp">{formatTimestamp(createdAt)}</div>
+        <div className="message-timestamp" style={{ fontFamily: 'var(--font-mono)' }}>{formatTimestamp(createdAt)}</div>
       )}
     </div>
   )
@@ -229,7 +229,7 @@ function ContentBlock({
 
   if (block.type === 'cost') {
     return (
-      <div className="message-cost">
+      <div className="message-cost" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>
         <span>{block.inputTokens.toLocaleString()} in</span>
         <span>{block.outputTokens.toLocaleString()} out</span>
         {block.costUsd !== undefined && (

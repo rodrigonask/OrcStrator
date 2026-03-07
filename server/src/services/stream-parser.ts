@@ -112,7 +112,9 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
         costUsd: (data.total_cost_usd ?? data.cost_usd) as number | undefined,
         inputTokens: totalInput || (data.input_tokens as number | undefined),
         outputTokens: (usage?.output_tokens ?? data.output_tokens) as number | undefined,
-        durationMs: data.duration_ms as number | undefined
+        durationMs: data.duration_ms as number | undefined,
+        cacheCreationTokens: cacheCreation || undefined,
+        cacheReadTokens: cacheRead || undefined,
       }
     }
 

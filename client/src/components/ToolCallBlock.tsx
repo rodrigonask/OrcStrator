@@ -47,18 +47,18 @@ export function ToolCallBlock({ toolName, input, output, isError, isRunning, def
       <div className="tool-call-header" onClick={() => setExpanded(e => !e)}>
         <span className="tool-call-icon">{icon}</span>
         {isRunning && <span className="tool-call-running-dot" />}
-        <span className="tool-call-label">{label}</span>
+        <span className="tool-call-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>{label}</span>
         <span className={`tool-call-chevron ${expanded ? 'expanded' : ''}`}>›</span>
       </div>
       {expanded && (
         <div className="tool-call-body">
           <div className="tool-call-section">
-            <div className="tool-call-section-label">Input</div>
+            <div className="tool-call-section-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Input</div>
             <pre className="tool-call-json">{formattedInput}</pre>
           </div>
           {output !== undefined && (
             <div className="tool-call-section">
-              <div className="tool-call-section-label">Output</div>
+              <div className="tool-call-section-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Output</div>
               <pre className={`tool-call-output ${isError ? 'error' : ''}`}>{displayOutput}</pre>
               {outputTruncated && (
                 <button className="tool-call-show-more" onClick={e => { e.stopPropagation(); setShowFullOutput(true) }}>

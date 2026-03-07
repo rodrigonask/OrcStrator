@@ -2,37 +2,132 @@ import { db } from '../db.js'
 import { sendMessage } from './claude-process.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { updateOverdriveOnComplete, resetOverdriveIfExpired } from './overdrive.js'
+import { markScheduleRunning, appendExecution, updateScheduleAfterRun } from './task-manager.js'
+import type { PipelineTask, ScheduleExecution } from '@nasklaude/shared'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import { fileURLToPath } from 'url'
 import crypto from 'crypto'
 
 const LOCK_TIMEOUT_MS = 20 * 60 * 1000 // 20 minutes (was 10)
+const SEND_COOLDOWN_MS = 10 * 1000     // 10-second hard cooldown per instance
+const ARCHIVE_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 
 export const serverStartTime = Date.now()
 const SAFETY_POLL_MS = 60 * 1000        // 60 seconds
 const LOCK_SWEEP_MS = 2 * 60 * 1000    // 2 minutes
+const ARCHIVE_SWEEP_MS = 6 * 60 * 60 * 1000 // 6 hours
 const MAX_RETRIES = 3
 
 // Master prompts live in nasklaude's source, not in Claude Code's config directory
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const MASTER_PROMPTS_DIR = path.resolve(__dirname, '../../agents')
 
-// Model tiering: Opus for complex implementation, Sonnet for everything else
-const ROLE_MODELS: Record<string, string> = {
-  planner: 'sonnet',
-  builder: 'opus',
-  tester: 'sonnet',
-  promoter: 'sonnet',
+import { DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS } from '@nasklaude/shared'
+
+// Model tiering: read from settings, fallback to defaults
+function getRoleModels(): Record<string, string> {
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorModels'").get() as { value: string } | undefined
+    if (row) {
+      const models = JSON.parse(row.value) as Record<string, string>
+      // Merge with defaults, filtering out 'default' (use role's default)
+      const result = { ...DEFAULT_ROLE_MODELS }
+      for (const [role, model] of Object.entries(models)) {
+        if (model && model !== 'default') result[role] = model
+      }
+      return result
+    }
+  } catch { /* use defaults */ }
+  return DEFAULT_ROLE_MODELS
 }
 
-// MCP scoping: tester gets playwriter, everyone else gets --strict-mcp-config only (zero servers)
+// MCP scoping: per-role defaults (used when settings not yet configured)
 const AGENTS_DIR = path.resolve(__dirname, '../../agents')
-const ROLE_MCP_CONFIG: Record<string, string> = {
-  planner: 'none',
-  builder: 'none',
-  tester: path.join(AGENTS_DIR, 'mcp-tester.json'),
-  promoter: 'none',
+const ROLE_MCP_DEFAULTS: Record<string, string[]> = {
+  planner: [],
+  builder: [],
+  tester: ['playwriter'],
+  promoter: [],
+}
+
+// Tool scoping: read from settings, fallback to defaults
+function getRoleTools(): Record<string, string> {
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorTools'").get() as { value: string } | undefined
+    if (row) {
+      const tools = JSON.parse(row.value) as Record<string, string[]>
+      const result: Record<string, string> = {}
+      for (const [role, toolList] of Object.entries(tools)) {
+        if (toolList.length > 0) result[role] = toolList.join(',')
+      }
+      return result
+    }
+  } catch { /* use defaults */ }
+  const result: Record<string, string> = {}
+  for (const [role, tools] of Object.entries(DEFAULT_ROLE_TOOLS)) {
+    result[role] = tools.join(',')
+  }
+  return result
+}
+
+// Permission mode: read from settings
+function getPermissionFlag(): string {
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'permissionMode'").get() as { value: string } | undefined
+    if (row) {
+      const mode = JSON.parse(row.value) as string
+      if (mode === 'bypass') return '--dangerously-skip-permissions'
+      if (mode === 'plan') return '--permission-mode=plan'
+      if (mode === 'default') return '--permission-mode=default'
+    }
+  } catch { /* fallback */ }
+  return '--dangerously-skip-permissions'
+}
+
+// Build a temp MCP config file containing only the named servers from ~/.claude.json
+function buildMcpConfigFile(serverNames: string[]): string | null {
+  const claudeJsonPath = path.join(os.homedir(), '.claude.json')
+  if (!fs.existsSync(claudeJsonPath)) return null
+  let config: Record<string, unknown>
+  try { config = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8')) } catch { return null }
+
+  const all: Record<string, unknown> = { ...((config.mcpServers as Record<string, unknown>) ?? {}) }
+  for (const proj of Object.values((config.projects as Record<string, unknown>) ?? {})) {
+    Object.assign(all, (((proj as Record<string, unknown>).mcpServers as Record<string, unknown>) ?? {}))
+  }
+
+  const selected: Record<string, unknown> = {}
+  for (const name of serverNames) {
+    if (all[name]) selected[name] = all[name]
+  }
+  if (Object.keys(selected).length === 0) return null
+
+  const tmpPath = path.join(os.tmpdir(), `nasklaude-mcp-${crypto.randomUUID()}.json`)
+  fs.writeFileSync(tmpPath, JSON.stringify({ mcpServers: selected }), 'utf-8')
+  return tmpPath
+}
+
+// Resolve MCP config path for a role: settings → defaults → temp file → tester fallback
+function getMcpConfigPath(role: string): string {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorMcpServers'").get() as { value: string } | undefined
+  const roleMap: Record<string, string[]> = row
+    ? JSON.parse(row.value) as Record<string, string[]>
+    : ROLE_MCP_DEFAULTS
+  const servers = roleMap[role] ?? ROLE_MCP_DEFAULTS[role] ?? []
+
+  if (servers.length === 0) return 'none'
+
+  const tmpPath = buildMcpConfigFile(servers)
+  if (tmpPath) return tmpPath
+
+  // Fallback for tester: use bundled mcp-tester.json if ~/.claude.json doesn't have the servers
+  if (role === 'tester') {
+    const mcpTesterPath = path.join(AGENTS_DIR, 'mcp-tester.json')
+    if (fs.existsSync(mcpTesterPath)) return mcpTesterPath
+  }
+  return 'none'
 }
 
 export interface ResumeSnapshot {
@@ -47,30 +142,54 @@ const ROLE_COLUMNS: Record<string, string[]> = {
   builder: ['build'],
   tester: ['qa'],
   promoter: ['ship'],
+  // scheduler role does not use ROLE_COLUMNS — tasks are dispatched by SchedulerService
+}
+
+// Track scheduler instances separately so they're exempt from the 20-min kill timeout
+const activeSchedulerInstances = new Set<string>()
+
+interface SchedulerRunContext {
+  taskId: string
+  runId: string
+  startedAt: number
 }
 
 class OrchestratorService {
   private safetyPollTimer: ReturnType<typeof setInterval> | null = null
   private lockSweepTimer: ReturnType<typeof setInterval> | null = null
+  private archiveSweepTimer: ReturnType<typeof setInterval> | null = null
   private folderTriggerTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private lastSendTime = new Map<string, number>()  // instanceId → timestamp of last sendMessage
+  private schedulerRunContexts = new Map<string, SchedulerRunContext>() // instanceId → run context
 
   start(): void {
     if (this.safetyPollTimer) return
     this.safetyPollTimer = setInterval(() => this.safetySweep(), SAFETY_POLL_MS)
     this.lockSweepTimer = setInterval(() => this.timeoutSweep(), LOCK_SWEEP_MS)
-    setInterval(() => {
-      try { db.prepare('VACUUM').run() } catch {}
-    }, 6 * 60 * 60 * 1000)
-    console.log('[orchestrator] Started — event-driven + 60s safety poll + 2min lock sweep')
+    this.archiveSweepTimer = setInterval(() => this.archiveSweep(), ARCHIVE_SWEEP_MS)
+    // Run archive once at startup after a short delay
+    setTimeout(() => this.archiveSweep(), 10_000)
+    console.log('[orchestrator] Started — event-driven + 60s safety poll + 2min lock sweep + 6h archive sweep')
   }
 
   stop(): void {
     if (this.safetyPollTimer) clearInterval(this.safetyPollTimer)
     if (this.lockSweepTimer) clearInterval(this.lockSweepTimer)
+    if (this.archiveSweepTimer) clearInterval(this.archiveSweepTimer)
   }
 
   // Primary trigger: called directly from claude-process.ts on process exit
   onProcessExit(instanceId: string): void {
+    // Scheduler instance: handle via scheduler exit path
+    const schedulerCtx = this.schedulerRunContexts.get(instanceId)
+    if (schedulerCtx) {
+      this.schedulerRunContexts.delete(instanceId)
+      activeSchedulerInstances.delete(instanceId)
+      this.onSchedulerExit(instanceId, schedulerCtx.taskId, schedulerCtx.runId, schedulerCtx.startedAt)
+      this.pruneMessages(instanceId)
+      return
+    }
+
     try {
       const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(instanceId) as Record<string, unknown> | undefined
       if (!instance || !instance.agent_role) return
@@ -88,7 +207,7 @@ class OrchestratorService {
   }
 
   private pruneOldMessages(instanceId: string): void {
-    const KEEP_LAST = 500
+    const KEEP_LAST = 50
     try {
       const row = db.prepare('SELECT COUNT(*) as c FROM messages WHERE instance_id = ?').get(instanceId) as { c: number }
       if (row.c > KEEP_LAST) {
@@ -110,7 +229,7 @@ class OrchestratorService {
 
   private pruneMessages(instanceId: string): void {
     try {
-      const KEEP = 300
+      const KEEP = 50
       db.prepare(`
         DELETE FROM messages
         WHERE instance_id = ?
@@ -143,7 +262,7 @@ class OrchestratorService {
     try {
       const cutoff = Date.now() - LOCK_TIMEOUT_MS
       const lockedTasks = db.prepare(`
-        SELECT pt.*, i.state as instance_state
+        SELECT pt.*, i.state as instance_state, i.agent_role as instance_role
         FROM pipeline_tasks pt
         LEFT JOIN instances i ON pt.locked_by = i.id
         WHERE pt.locked_by IS NOT NULL
@@ -165,6 +284,11 @@ class OrchestratorService {
       for (const [, tasks] of groupedTasks) {
         const rep = tasks[0]
 
+        // Scheduler tasks are exempt from the 20-min kill timeout — they may run for long periods
+        if ((rep.instance_role as string) === 'scheduler' || activeSchedulerInstances.has(rep.locked_by as string)) {
+          continue
+        }
+
         // Task was locked before this server boot — the server was offline, not the agent's fault
         const lockedBeforeStart = (rep.locked_at as number) < serverStartTime
         if (lockedBeforeStart) {
@@ -184,11 +308,15 @@ class OrchestratorService {
         if (newRetryCount >= MAX_RETRIES) {
           for (const t of tasks) {
             const history = JSON.parse((t.history as string) || '[]')
-            history.push({ action: 'moved', timestamp: Date.now(), from: t.column, to: 'staging', note: '3 failures — needs a human to look at this mess' })
-            db.prepare(`UPDATE pipeline_tasks SET "column" = 'staging', locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?`)
-              .run(newRetryCount, JSON.stringify(history), Date.now(), t.id)
+            history.push({ action: 'moved', timestamp: Date.now(), from: t.column, to: 'backlog', note: '3 failures — stuck, needs a human' })
+            // Add 'stuck' label
+            let labels: string[]
+            try { labels = JSON.parse((t.labels as string) || '[]') } catch { labels = [] }
+            if (!labels.includes('stuck')) labels.push('stuck')
+            db.prepare(`UPDATE pipeline_tasks SET "column" = 'backlog', labels = ?, locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?`)
+              .run(JSON.stringify(labels), newRetryCount, JSON.stringify(history), Date.now(), t.id)
           }
-          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'max-retries-staging' } })
+          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'max-retries-stuck' } })
         } else {
           for (const t of tasks) {
             const history = JSON.parse((t.history as string) || '[]')
@@ -208,6 +336,35 @@ class OrchestratorService {
     }
   }
 
+  // Archive sweep: purge old done tasks, their comments, and stale token_usage
+  private archiveSweep(): void {
+    try {
+      const cutoff = Date.now() - ARCHIVE_AGE_MS
+      // Delete comments for done tasks older than 14 days
+      const deletedComments = db.prepare(`
+        DELETE FROM task_comments WHERE task_id IN (
+          SELECT id FROM pipeline_tasks WHERE "column" = 'done' AND completed_at < ?
+        )
+      `).run(cutoff).changes
+      // Truncate description and history, then delete the tasks
+      const deletedTasks = db.prepare(`
+        DELETE FROM pipeline_tasks WHERE "column" = 'done' AND completed_at < ?
+      `).run(cutoff).changes
+      // Delete orphaned token_usage rows for tasks that no longer exist
+      const deletedUsage = db.prepare(`
+        DELETE FROM token_usage WHERE task_id IS NOT NULL AND task_id NOT IN (
+          SELECT id FROM pipeline_tasks
+        )
+      `).run().changes
+      if (deletedComments || deletedTasks || deletedUsage) {
+        console.log(`[orchestrator] Archive sweep: ${deletedTasks} tasks, ${deletedComments} comments, ${deletedUsage} token_usage rows purged`)
+        try { db.pragma('incremental_vacuum') } catch { /* non-critical */ }
+      }
+    } catch (err) {
+      console.error('[orchestrator] archiveSweep error:', err)
+    }
+  }
+
   // Core assignment logic — find idle managed agents and give them work
   private assignWork(folderId: string): void {
     try {
@@ -218,6 +375,15 @@ class OrchestratorService {
       `).all(folderId) as Record<string, unknown>[]
 
       if (instances.length === 0) return
+
+      // Smart assignment: prefer agents with warm sessions (cache hits are ~10x cheaper)
+      const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
+      const now = Date.now()
+      instances.sort((a, b) => {
+        const aWarm = a.session_id && a.last_task_at && (now - (a.last_task_at as number)) < CACHE_TTL_MS ? 1 : 0
+        const bWarm = b.session_id && b.last_task_at && (now - (b.last_task_at as number)) < CACHE_TTL_MS ? 1 : 0
+        return bWarm - aWarm // warm agents first
+      })
 
       for (const instance of instances) {
         const role = instance.agent_role as string
@@ -272,6 +438,13 @@ class OrchestratorService {
     const role = instance.agent_role as string
     const now = Date.now()
 
+    // Hard 10-second cooldown — prevent duplicate sends from burst triggers
+    const lastSend = this.lastSendTime.get(instanceId) || 0
+    if (now - lastSend < SEND_COOLDOWN_MS) {
+      console.warn(`[orchestrator] COOLDOWN: Skipping send to ${instanceId} (${(now - lastSend) / 1000}s since last send)`)
+      return
+    }
+
     const finalColumn = task.column as string
 
     // Collect bundle tasks (builders only)
@@ -315,10 +488,42 @@ class OrchestratorService {
     const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
 
     // Model tiering — inject --model flag if not already set
-    // Use --model=value format so filterFlags() doesn't strip the value
+    // Auto-escalation: if the task failed before, upgrade to opus for the retry
+    const retryCount = (task.retry_count as number) || 0
+    const roleModels = getRoleModels()
+    const model = retryCount > 0 ? 'opus' : roleModels[role]
     const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
-    if (!hasModelFlag && ROLE_MODELS[role]) {
-      globalFlags.push(`--model=${ROLE_MODELS[role]}`)
+    if (!hasModelFlag && model) {
+      globalFlags.push(`--model=${model}`)
+    }
+
+    // Tool scoping — reduce built-in tool surface per role
+    const roleTools = getRoleTools()
+    const tools = roleTools[role]
+    if (tools && !globalFlags.some(f => f.startsWith('--tools'))) {
+      globalFlags.push('--tools', tools)
+    }
+
+    // Cache control
+    try {
+      const cacheRow = db.prepare("SELECT value FROM settings WHERE key = 'disableCache'").get() as { value: string } | undefined
+      if (cacheRow && JSON.parse(cacheRow.value) === true && !globalFlags.includes('--no-cache')) {
+        globalFlags.push('--no-cache')
+      }
+    } catch { /* ignore */ }
+
+    // Max tokens
+    try {
+      const maxRow = db.prepare("SELECT value FROM settings WHERE key = 'maxTokens'").get() as { value: string } | undefined
+      if (maxRow) {
+        const maxTokens = JSON.parse(maxRow.value) as number
+        if (maxTokens > 0 && !globalFlags.some(f => f.startsWith('--max-tokens'))) {
+          globalFlags.push(`--max-tokens=${maxTokens}`)
+        }
+      }
+    } catch { /* ignore */ }
+    if (retryCount > 0) {
+      console.log(`[orchestrator] Auto-escalation: task "${task.title}" failed ${retryCount}x, upgrading to opus`)
     }
 
     let agentPrompt: string | undefined
@@ -329,7 +534,7 @@ class OrchestratorService {
 
     resetOverdriveIfExpired(instanceId)
 
-    console.log(`[orchestrator] Assigning "${task.title}" → instance ${instanceId} (${role}, model: ${ROLE_MODELS[role] || 'default'})`)
+    console.log(`[orchestrator] Assigning "${task.title}" → instance ${instanceId} (${role}, model: ${roleModels[role] || 'default'})`)
 
     // Extract images from task attachments
     let taskImages: Array<{ base64: string; mediaType: string }> | undefined
@@ -369,7 +574,8 @@ class OrchestratorService {
     this.pruneOldMessages(instanceId)
 
     try {
-      sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: ROLE_MCP_CONFIG[role] })
+      this.lastSendTime.set(instanceId, Date.now())
+      sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: getMcpConfigPath(role) })
     } catch (err) {
       console.error(`[orchestrator] sendMessage failed for ${instanceId}:`, err)
       for (const t of tasksToLock) {
@@ -383,32 +589,90 @@ class OrchestratorService {
     broadcastEvent({ type: 'pipeline:updated', payload: { projectId: folderId } })
   }
 
-  private buildPrompt(tasksToLock: Record<string, unknown>[], primaryTask: Record<string, unknown>, instance: Record<string, unknown>, folder: Record<string, unknown>): string {
+  private buildPrompt(tasksToLock: Record<string, unknown>[], primaryTask: Record<string, unknown>, instance: Record<string, unknown>, folder: Record<string, unknown>, isResume = false): string {
     const role = instance.agent_role as string
-    const masterPrompt = this.loadMasterPrompt(role)
-    const skills = this.loadInstanceSkills(instance)
-    const isBundle = tasksToLock.length > 1
     const projectId = folder.id as string
     const taskId = primaryTask.id as string
     const instanceCwd = (instance.cwd as string) || (folder.path as string)
 
-    const priorityLabels: Record<number, string> = { 1: 'critical', 2: 'high', 3: 'normal', 4: 'low' }
-    const priorityLabel = priorityLabels[primaryTask.priority as number] || 'normal'
+    // Resume: lightweight message — agent already has context from prior session
+    if (isResume) {
+      const resumeObj = {
+        type: 'resume',
+        task: { id: taskId, title: primaryTask.title as string, column: primaryTask.column as string, priority: primaryTask.priority as number },
+        api: { move: `POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/move`, comment: `POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/comments` },
+        instruction: `You were working on this task before. Resume where you left off. Post a comment and move the task when done. Comment author: "${role}".`
+      }
+      const prompt = JSON.stringify(resumeObj, null, 2)
+      console.log(`[orchestrator] Resume prompt: ${prompt.length} chars for ${role} on "${primaryTask.title}"`)
+      return prompt
+    }
 
+    const masterPrompt = this.loadMasterPrompt(role)
+    const skills = this.loadInstanceSkills(instance)
+    const isBundle = tasksToLock.length > 1
+
+    // Cap description to prevent spec bloat (5000 chars ≈ 1250 tokens max)
+    const MAX_DESC_CHARS = 5000
+    let description = (primaryTask.description as string) || ''
+    if (description.length > MAX_DESC_CHARS) {
+      description = description.slice(0, MAX_DESC_CHARS) + '\n\n[... description truncated at 5000 chars — read the full spec from task comments or source files if needed]'
+    }
+
+    // Build structured JSON assignment
+    const assignment: Record<string, unknown> = {
+      scope: instanceCwd,
+      role,
+      task: {
+        id: taskId,
+        projectId,
+        title: primaryTask.title as string,
+        priority: primaryTask.priority as number,
+        column: primaryTask.column as string,
+        description,
+      },
+      api: {
+        move: `POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/move  body: {"column":"<target>"}`,
+        comment: `POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/comments  body: {"author":"${role}","body":"..."}`,
+        columns: 'backlog | scheduled | spec | build | qa | ship | done',
+      },
+      rules: [
+        'Only access files under scope directory.',
+        'Post a short comment (1-3 sentences) before moving task.',
+      ],
+    }
+
+    const rawAttachments = JSON.parse((primaryTask.attachments as string) || '[]') as Array<{ name: string }>
+    if (rawAttachments.length > 0) {
+      assignment.attachments = `${rawAttachments.length} screenshot(s) included with this message.`
+    }
+
+    const dependsOn = JSON.parse((primaryTask.depends_on as string) || '[]') as string[]
+    if (dependsOn.length > 0) {
+      assignment.prerequisites = dependsOn
+    }
+
+    const priorComments = this.loadTaskComments(taskId)
+    if (priorComments) {
+      assignment.priorComments = priorComments
+    }
+
+    if (isBundle) {
+      assignment.bundle = tasksToLock.map(t => ({
+        index: t.group_index,
+        total: t.group_total,
+        title: t.title as string,
+      }))
+    }
+
+    // Compose: master prompt (human-readable) + JSON assignment
     const parts: string[] = []
 
-    // Scope constraint — condensed (was ~18 lines, now ~3)
-    parts.push(`## Scope: ${instanceCwd}`)
-    parts.push(`Only access files under this directory. If cross-scope access needed, create "[ACTION NEEDED]" task in staging and stop.`)
-    parts.push('')
-
-    // Master prompt (already slimmed in Phase 1C)
     if (masterPrompt) {
       parts.push(masterPrompt)
       parts.push('')
     }
 
-    // Agent skills (from DB — only if assigned)
     if (skills.length > 0) {
       for (const skill of skills) {
         parts.push(`### Skill: ${skill.name}`)
@@ -417,64 +681,15 @@ class OrchestratorService {
       parts.push('')
     }
 
-    // Tester: playwriter rules (condensed from ~40 lines to ~10)
     if (role === 'tester') {
-      parts.push('## Browser Testing: use `playwriter` CLI via Bash only')
-      parts.push('NEVER use `mcp__playwright__*` tools. Use `playwriter session new` then `playwriter -e "..."` with the `page` global.')
-      parts.push('NEVER call `context.newPage()`. Screenshots use relative paths.')
-      parts.push('After QA passes, read the `## Proof of Completion Screenshot` section of the spec and take the proof screenshot.')
-      parts.push('Post proof comment before moving to ship.')
+      parts.push('## playwriter: `playwriter session new` then `playwriter -e "..."` (page global). Relative screenshot paths.')
       parts.push('')
     }
 
-    // Task assignment
-    parts.push('## YOUR ASSIGNMENT')
-    parts.push(`Title: ${primaryTask.title as string}`)
-    if (isBundle) {
-      parts.push(`Group: ${primaryTask.group_index as number}/${primaryTask.group_total as number} — complete all tasks in this group`)
-    }
-    parts.push(`Priority: ${primaryTask.priority as number} (${priorityLabel})`)
-
-    if (primaryTask.description) {
-      parts.push('')
-      parts.push(primaryTask.description as string)
-    }
-
-    const rawAttachmentsForNote = JSON.parse((primaryTask.attachments as string) || '[]') as Array<{ name: string }>
-    if (rawAttachmentsForNote.length > 0) {
-      parts.push(`\nAttachments: ${rawAttachmentsForNote.length} screenshot(s) included with this message.`)
-    }
-
-    const dependsOn = JSON.parse((primaryTask.depends_on as string) || '[]') as string[]
-    if (dependsOn.length > 0) {
-      parts.push(`\nPrerequisites (must be Done): ${dependsOn.join(', ')}`)
-    }
-
-    const priorComments = this.loadTaskComments(taskId)
-    if (priorComments) {
-      parts.push('\n### Prior Comments')
-      parts.push(priorComments)
-    }
-
-    if (isBundle) {
-      parts.push('\n### All tasks in this bundle:')
-      for (const t of tasksToLock) {
-        parts.push(`- [${t.group_index}/${t.group_total}] ${t.title as string}`)
-        if (t.description) {
-          const desc = (t.description as string).slice(0, 100)
-          parts.push(`  ${desc}${desc.length === 100 ? '...' : ''}`)
-        }
-      }
-    }
-
-    // Pipeline API (condensed — was ~15 lines, now ~5)
-    parts.push('')
-    parts.push('## Pipeline API')
-    parts.push(`Task ID: ${taskId} | Project ID: ${projectId}`)
-    parts.push(`Move: POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/move  body: {"column":"<target>"}`)
-    parts.push(`Comment: POST http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}/comments  body: {"author":"${role}","body":"..."}`)
-    parts.push(`Columns: backlog | spec | build | qa | staging | ship | done`)
-    parts.push(`Post a comment before moving. Do NOT use Todoist/HyperTask.`)
+    parts.push('## ASSIGNMENT')
+    parts.push('```json')
+    parts.push(JSON.stringify(assignment, null, 2))
+    parts.push('```')
 
     const prompt = parts.join('\n')
     const promptChars = prompt.length
@@ -515,21 +730,203 @@ class OrchestratorService {
 
   private loadTaskComments(taskId: string): string {
     try {
-      // Cap to last 3 comments, max ~500 tokens (~2000 chars)
+      // Last 3 unique comments (deduplicated by body), max 1500 chars
       const rows = db.prepare(
-        'SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 3'
+        'SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 10'
       ).all(taskId) as Array<{ author: string; body: string; created_at: number }>
       if (rows.length === 0) return ''
-      const MAX_CHARS = 2000
+
+      // Deduplicate by body content (planner loop-spam fix)
+      const seen = new Set<string>()
+      const unique = rows.filter(r => {
+        const key = r.body.trim()
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }).slice(0, 3)
+
+      const MAX_CHARS = 1500
       let result = ''
-      for (const r of rows.reverse()) {
-        const line = `  [@${r.author} ${new Date(r.created_at).toISOString()}]: ${r.body}\n`
+      for (const r of unique.reverse()) {
+        // Truncate individual comments to 400 chars
+        const body = r.body.length > 400 ? r.body.slice(0, 400) + '...' : r.body
+        const line = `[@${r.author}]: ${body}\n`
         if (result.length + line.length > MAX_CHARS) break
         result += line
       }
       return result.trimEnd()
     } catch {
       return ''
+    }
+  }
+
+  async triggerScheduledTask(task: PipelineTask): Promise<void> {
+    try {
+      const folderId = task.projectId
+      const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown>
+      if (!folder) {
+        console.warn(`[orchestrator] triggerScheduledTask: folder ${folderId} not found`)
+        return
+      }
+
+      // Mark as running before spawning
+      markScheduleRunning(task.id, true)
+
+      const now = Date.now()
+      const runId = crypto.randomUUID()
+
+      // Build scheduler prompt
+      const masterPrompt = this.loadMasterPrompt('scheduler')
+      const skillContent = task.skill ? this.loadSkillByName(task.skill) : null
+
+      const MAX_DESC_CHARS = 5000
+      let description = task.description || ''
+      if (description.length > MAX_DESC_CHARS) {
+        description = description.slice(0, MAX_DESC_CHARS) + '\n\n[... truncated]'
+      }
+
+      const assignment = {
+        role: 'scheduler',
+        task: {
+          id: task.id,
+          projectId: folderId,
+          title: task.title,
+          description,
+          skill: task.skill ?? null,
+        },
+        api: {
+          comment: `POST http://localhost:3333/api/pipelines/${folderId}/tasks/${task.id}/comments  body: {"author":"scheduler","body":"..."}`,
+        },
+        rules: [
+          'Do not move this task to another column.',
+          'Post a brief summary comment when finished.',
+          'If you encounter an error, post the error as a comment and exit.',
+          'Only access files under your assigned scope directory.',
+        ],
+      }
+
+      const parts: string[] = []
+      if (masterPrompt) { parts.push(masterPrompt); parts.push('') }
+      if (skillContent) { parts.push(`### Skill: ${task.skill}`); parts.push(skillContent); parts.push('') }
+      parts.push('## ASSIGNMENT')
+      parts.push('```json')
+      parts.push(JSON.stringify(assignment, null, 2))
+      parts.push('```')
+      const prompt = parts.join('\n')
+
+      // Find or create a scheduler instance in this folder
+      let schedulerInstance = db.prepare(
+        "SELECT * FROM instances WHERE folder_id = ? AND agent_role = 'scheduler' AND state = 'idle' LIMIT 1"
+      ).get(folderId) as Record<string, unknown> | undefined
+
+      let instanceId: string
+      if (schedulerInstance) {
+        instanceId = schedulerInstance.id as string
+      } else {
+        // Create a temporary scheduler instance
+        instanceId = crypto.randomUUID()
+        db.prepare(`
+          INSERT INTO instances (id, folder_id, name, cwd, state, agent_role, orchestrator_managed, sort_order, created_at)
+          VALUES (?, ?, 'Chrono', ?, 'idle', 'scheduler', 1, 999, ?)
+        `).run(instanceId, folderId, (folder.path as string) || '', now)
+        schedulerInstance = db.prepare('SELECT * FROM instances WHERE id = ?').get(instanceId) as Record<string, unknown>
+      }
+
+      // Track this instance as a scheduler
+      activeSchedulerInstances.add(instanceId)
+      db.prepare("UPDATE instances SET state = 'running', active_task_id = ?, active_task_title = ?, task_started_at = ? WHERE id = ?")
+        .run(task.id, task.title, now, instanceId)
+
+      // Record initial execution entry
+      const exec: ScheduleExecution = { runId, startedAt: now, instanceId, status: 'running' }
+      appendExecution(task.id, exec)
+
+      const cwd = (folder.path as string) || ''
+      const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
+      const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
+
+      const roleModels = getRoleModels()
+      const model = roleModels['scheduler'] || 'sonnet'
+      if (!globalFlags.some(f => f.startsWith('--model'))) globalFlags.push(`--model=${model}`)
+
+      const roleTools = getRoleTools()
+      const tools = roleTools['scheduler']
+      if (tools && !globalFlags.some(f => f.startsWith('--tools'))) globalFlags.push('--tools', tools)
+
+      // Save message for visibility
+      const msgId = crypto.randomUUID()
+      const msgContent = [
+        { type: 'orc-brief', taskTitle: task.title, taskId: task.id, instanceName: 'Chrono', projectId: folderId },
+        { type: 'text', text: prompt },
+      ]
+      db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(msgId, instanceId, 'user', JSON.stringify(msgContent), now)
+      broadcastEvent({ type: 'message:added', payload: { instanceId, message: { id: msgId, instanceId, role: 'user', content: msgContent, createdAt: now } } })
+
+      console.log(`[orchestrator] Scheduler dispatch: "${task.title}" → instance ${instanceId}`)
+
+      // Store run context so onProcessExit can route to scheduler exit handler
+      this.schedulerRunContexts.set(instanceId, { taskId: task.id, runId, startedAt: now })
+
+      sendMessage({ instanceId, text: prompt, cwd, flags: globalFlags, mcpConfigPath: getMcpConfigPath('scheduler') })
+
+      broadcastEvent({ type: 'pipeline:updated', payload: { projectId: folderId } })
+    } catch (err) {
+      console.error('[orchestrator] triggerScheduledTask error:', err)
+      markScheduleRunning(task.id, false)
+    }
+  }
+
+  private onSchedulerExit(
+    instanceId: string,
+    taskId: string,
+    runId: string,
+    startedAt: number,
+  ): void {
+    // Read cost data from token_usage table
+    let costUsd: number | undefined
+    let tokensUsed: number | undefined
+    try {
+      const usageRow = db.prepare(
+        'SELECT cost_usd, input_tokens, output_tokens FROM token_usage WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(instanceId) as { cost_usd: number; input_tokens: number; output_tokens: number } | undefined
+      if (usageRow) {
+        costUsd = usageRow.cost_usd
+        tokensUsed = (usageRow.input_tokens || 0) + (usageRow.output_tokens || 0)
+      }
+    } catch { /* non-critical */ }
+    try {
+      const now = Date.now()
+      // Update the execution entry
+      const task = db.prepare('SELECT * FROM pipeline_tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined
+      if (task) {
+        let executions: ScheduleExecution[]
+        try { executions = JSON.parse((task.executions as string) || '[]') } catch { executions = [] }
+        const idx = executions.findIndex(e => e.runId === runId)
+        if (idx >= 0) {
+          executions[idx] = { ...executions[idx], endedAt: now, status: 'completed', costUsd, tokensUsed }
+        }
+        db.prepare('UPDATE pipeline_tasks SET executions = ? WHERE id = ?').run(JSON.stringify(executions), taskId)
+      }
+
+      updateScheduleAfterRun(taskId, now)
+
+      db.prepare("UPDATE instances SET state = 'idle', active_task_id = NULL, active_task_title = NULL WHERE id = ?").run(instanceId)
+
+      const projectId = (task?.project_id as string) ?? ''
+      broadcastEvent({ type: 'pipeline:updated', payload: { projectId } })
+      console.log(`[orchestrator] Scheduler run complete: task ${taskId}, cost=$${costUsd?.toFixed(4) ?? '?'}`)
+    } catch (err) {
+      console.error('[orchestrator] onSchedulerExit error:', err)
+    }
+  }
+
+  private loadSkillByName(skillName: string): string | null {
+    try {
+      const row = db.prepare('SELECT content FROM skills WHERE name = ? LIMIT 1').get(skillName) as { content: string } | undefined
+      return row?.content ?? null
+    } catch {
+      return null
     }
   }
 
@@ -593,7 +990,6 @@ class OrchestratorService {
         // Mark instance as running so triggerAll() below won't double-assign it
         db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(snap.instanceId)
 
-        const prompt = this.buildPrompt(tasks, primaryTask, instance, folder)
         const cwd = (instance.cwd as string) || (folder.path as string)
 
         const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
@@ -601,9 +997,17 @@ class OrchestratorService {
 
         // Model tiering for resumed sessions
         const role = instance.agent_role as string
+        const roleModels = getRoleModels()
         const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
-        if (!hasModelFlag && role && ROLE_MODELS[role]) {
-          globalFlags.push(`--model=${ROLE_MODELS[role]}`)
+        if (!hasModelFlag && role && roleModels[role]) {
+          globalFlags.push(`--model=${roleModels[role]}`)
+        }
+
+        // Tool scoping for resumed sessions
+        const roleTools = getRoleTools()
+        const rTools = roleTools[role]
+        if (rTools && !globalFlags.some(f => f.startsWith('--tools'))) {
+          globalFlags.push('--tools', rTools)
         }
 
         let agentPrompt: string | undefined
@@ -612,10 +1016,14 @@ class OrchestratorService {
           agentPrompt = agent?.content
         }
 
-        console.log(`[orchestrator] Resuming "${primaryTask.title as string}" → instance ${snap.instanceId} (--resume ${snap.sessionId}, model: ${ROLE_MODELS[role] || 'default'})`)
+        // Use lightweight resume prompt — agent already has context from prior session
+        const prompt = this.buildPrompt(tasks, primaryTask, instance, folder, true)
+
+        console.log(`[orchestrator] Resuming "${primaryTask.title as string}" → instance ${snap.instanceId} (--resume ${snap.sessionId}, model: ${roleModels[role] || 'default'})`)
 
         try {
-          sendMessage({ instanceId: snap.instanceId, text: prompt, cwd, sessionId: snap.sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: ROLE_MCP_CONFIG[role] })
+          this.lastSendTime.set(snap.instanceId, Date.now())
+          sendMessage({ instanceId: snap.instanceId, text: prompt, cwd, sessionId: snap.sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: getMcpConfigPath(role) })
         } catch (err) {
           console.error(`[orchestrator] resumeStaleInstances sendMessage failed for ${snap.instanceId}:`, err)
           // Rollback: unlock tasks and reset instance to idle so triggerAll can reassign normally

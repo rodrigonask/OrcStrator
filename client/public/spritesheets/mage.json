@@ -1,75 +1,75 @@
 {
   "frames": {
-    "mage-0": {
+    "mage-idle-0": {
       "frame": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     },
-    "mage-1": {
+    "mage-idle-1": {
       "frame": {
-        "x": 32,
+        "x": 128,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     },
-    "mage-2": {
+    "mage-idle-2": {
       "frame": {
-        "x": 64,
+        "x": 256,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     },
-    "mage-3": {
+    "mage-idle-3": {
       "frame": {
-        "x": 96,
+        "x": 384,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     }
   },
@@ -77,17 +77,17 @@
     "image": "mage.png",
     "format": "RGBA8888",
     "size": {
-      "w": 128,
-      "h": 32
+      "w": 512,
+      "h": 128
     },
-    "scale": 1
+    "scale": "1"
   },
   "animations": {
     "mage-idle": [
-      "mage-0",
-      "mage-1",
-      "mage-2",
-      "mage-3"
+      "mage-idle-0",
+      "mage-idle-1",
+      "mage-idle-2",
+      "mage-idle-3"
     ]
   }
 }

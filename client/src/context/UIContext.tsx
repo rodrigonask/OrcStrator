@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react'
 import type { AppSettings, UsageData } from '@shared/types'
 
 export interface UIContextValue {
-  view: 'chat' | 'pipeline'
+  view: 'chat' | 'pipeline' | 'monitor'
   selectedInstanceId: string | null
   sidebarCollapsed: boolean
   terminalPanelOpen: boolean

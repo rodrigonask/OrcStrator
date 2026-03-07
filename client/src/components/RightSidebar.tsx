@@ -1,9 +1,11 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useUI } from '../context/UIContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
 import { OrcFeed } from './pipeline/OrcFeed'
+import { api } from '../api'
+import type { SavingsSummary } from '@shared/types'
 
 const TIER_COLORS: Record<string, string> = {
   Beginner: '#10b981',
@@ -23,6 +25,13 @@ const TIER_ICONS: Record<string, string> = {
   Cosmic: '🌌',
 }
 
+const ROLE_COLORS: Record<string, string> = {
+  planner: 'var(--role-planner)',
+  builder: 'var(--role-builder)',
+  tester: 'var(--role-tester)',
+  promoter: 'var(--role-promoter)',
+}
+
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
@@ -38,14 +47,27 @@ const SHORTCUTS = [
 ]
 
 export function RightSidebar() {
-  const { settings, usage, activePipelineId } = useUI()
+  const { settings, usage, activePipelineId, view } = useUI()
   const { instances, folders } = useInstances()
   const { dispatch } = useAppDispatch()
   const { profile, currentLevel, nextLevel, xpProgress } = useGame()
   const [collapsed, setCollapsed] = useState(false)
   const [orcMode, setOrcMode] = useState(false)
+  const [savings, setSavings] = useState<SavingsSummary | null>(null)
+  const [showShutdown, setShowShutdown] = useState(false)
 
-  // Derive which folder to show in Orc POV
+  useEffect(() => {
+    if (view === 'pipeline') setCollapsed(true)
+    else setCollapsed(false)
+  }, [view])
+
+  useEffect(() => {
+    function load() { api.getSavings(7).then(setSavings).catch(() => {}) }
+    load()
+    const id = setInterval(load, 5 * 60_000)
+    return () => clearInterval(id)
+  }, [])
+
   const orcFolderId = activePipelineId
     || folders.find(f => f.orchestratorActive)?.id
     || null
@@ -71,20 +93,39 @@ export function RightSidebar() {
   const tierColor = TIER_COLORS[tier] ?? '#10b981'
   const tierIcon = TIER_ICONS[tier] ?? '🌱'
 
-  const xpToNext = nextLevel && profile
-    ? nextLevel.xpRequired - profile.totalXp
-    : 0
-
-  const activeAgents = instances.filter(i => i.state === 'running').length
+  const runningInstances = instances.filter(i => i.state === 'running')
+  const activeAgents = runningInstances.length
   const totalProjects = folders.length
 
-  const primaryBucket = usage?.buckets?.[0]
-  const usagePercent = primaryBucket?.percentage ?? 0
-  const usageBarClass = usagePercent >= 90 ? 'danger' : usagePercent >= 70 ? 'warning' : ''
+  const handleShutdownConfirm = useCallback(async () => {
+    setShowShutdown(false)
+    try {
+      const result = await api.shutdownAll()
+      for (const id of result.instanceIds) {
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle', sessionId: undefined } } })
+      }
+      for (const f of folders) {
+        if (f.orchestratorActive) {
+          dispatch({ type: 'UPDATE_FOLDER', payload: { id: f.id, updates: { orchestratorActive: false } } })
+        }
+      }
+    } catch (err) {
+      console.error('Shutdown failed:', err)
+    }
+  }, [dispatch, folders])
+
+  const STATS = [
+    { icon: '⚔️', value: fmtNum(profile?.tasksDone ?? 0), label: 'Tasks Done' },
+    { icon: '🤖', value: String(activeAgents), label: 'Active' },
+    { icon: '📁', value: String(totalProjects), label: 'Projects' },
+    { icon: '🔄', value: savings ? fmtNum(savings.totalSessions) : '—', label: 'Sessions' },
+    { icon: '💾', value: savings ? fmtNum(savings.savedTokens) : '—', label: 'Tkns Saved' },
+    { icon: '💰', value: savings && savings.savedUsd > 0 ? `$${savings.savedUsd.toFixed(2)}` : '—', label: 'Est. Saved' },
+  ]
 
   return (
     <aside className={`right-sidebar${collapsed ? ' rs-collapsed' : ''}`}>
-      {/* Header buttons */}
+      {/* Collapse button */}
       <div className="rs-header-btns">
         <button
           className="rs-collapse-btn"
@@ -105,12 +146,9 @@ export function RightSidebar() {
           </button>
         </div>
       ) : orcMode ? (
-        /* Orc POV panel */
         <div className="rs-orc-pov">
           {!orcFolderId ? (
-            <div className="rs-orc-idle" style={{ padding: '16px 12px' }}>
-              No Orc is active right now
-            </div>
+            <div className="rs-orc-idle" style={{ padding: '16px 12px' }}>No Orc is active right now</div>
           ) : (
             <>
               <div className="rs-orc-header">
@@ -137,9 +175,7 @@ export function RightSidebar() {
                       <span className="rs-orc-agent-name">{inst.name}</span>
                       {inst.activeTaskTitle && (
                         <span className="rs-orc-agent-task">
-                          {inst.activeTaskTitle.length > 35
-                            ? inst.activeTaskTitle.slice(0, 35) + '…'
-                            : inst.activeTaskTitle}
+                          {inst.activeTaskTitle.length > 35 ? inst.activeTaskTitle.slice(0, 35) + '…' : inst.activeTaskTitle}
                         </span>
                       )}
                     </div>
@@ -152,94 +188,111 @@ export function RightSidebar() {
         </div>
       ) : (
         <>
-          {/* Identity card */}
-          <div className="rs-section rs-identity">
-            <button className="rs-switch-btn" onClick={() => setOrcMode(true)} title="Show Orc activity">⚔</button>
-            <div className="rs-avatar">{userEmoji}</div>
-            <div className="rs-name">{userName}</div>
-            <div className="rs-tier-badge" style={{ color: tierColor, borderColor: tierColor }}>
-              {tierIcon} {tier}
-            </div>
-          </div>
-
-          {/* Level + XP */}
-          <div className="rs-section rs-level">
-            <div className="rs-section-label">Level</div>
-            <div className="rs-level-heading">
-              <span className="rs-level-num" style={{ color: tierColor }}>
-                Lv.{currentLevel?.level ?? 1}
+          {/* ── Identity card (compact) ── */}
+          <div className="rs-identity-card">
+            <div className="rs-identity-top">
+              <span
+                className="rs-avatar-sm"
+                style={['Cosmic', 'Mythic', 'Elite'].includes(tier) ? { filter: `drop-shadow(0 0 5px ${tierColor})` } : {}}
+              >
+                {userEmoji}
               </span>
-              <span className="rs-level-name">{currentLevel?.name ?? 'Novice'}</span>
+              <div className="rs-identity-info">
+                <div className="rs-name">{userName}</div>
+                <div className="rs-identity-meta">
+                  <span
+                    className="rs-tier-badge"
+                    style={{
+                      color: tierColor,
+                      borderColor: tierColor,
+                      fontFamily: 'var(--font-pixel)',
+                      fontSize: 7,
+                      boxShadow: `0 0 6px ${tierColor}44`,
+                    }}
+                  >
+                    {tierIcon} {tier}
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: tierColor }}>
+                    Lv.{currentLevel?.level ?? 1}
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="rs-xp-bar-track">
+            {/* Thin XP strip */}
+            <div className="rs-xp-strip-track">
               <div
-                className="rs-xp-bar-fill"
-                style={{ width: `${Math.min(xpProgress * 100, 100)}%`, background: tierColor }}
+                className="rs-xp-strip-fill"
+                style={{ width: `${Math.min(xpProgress * 100, 100)}%`, background: tierColor, boxShadow: `0 0 4px ${tierColor}` }}
               />
             </div>
-            <div className="rs-xp-label">
-              {profile ? fmtNum(profile.totalXp) : '0'} XP
-              {nextLevel && xpToNext > 0 && (
-                <span className="rs-xp-next"> · {fmtNum(xpToNext)} to next</span>
+            <div className="rs-xp-strip-label">
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>
+                {profile ? fmtNum(profile.totalXp) : '0'} XP
+              </span>
+              {nextLevel && profile && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>
+                  {fmtNum(nextLevel.xpRequired - profile.totalXp)} to Lv.{nextLevel.level}
+                </span>
               )}
             </div>
           </div>
 
-          {/* RPG Stats grid */}
+          {/* ── Live status ── */}
           <div className="rs-section">
-            <div className="rs-section-label">Stats</div>
+            <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Live</div>
+            {runningInstances.length === 0 ? (
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)', padding: '4px 0' }}>
+                All agents idle
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {runningInstances.map(inst => (
+                  <div key={inst.id} className="rs-live-row">
+                    <span
+                      className="rs-live-dot"
+                      style={{ color: inst.agentRole ? ROLE_COLORS[inst.agentRole] || 'var(--accent)' : 'var(--success)' }}
+                    >●</span>
+                    <span className="rs-live-name">{inst.name}</span>
+                    {inst.activeTaskTitle && (
+                      <span className="rs-live-task">
+                        {inst.activeTaskTitle.length > 28 ? inst.activeTaskTitle.slice(0, 28) + '…' : inst.activeTaskTitle}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Stats grid ── */}
+          <div className="rs-section">
+            <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Stats</div>
             <div className="rs-stats-grid">
-              <div className="rs-stat-card">
-                <div className="rs-stat-icon">💬</div>
-                <div className="rs-stat-value">{fmtNum(profile?.messagesSent ?? 0)}</div>
-                <div className="rs-stat-label">Messages</div>
-              </div>
-              <div className="rs-stat-card">
-                <div className="rs-stat-icon">📤</div>
-                <div className="rs-stat-value">{fmtNum(profile?.tokensSent ?? 0)}</div>
-                <div className="rs-stat-label">Tokens In</div>
-              </div>
-              <div className="rs-stat-card">
-                <div className="rs-stat-icon">📥</div>
-                <div className="rs-stat-value">{fmtNum(profile?.tokensReceived ?? 0)}</div>
-                <div className="rs-stat-label">Tokens Out</div>
-              </div>
-              <div className="rs-stat-card">
-                <div className="rs-stat-icon">✨</div>
-                <div className="rs-stat-value">{fmtNum(profile?.totalXp ?? 0)}</div>
-                <div className="rs-stat-label">Total XP</div>
-              </div>
-              <div className="rs-stat-card">
-                <div className="rs-stat-icon">🤖</div>
-                <div className="rs-stat-value">{activeAgents}</div>
-                <div className="rs-stat-label">Active</div>
-              </div>
-              <div className="rs-stat-card">
-                <div className="rs-stat-icon">📁</div>
-                <div className="rs-stat-value">{totalProjects}</div>
-                <div className="rs-stat-label">Projects</div>
-              </div>
+              {STATS.map(({ icon, value, label }) => (
+                <div key={label} className="rs-stat-card">
+                  <div className="rs-stat-icon">{icon}</div>
+                  <div className="rs-stat-value" style={{ fontFamily: 'var(--font-pixel)', fontSize: 9 }}>{value}</div>
+                  <div className="rs-stat-label" style={{ fontFamily: 'var(--font-mono)' }}>{label}</div>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Usage */}
+          {/* ── Usage (OAuth) ── */}
           {usage && usage.buckets.length > 0 && (
             <div className="rs-section">
-              <div className="rs-section-label">Usage</div>
+              <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Usage</div>
               {usage.buckets.map((bucket, i) => {
                 const pct = bucket.percentage ?? 0
                 const cls = pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : ''
                 return (
                   <div key={i} className="rs-usage-row">
                     <div className="rs-usage-labels">
-                      <span className="rs-usage-name">{bucket.label}</span>
-                      <span className={`rs-usage-pct ${cls}`}>{Math.round(pct)}%</span>
+                      <span className="rs-usage-name" style={{ fontFamily: 'var(--font-pixel)', fontSize: 7 }}>{bucket.label}</span>
+                      <span className={`rs-usage-pct ${cls}`} style={{ fontFamily: 'var(--font-pixel)', fontSize: 7 }}>{Math.round(pct)}%</span>
                     </div>
                     <div className="rs-usage-track">
-                      <div
-                        className={`rs-usage-fill ${cls}`}
-                        style={{ width: `${Math.min(pct, 100)}%` }}
-                      />
+                      <div className={`rs-usage-fill ${cls}`} style={{ width: `${Math.min(pct, 100)}%` }} />
                     </div>
                     {bucket.resetCountdown && (
                       <div className="rs-usage-reset">Resets {bucket.resetCountdown}</div>
@@ -250,30 +303,58 @@ export function RightSidebar() {
             </div>
           )}
 
-          {/* Shortcuts */}
+          {/* ── Shortcuts ── */}
           <div className="rs-section rs-shortcuts">
-            <div className="rs-section-label">Shortcuts</div>
+            <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Shortcuts</div>
             <div className="rs-shortcut-list">
               {SHORTCUTS.map(({ keys, label }) => (
                 <div key={keys} className="rs-shortcut-row">
-                  <kbd className="rs-kbd">{keys}</kbd>
-                  <span className="rs-shortcut-label">{label}</span>
+                  <kbd className="rs-kbd" style={{ fontFamily: 'var(--font-pixel)', fontSize: 7 }}>{keys}</kbd>
+                  <span className="rs-shortcut-label" style={{ fontFamily: 'var(--font-mono)' }}>{label}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Footer */}
+          {/* ── Footer ── */}
           <div className="rs-footer">
-            <button
-              className="rs-settings-btn"
-              onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
-              title="Settings"
-            >
+            <button className="rs-settings-btn" onClick={() => dispatch({ type: 'OPEN_SETTINGS' })} title="Settings">
               ⚙ Settings
+            </button>
+            <button
+              className="rs-shutdown-btn"
+              onClick={() => setShowShutdown(true)}
+              title="Kill all sessions"
+            >
+              ⏻
             </button>
           </div>
         </>
+      )}
+
+      {showShutdown && (
+        <div className="modal-overlay" onClick={() => setShowShutdown(false)}>
+          <div className="modal-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
+            <div className="modal-header">
+              <span className="modal-title">Kill All Sessions</span>
+              <button className="modal-close" onClick={() => setShowShutdown(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginBottom: 8 }}>
+                This will terminate <strong>{instances.length} session{instances.length !== 1 ? 's' : ''}</strong> across all projects.
+              </p>
+              {activeAgents > 0 && (
+                <p style={{ color: 'var(--warning)', fontSize: 13, margin: 0 }}>
+                  ⚠ {activeAgents} agent{activeAgents !== 1 ? 's are' : ' is'} currently running.
+                </p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setShowShutdown(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleShutdownConfirm}>Kill All</button>
+            </div>
+          </div>
+        </div>
       )}
     </aside>
   )

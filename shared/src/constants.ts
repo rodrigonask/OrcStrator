@@ -1,18 +1,20 @@
 import type { PipelineColumn, XpEventType, AppSettings } from './types.js'
 
 export const PIPELINE_COLUMNS: PipelineColumn[] = [
-  'backlog', 'staging', 'spec', 'build', 'qa', 'ship', 'done'
+  'backlog', 'scheduled', 'spec', 'build', 'qa', 'ship', 'done'
 ]
 
 export const COLUMN_COLORS: Record<PipelineColumn, string> = {
   backlog: '#6b7280',
+  scheduled: '#6366f1',
   spec: '#8b5cf6',
   build: '#3b82f6',
   qa: '#f59e0b',
-  staging: '#f97316',
   ship: '#10b981',
   done: '#6b7280'
 }
+
+export const SPECIAL_LABELS = ['stuck', 'blocked'] as const
 
 export const XP_TABLE: Record<XpEventType, number> = {
   'tour-step': 50,
@@ -90,12 +92,35 @@ export const ALLOWED_FLAG_PREFIXES = [
   '--session-id',
   '--no-cache',
   '--mcp-config',
-  '--strict-mcp-config'
+  '--strict-mcp-config',
+  '--tools',
+  '--allowedTools',
+  '--disallowedTools',
 ]
+
+export const AVAILABLE_TOOLS = [
+  'Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebFetch', 'WebSearch', 'Agent',
+] as const
+
+export const DEFAULT_ROLE_MODELS: Record<string, string> = {
+  planner: 'sonnet',
+  builder: 'opus',
+  tester: 'sonnet',
+  promoter: 'sonnet',
+  scheduler: 'sonnet',
+}
+
+export const DEFAULT_ROLE_TOOLS: Record<string, string[]> = {
+  planner: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebFetch'],
+  builder: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebFetch'],
+  tester: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebFetch'],
+  promoter: ['Read', 'Grep', 'Glob', 'Bash'],
+  scheduler: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebFetch'],
+}
 
 export const DEFAULT_COLUMN_LABELS: Record<PipelineColumn, string> = {
   backlog: 'Inbox',
-  staging: 'Staging / Stuck',
+  scheduled: 'Scheduled',
   spec: 'Planning',
   build: 'Building',
   qa: 'Testing',
@@ -120,9 +145,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
 }
 
 export const OAUTH = {
-  clientId: 'a3e06de4-0807-4612-b15f-7da209a0e252',
-  redirectUri: 'https://console.anthropic.com/oauth/callback',
-  scopes: 'user:profile',
+  clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+  redirectUri: 'https://console.anthropic.com/oauth/code/callback',
+  scopes: 'org:create_api_key user:profile user:inference',
   authBaseUrl: 'https://claude.ai/oauth/authorize',
   tokenUrl: 'https://console.anthropic.com/v1/oauth/token',
   usageUrl: 'https://api.anthropic.com/api/oauth/usage'

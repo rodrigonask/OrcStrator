@@ -6,7 +6,7 @@ export function ConnectionStatus() {
   return (
     <div className="connection-status">
       <div className={`connection-dot ${connected ? 'connected' : 'disconnected'}`} />
-      {!connected && <span className="connection-text">Reconnecting...</span>}
+      {!connected && <span className="connection-text" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Reconnecting...</span>}
     </div>
   )
 }

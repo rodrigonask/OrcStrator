@@ -1,79 +1,87 @@
-import { Container, Graphics, Text } from 'pixi.js'
-import type { InstanceConfig, FolderConfig } from '@shared/types'
-import { LEFT_ZONE, GAME_H } from './constants'
+import { Container, Text } from 'pixi.js'
+import type { InstanceConfig } from '@shared/types'
+import { IDLE_ZONE, ACTIVE_ZONE, GAME_H } from './constants'
 import { createCharSprite } from './CharacterSprite'
 
-const SILO_PADDING  = 10
-const CHAR_SIZE     = 80
-const CHAR_GAP      = 8
-const SILO_HEADER_H = 22
-const SILO_GAP      = 14
-const MAX_SPRITES   = 5
+const PADDING = 10
+const HEADER_H = 10
+const COLS = 2
 
-/**
- * Clears and rebuilds the LEFT_ZONE silo boxes inside the given container.
- * Safe to call repeatedly; tears down children on each call.
- */
-export function buildAgentPanel(
-  container: Container,
-  instances: InstanceConfig[],
-  folders: FolderConfig[],
-  onClick: (instanceId: string) => void,
-): void {
-  // Destroy existing children cleanly
+export const IDLE_CHAR_SIZE   = 96
+export const ACTIVE_CHAR_SIZE = 112
+export const IDLE_ROW_H       = 120
+export const ACTIVE_ROW_H     = 120
+
+function clearContainer(container: Container) {
   while (container.children.length > 0) {
     const child = container.removeChildAt(0)
     child.destroy({ children: true })
   }
+}
 
-  let currentY = 20
-
-  for (const folder of folders) {
-    const folderInstances = instances.filter(i => i.folderId === folder.id)
-    if (folderInstances.length === 0) continue
-
-    const visible  = folderInstances.slice(0, MAX_SPRITES)
-    const overflow = folderInstances.length - MAX_SPRITES
-
-    const siloW = LEFT_ZONE.w - SILO_PADDING * 2
-    const siloH = SILO_HEADER_H + CHAR_SIZE + SILO_PADDING * 2
-
-    // Silo background
-    const bg = new Graphics()
-    bg.roundRect(LEFT_ZONE.x + SILO_PADDING, currentY, siloW, siloH, 4)
-    bg.fill({ color: 0x16162a, alpha: 0.6 })
-    container.addChild(bg)
-
-    // Folder name header
-    const folderName = (folder.displayName ?? folder.name).slice(0, 22)
-    const header = new Text({
-      text: folderName,
-      style: { fontFamily: 'monospace', fontSize: 11, fill: 0x7c9fcc },
-    })
-    header.x = LEFT_ZONE.x + SILO_PADDING + 4
-    header.y = currentY + 4
-    container.addChild(header)
-
-    // Character sprites
-    const spritesStartY = currentY + SILO_HEADER_H + SILO_PADDING
-    visible.forEach((instance, idx) => {
-      const spriteX = LEFT_ZONE.x + SILO_PADDING + idx * (CHAR_SIZE + CHAR_GAP) + 4
-      createCharSprite(container, instance, spriteX, spritesStartY, CHAR_SIZE, onClick)
-    })
-
-    // "+N more" overflow label
-    if (overflow > 0) {
-      const moreX = LEFT_ZONE.x + SILO_PADDING + MAX_SPRITES * (CHAR_SIZE + CHAR_GAP) + 4
-      const more = new Text({
-        text: `+${overflow}`,
-        style: { fontFamily: 'monospace', fontSize: 10, fill: 0x7c9fcc },
-      })
-      more.x = moreX
-      more.y = spritesStartY + CHAR_SIZE / 2 - 6
-      container.addChild(more)
-    }
-
-    currentY += siloH + SILO_GAP
-    if (currentY > GAME_H - 60) break
+function gridLayout(
+  zone: { x: number; w: number },
+  charSize: number,
+  rowH: number,
+  idx: number,
+): { x: number; y: number } {
+  const colW = (zone.w - PADDING * 2) / COLS
+  const col = idx % COLS
+  const row = Math.floor(idx / COLS)
+  return {
+    x: zone.x + PADDING + col * colW + (colW - charSize) / 2,
+    y: HEADER_H + PADDING + row * rowH,
   }
+}
+
+/**
+ * Build the idle agents panel.
+ * Shows agents not currently locked to any task in a 3-column grid.
+ */
+export function buildIdlePanel(
+  container: Container,
+  instances: InstanceConfig[],
+  onClick: (instanceId: string) => void,
+): void {
+  clearContainer(container)
+
+  const maxRows = Math.floor((GAME_H - HEADER_H - PADDING) / IDLE_ROW_H)
+  const maxVisible = maxRows * COLS
+  const visible = instances.slice(0, maxVisible)
+
+  visible.forEach((instance, idx) => {
+    const { x, y } = gridLayout(IDLE_ZONE, IDLE_CHAR_SIZE, IDLE_ROW_H, idx)
+    createCharSprite(container, instance, x, y, IDLE_CHAR_SIZE, onClick)
+  })
+
+  if (instances.length > maxVisible) {
+    const more = new Text({
+      text: `+${instances.length - maxVisible} more`,
+      style: { fontFamily: 'monospace', fontSize: 9, fill: 0x6688aa },
+    })
+    more.x = IDLE_ZONE.x + PADDING
+    more.y = GAME_H - 20
+    container.addChild(more)
+  }
+}
+
+/**
+ * Build the active agents panel.
+ * Shows agents currently locked to a task in a 3-column grid.
+ */
+export function buildActivePanel(
+  container: Container,
+  instances: InstanceConfig[],
+  onClick: (instanceId: string) => void,
+): void {
+  clearContainer(container)
+
+  const maxRows = Math.floor((GAME_H - HEADER_H - PADDING) / ACTIVE_ROW_H)
+  const maxVisible = maxRows * COLS
+  const visible = instances.slice(0, maxVisible)
+
+  visible.forEach((instance, idx) => {
+    const { x, y } = gridLayout(ACTIVE_ZONE, ACTIVE_CHAR_SIZE, ACTIVE_ROW_H, idx)
+    createCharSprite(container, instance, x, y, ACTIVE_CHAR_SIZE, onClick)
+  })
 }

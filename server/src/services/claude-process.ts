@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process'
+import fs from 'fs'
 import { createStreamParser } from './stream-parser.js'
 import { broadcastEvent, broadcastTerminalLine } from '../ws/handler.js'
 import { db } from '../db.js'
@@ -37,14 +38,24 @@ const ALLOWED_FLAGS = new Set([
   '--permission-mode', '--model', '--max-tokens',
   '--verbose', '--output-format', '--input-format',
   '--resume', '--session-id', '--no-cache',
-  '--mcp-config', '--strict-mcp-config'
+  '--mcp-config', '--strict-mcp-config',
+  '--tools', '--allowedTools', '--disallowedTools'
 ])
 
 function filterFlags(flags: string[]): string[] {
-  return flags.filter(flag => {
+  const result: string[] = []
+  for (let i = 0; i < flags.length; i++) {
+    const flag = flags[i]
     const flagName = flag.split('=')[0]
-    return ALLOWED_FLAGS.has(flagName)
-  })
+    if (ALLOWED_FLAGS.has(flagName)) {
+      result.push(flag)
+      // If next element is a value (not a flag), keep it as the argument
+      if (i + 1 < flags.length && !flags[i + 1].startsWith('--')) {
+        result.push(flags[++i])
+      }
+    }
+  }
+  return result
 }
 
 export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
@@ -115,6 +126,8 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
   let lastCostUsd: number | undefined
   let lastInputTokens: number | undefined
   let lastOutputTokens: number | undefined
+  let lastCacheCreation: number | undefined
+  let lastCacheRead: number | undefined
 
   // Batching: accumulate events in 32ms windows
   let eventBatch: ClaudeStreamEvent[] = []
@@ -177,7 +190,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
               SELECT id FROM messages
               WHERE instance_id = ?
               ORDER BY created_at DESC
-              LIMIT 300
+              LIMIT 50
             )
           `).run(instanceId, instanceId)
         }
@@ -204,6 +217,9 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
           lastCostUsd = event.costUsd
           lastInputTokens = event.inputTokens
           lastOutputTokens = event.outputTokens
+          lastCacheCreation = event.cacheCreationTokens
+          lastCacheRead = event.cacheReadTokens
+          console.log(`[claude-process] Result for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd} cache_create=${lastCacheCreation} cache_read=${lastCacheRead}`)
         }
 
         enqueueEvent(event)
@@ -218,7 +234,10 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     const lines = stderrBuffer.split('\n')
     stderrBuffer = lines.pop() || ''
     for (const line of lines) {
-      if (line.trim()) enqueueEvent({ type: 'raw-line', instanceId, line, isStderr: true })
+      if (line.trim()) {
+        console.error(`[claude-process] stderr [${instanceId.slice(0, 8)}]:`, line)
+        enqueueEvent({ type: 'raw-line', instanceId, line, isStderr: true })
+      }
     }
   })
 
@@ -261,12 +280,24 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
       processTimeouts.delete(instanceId)
     }
 
-    // Flush remaining events
+    // Flush remaining events (result line often arrives without trailing newline)
     if (stdoutBuffer.trim()) {
       const parsed = parseLine(stdoutBuffer)
       if (parsed) {
         const events = Array.isArray(parsed) ? parsed : [parsed]
-        for (const event of events) enqueueEvent(event)
+        for (const event of events) {
+          // Extract token data from result events flushed from buffer
+          if (event.type === 'result') {
+            lastCostUsd = event.costUsd
+            lastInputTokens = event.inputTokens
+            lastOutputTokens = event.outputTokens
+            lastCacheCreation = event.cacheCreationTokens
+            lastCacheRead = event.cacheReadTokens
+            if (event.sessionId) resolvedSessionId = event.sessionId
+            console.log(`[claude-process] Result (flush) for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd}`)
+          }
+          enqueueEvent(event)
+        }
       }
     }
     flushBatch()
@@ -282,12 +313,35 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
 
     // Persist token usage to DB for monitoring
     if (lastInputTokens || lastOutputTokens) {
+      const cacheRatio = lastInputTokens
+        ? Math.round(((lastCacheRead || 0) / lastInputTokens) * 100)
+        : 0
+      console.log(`[claude-process] Token summary ${instanceId}: cost=$${(lastCostUsd || 0).toFixed(4)} cache_hit=${cacheRatio}% (read=${lastCacheRead || 0} create=${lastCacheCreation || 0})`)
       try {
-        const inst = db.prepare('SELECT agent_role FROM instances WHERE id = ?').get(instanceId) as { agent_role: string } | undefined
         db.prepare(
-          'UPDATE token_usage SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)'
-        ).run(resolvedSessionId || null, lastInputTokens || 0, lastOutputTokens || 0, lastCostUsd || 0, instanceId, instanceId)
+          `UPDATE token_usage
+           SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
+               cache_creation_tokens = ?, cache_read_tokens = ?, is_overdrive_session = ?
+           WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)`
+        ).run(
+          resolvedSessionId || null,
+          lastInputTokens || 0,
+          lastOutputTokens || 0,
+          lastCostUsd || 0,
+          lastCacheCreation || 0,
+          lastCacheRead || 0,
+          sessionId ? 1 : 0,
+          instanceId,
+          instanceId
+        )
       } catch { /* non-critical */ }
+    } else {
+      console.warn(`[claude-process] No token data captured for ${instanceId} — result event may not have arrived`)
+    }
+
+    // Clean up temp MCP config file if orchestrator generated one
+    if (mcpConfigPath && mcpConfigPath.includes('nasklaude-mcp-')) {
+      try { fs.unlinkSync(mcpConfigPath) } catch { /* already gone */ }
     }
 
     // Broadcast exit event
@@ -311,6 +365,7 @@ export function sendMessage(opts: SendMessageOpts): { sessionId: string } {
     if (resolvedSessionId && cwd) {
       sanitizeSession(cwd, resolvedSessionId).catch(() => {})
     }
+
   })
 
   child.on('error', (err) => {

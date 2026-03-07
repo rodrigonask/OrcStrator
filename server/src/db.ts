@@ -299,6 +299,60 @@ function migration012(): void {
   setSchemaVersion(12)
 }
 
+function migration013(): void {
+  const columns: Array<[string, string]> = [
+    ['token_usage', 'cache_creation_tokens INTEGER DEFAULT 0'],
+    ['token_usage', 'cache_read_tokens INTEGER DEFAULT 0'],
+    ['token_usage', 'is_overdrive_session INTEGER DEFAULT 0'],
+  ]
+  for (const [table, col] of columns) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
+    } catch {
+      // column already exists
+    }
+  }
+  setSchemaVersion(13)
+}
+
+function migration014(): void {
+  // Add schedule/executions/skill columns
+  const columns: Array<[string, string]> = [
+    ['pipeline_tasks', 'schedule TEXT DEFAULT NULL'],
+    ['pipeline_tasks', "executions TEXT DEFAULT '[]'"],
+    ['pipeline_tasks', 'skill TEXT DEFAULT NULL'],
+  ]
+  for (const [table, col] of columns) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
+    } catch {
+      // column already exists
+    }
+  }
+
+  // Migrate staging tasks → backlog with stuck label
+  const stagingTasks = db.prepare(
+    "SELECT id, labels FROM pipeline_tasks WHERE \"column\" = 'staging'"
+  ).all() as Array<{ id: string; labels: string }>
+  for (const task of stagingTasks) {
+    let labels: string[]
+    try { labels = JSON.parse(task.labels || '[]') } catch { labels = [] }
+    if (!labels.includes('stuck')) labels.push('stuck')
+    db.prepare("UPDATE pipeline_tasks SET \"column\" = 'backlog', labels = ? WHERE id = ?")
+      .run(JSON.stringify(labels), task.id)
+  }
+  if (stagingTasks.length > 0) {
+    console.log(`[migration014] Migrated ${stagingTasks.length} staging tasks → backlog with stuck label`)
+  }
+
+  // Update columnLabels setting to remove staging, add scheduled
+  db.prepare("UPDATE settings SET value = ? WHERE key = 'columnLabels'").run(
+    JSON.stringify({ backlog: 'Inbox', scheduled: 'Scheduled', spec: 'Planning', build: 'Building', qa: 'Testing', ship: 'Publishing', done: 'Done' })
+  )
+
+  setSchemaVersion(14)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -349,6 +403,14 @@ function runMigrations(): void {
   if (currentVersion < 12) {
     migration012()
   }
+
+  if (currentVersion < 13) {
+    migration013()
+  }
+
+  if (currentVersion < 14) {
+    migration014()
+  }
 }
 
 function initDb(): void {
@@ -356,6 +418,7 @@ function initDb(): void {
   db = new Database(DB_PATH)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  db.pragma('auto_vacuum = INCREMENTAL')
   runMigrations()
 }
 

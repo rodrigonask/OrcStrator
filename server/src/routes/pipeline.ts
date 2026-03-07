@@ -1,16 +1,21 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import * as taskManager from '../services/task-manager.js'
-import type { PipelineColumn, PipelineTask, TaskAttachment, TaskComment } from '@nasklaude/shared'
+import type { PipelineColumn, PipelineTask, TaskAttachment, TaskComment, ScheduleConfig } from '@nasklaude/shared'
+import { computeNextRun } from '@nasklaude/shared'
 import crypto from 'crypto'
 
 export default async function pipelineRoutes(app: FastifyInstance): Promise<void> {
-  // List all project pipelines
-  app.get('/pipelines', async () => {
+  // List all project pipelines (lightweight: excludes done tasks, history, full descriptions)
+  app.get('/pipelines', async (request) => {
+    const query = request.query as { includeDone?: string }
+    const includeDone = query.includeDone === 'true'
     const rows = db.prepare('SELECT DISTINCT project_id FROM pipeline_tasks').all() as Array<{ project_id: string }>
-    const pipelines: Record<string, PipelineTask[]> = {}
+    const pipelines: Record<string, unknown[]> = {}
     for (const row of rows) {
-      pipelines[row.project_id] = taskManager.getTasksForProject(row.project_id)
+      pipelines[row.project_id] = includeDone
+        ? taskManager.getTasksForProject(row.project_id, true)
+        : taskManager.getTasksForProjectLight(row.project_id)
     }
     return pipelines
   })
@@ -18,7 +23,10 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
   // Get tasks for a specific project
   app.get('/pipelines/:projectId', async (request) => {
     const { projectId } = request.params as { projectId: string }
-    return taskManager.getTasksForProject(projectId)
+    const query = request.query as { includeDone?: string }
+    return query.includeDone === 'true'
+      ? taskManager.getTasksForProject(projectId, true)
+      : taskManager.getTasksForProjectLight(projectId)
   })
 
   // Create task
@@ -37,7 +45,8 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       groupIndex: body.groupIndex as number | undefined,
       groupTotal: body.groupTotal as number | undefined,
       dependsOn: body.dependsOn as string[] | undefined,
-      createdBy: body.createdBy as string | undefined
+      createdBy: body.createdBy as string | undefined,
+      skill: body.skill as string | undefined,
     })
     reply.code(201)
     return task
@@ -52,8 +61,20 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       description: body.description as string | undefined,
       priority: body.priority as 1 | 2 | 3 | 4 | undefined,
       labels: body.labels as string[] | undefined,
-      dependsOn: body.dependsOn as string[] | undefined
+      dependsOn: body.dependsOn as string[] | undefined,
+      skill: body.skill as string | undefined,
     })
+  })
+
+  // Update task schedule
+  app.put('/pipelines/:projectId/tasks/:taskId/schedule', async (request, reply) => {
+    const { taskId } = request.params as { projectId: string; taskId: string }
+    const schedule = request.body as ScheduleConfig
+    if (!schedule || !schedule.type) {
+      reply.code(400)
+      return { error: 'schedule.type is required' }
+    }
+    return taskManager.updateTaskSchedule(taskId, schedule)
   })
 
   // Delete task
@@ -114,8 +135,16 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       reply.code(400)
       return { error: 'Comment body is required' }
     }
-    const id = crypto.randomUUID()
     const now = Date.now()
+    // Dedup guard: reject if same body was posted for this task within 60s
+    const recent = db.prepare(
+      'SELECT id FROM task_comments WHERE task_id = ? AND body = ? AND created_at > ?'
+    ).get(taskId, body.body.trim(), now - 60_000) as Record<string, unknown> | undefined
+    if (recent) {
+      reply.code(409)
+      return { error: 'Duplicate comment', existingId: recent.id }
+    }
+    const id = crypto.randomUUID()
     const author = body.author?.trim() || 'human'
     db.prepare(
       'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -130,5 +159,38 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     const query = request.query as { column?: PipelineColumn; role?: string }
     const task = taskManager.getNextTask(projectId, query.column, query.role)
     return task || null
+  })
+
+  // Get scheduled tasks with upcoming runs for the next N days
+  app.get('/pipelines/:projectId/scheduled-upcoming', async (request) => {
+    const { projectId } = request.params as { projectId: string }
+    const query = request.query as { days?: string }
+    const days = parseInt(query.days || '30', 10)
+    const now = Date.now()
+    const horizon = now + days * 24 * 60 * 60 * 1000
+
+    const rows = db.prepare(
+      "SELECT * FROM pipeline_tasks WHERE project_id = ? AND \"column\" = 'scheduled'"
+    ).all(projectId) as Record<string, unknown>[]
+
+    return rows.map(row => {
+      let schedule: ScheduleConfig | null = null
+      try { schedule = row.schedule ? JSON.parse(row.schedule as string) : null } catch { /* ignore */ }
+      let executions: unknown[] = []
+      try { executions = JSON.parse((row.executions as string) || '[]') } catch { /* ignore */ }
+
+      const nextRunAt = schedule ? (schedule.nextRunAt ?? computeNextRun(schedule, now)) : undefined
+
+      return {
+        id: row.id,
+        title: row.title,
+        skill: row.skill,
+        schedule,
+        executions: (executions as Array<Record<string, unknown>>).slice(-5), // last 5 runs
+        nextRunAt,
+        withinHorizon: nextRunAt != null && nextRunAt <= horizon,
+        currentlyRunning: schedule?.currentlyRunning ?? false,
+      }
+    }).filter(t => t.schedule != null)
   })
 }

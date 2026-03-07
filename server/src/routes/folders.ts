@@ -161,4 +161,23 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
 
     return { released: instances.length, instanceIds }
   })
+
+  // Global shutdown — kill every running session across all folders
+  app.post('/shutdown', async () => {
+    const instances = db.prepare('SELECT * FROM instances').all() as Record<string, unknown>[]
+
+    for (const inst of instances) {
+      killProcess(inst.id as string)
+    }
+
+    db.prepare("UPDATE instances SET state = 'idle', session_id = NULL").run()
+    db.prepare('UPDATE folders SET orchestrator_active = 0').run()
+
+    const instanceIds = instances.map(i => i.id as string)
+    for (const inst of instances) {
+      broadcastEvent({ type: 'instance:updated', payload: { id: inst.id, state: 'idle', sessionId: null } })
+    }
+
+    return { killed: instances.length, instanceIds }
+  })
 }

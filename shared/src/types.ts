@@ -30,7 +30,7 @@ export interface InstanceConfig {
   idleRestartMinutes: number
   sortOrder: number
   createdAt: number
-  agentRole?: 'planner' | 'builder' | 'tester' | 'promoter'
+  agentRole?: 'planner' | 'builder' | 'tester' | 'promoter' | 'scheduler'
   specialization?: string
   orchestratorManaged?: boolean
   activeTaskId?: string
@@ -41,6 +41,7 @@ export interface InstanceConfig {
   overdriveTasks?: number
   overdriveStartedAt?: number
   lastTaskAt?: number
+  contextHealth?: 'cold' | 'fresh' | 'warm' | 'heavy' | 'stale'
 }
 
 // === CHAT MESSAGES ===
@@ -72,7 +73,7 @@ export type ClaudeStreamEvent =
   | { type: 'tool-start'; instanceId: string; toolId: string; toolName: string }
   | { type: 'tool-input-delta'; instanceId: string; toolId: string; input: string }
   | { type: 'tool-complete'; instanceId: string; toolId: string; output: string; isError?: boolean }
-  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number }
+  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number }
   | { type: 'error'; instanceId: string; message: string }
   | { type: 'system'; instanceId: string; sessionId?: string }
   | { type: 'raw-line'; instanceId: string; line: string; isStderr?: boolean }
@@ -86,14 +87,74 @@ export interface ClaudeProcessExitEvent {
   outputTokens?: number
 }
 
+// === TOKEN SAVINGS ===
+
+export interface DailySavingsEntry {
+  day: string
+  totalInput: number
+  cacheRead: number
+  cacheCreation: number
+  coldInput: number
+  totalOutput: number
+  totalCost: number
+  sessions: number
+  overdriveSessions: number
+}
+
+export interface SavingsSummary {
+  days: DailySavingsEntry[]
+  totalCacheRead: number
+  totalSessions: number
+  overdriveSessions: number
+  overdrivePct: number
+  savedTokens: number
+  savedUsd: number
+  recommendation: string | null
+}
+
 // === PIPELINE ===
 
-export type PipelineColumn = 'backlog' | 'spec' | 'build' | 'qa' | 'staging' | 'ship' | 'done'
+export type PipelineColumn = 'backlog' | 'scheduled' | 'spec' | 'build' | 'qa' | 'ship' | 'done'
 
 export interface TaskAttachment {
   id: string
   name: string
   dataUrl: string
+}
+
+export interface ScheduleConfig {
+  type: 'once' | 'daily' | 'weekly' | 'interval' | 'monthly'
+  enabled: boolean
+  // once
+  runAt?: number
+  // daily
+  hours?: number[]
+  // weekly
+  days?: number[]
+  weeklyHour?: number
+  // interval
+  intervalValue?: number
+  intervalUnit?: 'hours' | 'days' | 'weeks'
+  // monthly
+  dayOfMonth?: number
+  monthlyHour?: number
+  // runtime (server-managed)
+  nextRunAt?: number
+  lastRunAt?: number
+  fireCount?: number
+  currentlyRunning?: boolean
+  currentInstanceId?: string
+}
+
+export interface ScheduleExecution {
+  runId: string
+  startedAt: number
+  endedAt?: number
+  instanceId: string
+  status: 'running' | 'completed' | 'failed'
+  summary?: string
+  tokensUsed?: number
+  costUsd?: number
 }
 
 export interface PipelineTask {
@@ -118,6 +179,9 @@ export interface PipelineTask {
   lockedBy?: string
   lockedAt?: number
   retryCount?: number
+  schedule?: ScheduleConfig
+  executions?: ScheduleExecution[]
+  skill?: string
 }
 
 export interface TaskComment {
@@ -165,7 +229,20 @@ export interface SkillConfig {
   createdAt: number
 }
 
+// === MCP SERVER DISCOVERY ===
+
+export interface McpServerInfo {
+  name: string
+  type: string
+  source: string    // 'global' | 'project:<dir>'
+  command?: string
+}
+
 // === SETTINGS ===
+
+export type PermissionMode = 'bypass' | 'plan' | 'default'
+export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'default'
+export type AgentRole = 'planner' | 'builder' | 'tester' | 'promoter' | 'scheduler'
 
 export interface AppSettings {
   globalFlags: string[]
@@ -178,6 +255,12 @@ export interface AppSettings {
   port: number
   orchestratorAgentNames?: { planner: string; builder: string; tester: string; promoter: string }
   orchestratorAllowSpawn?: boolean
+  orchestratorMcpServers?: { planner: string[]; builder: string[]; tester: string[]; promoter: string[] }
+  orchestratorModels?: Record<AgentRole, AgentModel>
+  orchestratorTools?: Record<AgentRole, string[]>
+  permissionMode?: PermissionMode
+  disableCache?: boolean
+  maxTokens?: number
   userName?: string
   userEmoji?: string
   columnLabels?: Partial<Record<PipelineColumn, string>>
@@ -211,6 +294,7 @@ export interface AccountProfile {
   messagesSent: number
   tokensSent: number
   tokensReceived: number
+  tasksDone: number
 }
 
 export interface TourState {

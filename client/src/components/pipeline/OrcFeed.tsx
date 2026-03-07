@@ -6,6 +6,8 @@ interface FeedEntry {
   id: string
   timestamp: number
   text: string
+  agentName?: string
+  agentRole?: string
   type: 'assign' | 'release' | 'move' | 'status'
 }
 
@@ -23,8 +25,10 @@ export function OrcFeed({ folderId }: { folderId: string }) {
   useEffect(() => {
     const unsub1 = api.onOrchestratorAssigned((p: any) => {
       if (p.folderId !== folderId) return
-      const instanceName = instances.find(i => i.id === p.instanceId)?.name ?? p.instanceId.slice(0, 6)
-      addEntry({ type: 'assign', text: `Assigned "${p.taskTitle}" to ${instanceName}` })
+      const inst = instances.find(i => i.id === p.instanceId)
+      const instanceName = inst?.name ?? p.instanceId.slice(0, 6)
+      const agentRole = inst?.agentRole ?? ''
+      addEntry({ type: 'assign', text: `Assigned "${p.taskTitle}" to`, agentName: instanceName, agentRole })
     })
 
     const unsub2 = api.onOrchestratorLockReleased((p: any) => {
@@ -43,8 +47,8 @@ export function OrcFeed({ folderId }: { folderId: string }) {
   return (
     <div className="orc-feed">
       <div className="orc-feed-header">
-        <span className="orc-feed-title">The Orc</span>
-        <span className="orc-feed-subtitle">Live activity</span>
+        <span className="orc-feed-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>The Orc</span>
+        <span className="orc-feed-subtitle" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Live activity</span>
       </div>
       <div className="orc-feed-list">
         {entries.length === 0 && (
@@ -53,7 +57,12 @@ export function OrcFeed({ folderId }: { folderId: string }) {
         {entries.map(e => (
           <div key={e.id} className={`orc-feed-entry orc-feed-${e.type}`}>
             <span className="orc-feed-time">{fmt(e.timestamp)}</span>
-            <span className="orc-feed-text">{e.text}</span>
+            <span className="orc-feed-text">
+              {e.text}
+              {e.agentName && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 7, marginLeft: 4, color: e.agentRole ? `var(--role-${e.agentRole})` : 'var(--text-primary)' }}>{e.agentName}</span>
+              )}
+            </span>
           </div>
         ))}
         <div ref={bottomRef} />

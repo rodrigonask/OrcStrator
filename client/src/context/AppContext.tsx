@@ -41,7 +41,7 @@ interface UISlice {
   sidebarCollapsed: boolean
   showFolderBrowser: boolean
   editingFolderId: string | null
-  view: 'chat' | 'pipeline'
+  view: 'chat' | 'pipeline' | 'monitor'
   activePipelineId: string | null
   connected: boolean
   usage: UsageData | null
@@ -85,7 +85,7 @@ export type Action =
   | { type: 'TOOL_COMPLETE'; payload: { instanceId: string; toolId: string; output: string; isError?: boolean } }
   | { type: 'SET_MESSAGE_TOKENS'; payload: { instanceId: string; messageId: string; inputTokens?: number; outputTokens?: number; costUsd?: number } }
   | { type: 'TOGGLE_SIDEBAR' }
-  | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' }
+  | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' | 'monitor' }
   | { type: 'SET_ACTIVE_PIPELINE'; payload: string | null }
   | { type: 'CLEAR_UNREAD'; payload: string }
   | { type: 'INCREMENT_UNREAD'; payload: string }
@@ -221,6 +221,9 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
     case 'ADD_MESSAGE': {
       const instId = action.payload.instanceId
       const existing = state.messages[instId] || []
+      if (action.payload.id && existing.some(m => m.id === action.payload.id)) {
+        return state
+      }
       const updated = [...existing, action.payload]
       const capped = updated.length > 200 ? updated.slice(-200) : updated
       return { ...state, messages: { ...state.messages, [instId]: capped } }
@@ -570,9 +573,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Dynamic page title
   useEffect(() => {
     const id = uiState.selectedInstanceId
-    if (!id) { document.title = 'OrcStrator'; return }
+    if (!id) { document.title = 'Orcstrator'; return }
     const instance = instState.instances.find(i => i.id === id)
-    if (!instance) { document.title = 'OrcStrator'; return }
+    if (!instance) { document.title = 'Orcstrator'; return }
     const folder = instState.folders.find(f => f.id === instance.folderId)
     const parts: string[] = []
     if (folder) parts.push(folder.displayName || folder.name)

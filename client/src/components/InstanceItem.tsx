@@ -30,7 +30,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   const [showSkillsMenu, setShowSkillsMenu] = useState(false)
 
   const animEnabled = settings.animationsEnabled !== false
-  const soundEnabled = settings.soundsEnabled === true
+  const soundEnabled = settings.soundsEnabled !== false
 
   const [animClass, setAnimClass] = useState<string | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
@@ -197,6 +197,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   return (
     <div
       className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${activeAnimClass}`}
+      style={instance.state === 'running' && instance.agentRole ? { boxShadow: `0 0 8px 2px color-mix(in srgb, var(--role-${instance.agentRole}) 40%, transparent)` } : undefined}
       {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
       onClick={() => {
         selectInstance(instance.id)
@@ -206,16 +207,19 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     >
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
-        <div className="instance-name">
+        <div className="instance-name" style={{ fontFamily: 'var(--font-mono)', fontSize: '9px' }}>
           {instance.agentRole
             ? (
               <>
-                <span className={`instance-role-label role-${instance.agentRole}${isOrchestratorLocked ? ' locked' : ''}`}>
+                <span
+                  className={`instance-role-label role-${instance.agentRole}${isOrchestratorLocked ? ' locked' : ''}`}
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: `var(--role-${instance.agentRole})` }}
+                >
                   {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
                 </span>
-                <span className="instance-name-sep"> | </span>
+                <span className="instance-name-sep" style={{ fontFamily: 'var(--font-mono)' }}> | </span>
                 {instance.name}
-                {instance.specialization && <span className="spec-pill compact">{instance.specialization}</span>}
+                {instance.specialization && <span className="spec-pill compact" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>{instance.specialization}</span>}
               </>
             )
             : instance.name
@@ -224,14 +228,15 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
           {overdriveLevel > 0 && (
             <span
               className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
+              style={{ fontFamily: 'var(--font-pixel)', fontSize: '7px' }}
               title={`Overdrive Lv.${overdriveLevel} — ${overdrive.label} | ${instance.overdriveTasks} tasks | Cache expires in ${minsLeft}min | ~${overdrive.savings}% token savings`}
             >
-              OD-{overdriveLevel}
+              Lv.{overdriveLevel}
             </span>
           )}
         </div>
         {instance.orchestratorManaged && instance.activeTaskTitle && instance.state === 'running' && (
-          <div className="instance-active-task">
+          <div className="instance-active-task" style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
             <span className="instance-active-task-elapsed">{elapsedMins}m</span>{' on '}
             <button
               className="instance-active-task-link"

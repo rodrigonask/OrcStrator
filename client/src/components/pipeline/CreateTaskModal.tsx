@@ -16,6 +16,7 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
   const [labelInput, setLabelInput] = useState('')
   const [labels, setLabels] = useState<string[]>([])
   const [attachments, setAttachments] = useState<TaskAttachment[]>([])
+  const [skill, setSkill] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -96,12 +97,13 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
         priority,
         labels,
         attachments,
+        skill: skill.trim() || undefined,
       })
     } catch (err) {
       console.error('Failed to create task:', err)
     }
     onClose()
-  }, [projectId, title, description, column, priority, labels, attachments, onClose])
+  }, [projectId, title, description, column, priority, labels, attachments, skill, onClose])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -114,7 +116,7 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
     <div className="modal-overlay create-task-modal" onClick={onClose}>
       <div className="modal-panel" onClick={e => e.stopPropagation()} onPaste={handlePaste} onKeyDown={handleKeyDown}>
         <div className="modal-header">
-          <span className="modal-title">Create Task</span>
+          <span className="modal-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Create Task</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body">
@@ -215,6 +217,19 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
             </div>
           </div>
 
+          {/* Skill (only for scheduled column) */}
+          {column === 'scheduled' && (
+            <div className="form-group">
+              <label className="form-label">Skill</label>
+              <input
+                className="form-input"
+                placeholder="e.g. skool-commenter, google-ads-optimizer"
+                value={skill}
+                onChange={e => setSkill(e.target.value)}
+              />
+            </div>
+          )}
+
           {/* Labels */}
           <div className="form-group">
             <label className="form-label">Labels</label>
@@ -241,7 +256,7 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
           </div>
         </div>
         <div className="modal-footer">
-          <span className="input-hint" style={{ marginRight: 'auto', alignSelf: 'center' }}>Ctrl+Enter to save</span>
+          <span className="input-hint" style={{ marginRight: 'auto', alignSelf: 'center', fontFamily: 'var(--font-mono)', fontSize: 7 }}>Ctrl+Enter to save</span>
           <button className="btn" onClick={onClose}>Cancel</button>
           <button
             className="btn btn-primary"

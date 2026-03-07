@@ -38,6 +38,11 @@ export function CommandMenu() {
       action: () => dispatch({ type: 'SET_VIEW', payload: 'pipeline' }),
     },
     {
+      name: '/monitor',
+      description: 'Open process monitor — view instances, kill switch',
+      action: () => dispatch({ type: 'SET_VIEW', payload: 'monitor' }),
+    },
+    {
       name: '/chat',
       description: 'Switch back to chat view',
       action: () => dispatch({ type: 'SET_VIEW', payload: 'chat' }),
@@ -150,11 +155,11 @@ export function CommandMenu() {
               onMouseEnter={() => setActiveIndex(i)}
             >
               <div>
-                <div className="command-menu-item-name">{cmd.name}</div>
-                <div className="command-menu-item-desc">{cmd.description}</div>
+                <div className="command-menu-item-name" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>{cmd.name}</div>
+                <div className="command-menu-item-desc" style={{ fontFamily: 'var(--font-mono)' }}>{cmd.description}</div>
               </div>
               {cmd.shortcut && (
-                <span className="command-menu-item-shortcut">{cmd.shortcut}</span>
+                <span className="command-menu-item-shortcut" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>{cmd.shortcut}</span>
               )}
             </div>
           ))}

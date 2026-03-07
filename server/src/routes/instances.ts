@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { sendMessage, killProcess } from '../services/claude-process.js'
+import { sendMessage, killProcess, isRunning } from '../services/claude-process.js'
 import { preprocessImages, detectMediaType } from '../services/image-processor.js'
 import { getLastAssistantMessage } from '../services/session-sync.js'
 import { orchestrator } from '../services/orchestrator.js'
@@ -156,6 +156,18 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     })
 
     return { sessionId: result.sessionId }
+  })
+
+  // Kill instance process (stops Claude, resets to idle — does not delete instance)
+  app.post('/instances/:id/kill', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const row = db.prepare('SELECT id FROM instances WHERE id = ?').get(id) as { id: string } | undefined
+    if (!row) { reply.code(404); return { error: 'Not found' } }
+    const wasRunning = isRunning(id)
+    killProcess(id)
+    db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(id)
+    broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'idle' } })
+    return { killed: wasRunning }
   })
 
   // Pause instance

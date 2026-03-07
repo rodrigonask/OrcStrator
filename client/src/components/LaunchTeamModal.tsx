@@ -71,7 +71,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel launch-team-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Launch a Team</span>
+          <span className="modal-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Launch a Team</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body">
@@ -89,7 +89,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
             {rows.map((row, idx) => (
               <div key={row.role} className={`launch-team-row ${!row.include ? 'excluded' : ''}`}>
                 <div className="launch-team-role">
-                  <span className={`role-pill role-${row.role}`}>
+                  <span className={`role-pill role-${row.role}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>
                     {agentNames[row.role]}
                   </span>
                 </div>
@@ -126,7 +126,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
             onClick={handleSpawn}
             disabled={selectedCount === 0 || spawning}
           >
-            {spawning ? 'Spawning...' : `Spawn Selected (${selectedCount})`}
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>{spawning ? 'Spawning...' : `Spawn Selected (${selectedCount})`}</span>
           </button>
         </div>
       </div>

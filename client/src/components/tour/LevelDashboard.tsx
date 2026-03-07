@@ -86,18 +86,18 @@ export function LevelDashboard({ onClose }: LevelDashboardProps) {
       <div className="level-dashboard" onClick={e => e.stopPropagation()}>
         <div className="level-dashboard-hero">
           <div style={{ fontSize: 36 }}>{TIER_ICONS[currentLevel.tier] || '\uD83C\uDF31'}</div>
-          <div className="level-dashboard-level">{currentLevel.level}</div>
-          <div className="level-dashboard-name" style={{ color: TIER_COLORS[currentLevel.tier] }}>
+          <div className="level-dashboard-level" style={{ fontFamily: 'var(--font-pixel)', fontSize: 24 }}>{currentLevel.level}</div>
+          <div className="level-dashboard-name" style={{ color: TIER_COLORS[currentLevel.tier], fontFamily: 'var(--font-pixel)', fontSize: 10 }}>
             {currentLevel.name}
           </div>
           <div className="level-dashboard-xp">
-            <div className="level-dashboard-xp-text">
+            <div className="level-dashboard-xp-text" style={{ fontFamily: 'var(--font-pixel)', fontSize: 7 }}>
               {totalXp.toLocaleString()} XP total
               {nextLevel && ` | ${xpIntoLevel} / ${xpForNext} to next level`}
             </div>
-            <div className="level-dashboard-xp-bar">
+            <div className="level-dashboard-xp-bar xp-bar-track">
               <div
-                className="level-dashboard-xp-fill"
+                className="level-dashboard-xp-fill xp-bar-fill"
                 style={{ width: `${xpProgress}%` }}
               />
             </div>
@@ -122,12 +122,12 @@ export function LevelDashboard({ onClose }: LevelDashboardProps) {
                 }}>
                   <span>{tierIcon}</span>
                   <span style={{
-                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                    fontFamily: 'var(--font-pixel)', fontSize: 8, fontWeight: 700, textTransform: 'uppercase',
                     letterSpacing: 1, color: tierReached ? tierColor : 'var(--text-muted)',
                   }}>
                     {group.tier}
                   </span>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  <span style={{ fontFamily: 'var(--font-pixel)', fontSize: 7, color: 'var(--text-muted)' }}>
                     Lv {firstLevel}-{lastLevel}
                   </span>
                 </div>
@@ -149,22 +149,22 @@ export function LevelDashboard({ onClose }: LevelDashboardProps) {
                       <span style={{
                         width: 22, height: 22, borderRadius: '50%',
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: 10, fontWeight: 700, marginRight: 8,
+                        fontFamily: 'var(--font-pixel)', fontSize: 7, fontWeight: 700, marginRight: 8,
                         background: unlocked ? tierColor : 'var(--bg-tertiary)',
                         color: unlocked ? '#fff' : 'var(--text-muted)',
                       }}>
                         {unlocked && level.level < currentLevel.level ? '\u2713' : level.level}
                       </span>
                       <span>
-                        <strong>{level.name}</strong>
-                        <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontSize: 11 }}>
+                        <strong style={{ fontFamily: 'var(--font-pixel)', fontSize: 7 }}>{level.name}</strong>
+                        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', marginLeft: 6, fontSize: 10 }}>
                           {level.xpRequired.toLocaleString()} XP
                         </span>
                       </span>
                       {features.length > 0 && (
                         <div style={{ marginLeft: 30, marginTop: 4 }}>
                           {features.map(f => (
-                            <div key={f} style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '1px 0' }}>
+                            <div key={f} style={{ fontFamily: 'var(--font-pixel)', fontSize: 7, color: 'var(--text-secondary)', padding: '2px 0' }}>
                               {f}
                             </div>
                           ))}

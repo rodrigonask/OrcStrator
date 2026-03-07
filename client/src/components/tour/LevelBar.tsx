@@ -14,12 +14,12 @@ export function LevelBar() {
     <>
       <div className="level-bar" onClick={() => setShowDashboard(true)}>
         <div className="level-bar-header">
-          <span className="level-number">Lv.{currentLevel.level}</span>
-          <span className="level-name">{currentLevel.name}</span>
+          <span className="level-number" style={{ fontFamily: 'var(--font-pixel)', fontSize: 10 }}>Lv.{currentLevel.level}</span>
+          <span className="level-name" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>{currentLevel.name}</span>
         </div>
-        <div className="level-xp-bar-track">
+        <div className="level-xp-bar-track xp-bar-track">
           <div
-            className="level-xp-bar-fill"
+            className="level-xp-bar-fill xp-bar-fill"
             style={{ width: `${xpProgress}%` }}
           />
         </div>

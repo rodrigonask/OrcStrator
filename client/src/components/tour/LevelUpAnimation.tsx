@@ -67,9 +67,9 @@ export function LevelUpAnimation({ level, onComplete }: LevelUpAnimationProps) {
         ))}
       </div>
       <div className="level-up-content">
-        <div className="level-up-badge">Lv.{level}</div>
-        <div className="level-up-title">Level Up!</div>
-        <div className="level-up-subtitle">
+        <div className="level-up-badge" style={{ fontFamily: 'var(--font-pixel)', fontSize: 10 }}>Lv.{level}</div>
+        <div className="level-up-title" style={{ fontFamily: 'var(--font-pixel)' }}>Level Up!</div>
+        <div className="level-up-subtitle" style={{ fontFamily: 'var(--font-pixel)', fontSize: 9 }}>
           You are now a {levelData.name}
         </div>
       </div>

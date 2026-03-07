@@ -23,8 +23,8 @@ export function ActivityBubble({ toolCalls, isRunning, activityLabel }: Activity
     <div className="activity-bubble">
       <div className="activity-bubble-header" onClick={() => setExpanded(e => !e)}>
         <span className={isRunning ? 'activity-dot' : 'activity-bubble-dot'} />
-        <span className="activity-text">{activityLabel}</span>
-        <span className="activity-bubble-count">{toolCalls.length} actions ›</span>
+        <span className="activity-text" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>{activityLabel}</span>
+        <span className="activity-bubble-count" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>{toolCalls.length} actions ›</span>
       </div>
       {expanded && (
         <div className="activity-bubble-tools">

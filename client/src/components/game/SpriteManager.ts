@@ -12,7 +12,6 @@ interface SheetEntry {
 }
 
 const SHEETS: SheetEntry[] = [
-  { alias: 'test', src: '/spritesheets/test.json' },
   { alias: 'dragon', src: '/spritesheets/dragon.json' },
   { alias: 'orc', src: '/spritesheets/orc.json' },
   { alias: 'goblin', src: '/spritesheets/goblin.json' },

@@ -37,11 +37,27 @@ export function createCharSprite(
 
   if (idleFrames.length > 0) {
     const sprite = new AnimatedSprite(idleFrames)
-    sprite.animationSpeed = 0.12 // ~8fps at 60fps ticker
-    sprite.play()
+    sprite.animationSpeed = 0.15 // Fast when playing
+    sprite.loop = false
+    sprite.gotoAndStop(0) // Start on frame 0, stopped
     sprite.width = size
     sprite.height = size
     sprite.alpha = bodyAlpha
+
+    // Random idle animation: play once every 7-30 seconds
+    const scheduleNext = () => {
+      const delayMs = 7000 + Math.random() * 23000
+      const timer = setTimeout(() => {
+        if (!sprite.destroyed) {
+          sprite.gotoAndPlay(0)
+        }
+      }, delayMs)
+      // Store timer for cleanup
+      ;(charContainer as unknown as Record<string, unknown>)._idleTimer = timer
+    }
+    sprite.onComplete = () => { scheduleNext() }
+    // Start first animation at a random offset so they don't all sync
+    setTimeout(() => { if (!sprite.destroyed) sprite.gotoAndPlay(0) }, Math.random() * 5000)
 
     if (isRunning) {
       // Green border effect via a Graphics underlay
@@ -94,17 +110,17 @@ export function createCharSprite(
   // Role initial badge (top-left, small) — for sprites only
   if (idleFrames.length > 0) {
     const badgeBg = new Graphics()
-    badgeBg.roundRect(0, 0, 14, 14, 3)
+    badgeBg.roundRect(0, 0, 16, 16, 3)
     badgeBg.fill({ color: roleColor, alpha: 0.85 })
     charContainer.addChild(badgeBg)
 
     const badge = new Text({
       text: (role || '?')[0].toUpperCase(),
-      style: { fontFamily: 'monospace', fontSize: 9, fill: 0xffffff, fontWeight: 'bold' },
+      style: { fontFamily: 'monospace', fontSize: 10, fill: 0xffffff, fontWeight: 'bold' },
     })
     badge.anchor.set(0.5, 0.5)
-    badge.x = 7
-    badge.y = 7
+    badge.x = 8
+    badge.y = 8
     charContainer.addChild(badge)
   }
 
@@ -116,13 +132,25 @@ export function createCharSprite(
     charContainer.addChild(dot)
   }
 
-  // Name label below sprite
+  // Nameplate below sprite: dark pill background + role color accent bar + name text
+  const nameStr = instance.name.length > 12 ? instance.name.slice(0, 12) : instance.name
+  const nameWidth = Math.max(nameStr.length * 6, 30)
+  const plateBg = new Graphics()
+  plateBg.roundRect(-2, size + 3, nameWidth + 10, 13, 3)
+  plateBg.fill({ color: 0x000000, alpha: 0.65 })
+  charContainer.addChild(plateBg)
+
+  const accentBar = new Graphics()
+  accentBar.rect(-2, size + 3, 3, 13)
+  accentBar.fill({ color: roleColor, alpha: 0.9 })
+  charContainer.addChild(accentBar)
+
   const label = new Text({
-    text: instance.name.slice(0, 8),
-    style: { fontFamily: 'monospace', fontSize: 8, fill: 0x8899aa },
+    text: nameStr,
+    style: { fontFamily: 'monospace', fontSize: 9, fill: 0xeeeeff },
   })
-  label.x = 0
-  label.y = size + 2
+  label.x = 3
+  label.y = size + 4
   charContainer.addChild(label)
 
   // Level label below name (only for level > 1)
@@ -140,7 +168,7 @@ export function createCharSprite(
       style: { fontFamily: 'monospace', fontSize: 7, fill: lvlColor },
     })
     levelLabel.x = 0
-    levelLabel.y = size + 12
+    levelLabel.y = size + 18
     charContainer.addChild(levelLabel)
   }
 

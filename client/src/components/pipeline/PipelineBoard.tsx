@@ -30,19 +30,32 @@ export function PipelineBoard() {
 
   const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
 
+  const sortedTasksByColumn = useMemo(() => {
+    const result: Record<string, PipelineTask[]> = { ...pipeline.tasksByColumn }
+    // Backlog: stuck tasks sort to top (by priority), then normal tasks (by priority)
+    const backlog = result['backlog'] || []
+    if (backlog.some(t => t.labels.includes('stuck'))) {
+      result['backlog'] = [
+        ...backlog.filter(t => t.labels.includes('stuck')).sort((a, b) => a.priority - b.priority),
+        ...backlog.filter(t => !t.labels.includes('stuck')).sort((a, b) => a.priority - b.priority),
+      ]
+    }
+    return result
+  }, [pipeline.tasksByColumn])
+
   const filteredTasksByColumn = useMemo(() => {
-    if (!searchQuery.trim()) return pipeline.tasksByColumn
+    if (!searchQuery.trim()) return sortedTasksByColumn
     const q = searchQuery.toLowerCase()
     const result: Record<string, PipelineTask[]> = {}
     for (const col of PIPELINE_COLUMNS) {
-      result[col] = (pipeline.tasksByColumn[col] || []).filter(task =>
+      result[col] = (sortedTasksByColumn[col] || []).filter(task =>
         task.title.toLowerCase().includes(q) ||
         (task.description || '').toLowerCase().includes(q) ||
         task.labels.some(l => l.toLowerCase().includes(q))
       )
     }
     return result
-  }, [pipeline.tasksByColumn, searchQuery])
+  }, [sortedTasksByColumn, searchQuery])
 
   const projectId = activePipelineId || folders[0]?.id || ''
   const [dragOverColumn, setDragOverColumn] = useState<PipelineColumn | null>(null)
@@ -92,10 +105,11 @@ export function PipelineBoard() {
   return (
     <div className="pipeline-board">
       <div className="pipeline-header">
-        <span className="pipeline-title">Pipeline Board</span>
+        <span className="pipeline-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 14 }}>Pipeline Board</span>
         <div className="pipeline-search-wrapper">
           <input
             className="pipeline-search-input"
+            style={{ fontFamily: 'var(--font-mono)' }}
             type="text"
             placeholder="Search tasks..."
             value={searchQuery}
@@ -152,6 +166,7 @@ export function PipelineBoard() {
                 {editingColumn === col ? (
                   <input
                     className="pipeline-column-name-input"
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
                     value={editValue}
                     onChange={e => setEditValue(e.target.value)}
                     onBlur={() => handleColumnLabelSave(col)}
@@ -163,11 +178,12 @@ export function PipelineBoard() {
                   <span
                     className="pipeline-column-name"
                     onDoubleClick={() => handleColumnLabelDoubleClick(col)}
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: `var(--col-${col})` }}
                   >
                     {columnLabels[col]}
                   </span>
                 )}
-                <span className="pipeline-column-count">
+                <span className="pipeline-column-count" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
                   {searchQuery
                     ? `${colTasks.length}/${(pipeline.tasksByColumn[col] || []).length}`
                     : colTasks.length}
@@ -207,8 +223,9 @@ export function PipelineBoard() {
                   <div style={{
                     textAlign: 'center',
                     padding: '16px 8px',
-                    color: 'var(--text-muted)',
+                    color: 'var(--text-tertiary)',
                     fontSize: 12,
+                    fontFamily: 'var(--font-mono)',
                   }}>
                     No tasks
                   </div>

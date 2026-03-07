@@ -71,17 +71,18 @@ function saveTokens(tokens: { accessToken?: string; refreshToken?: string; expir
 }
 
 export function generateAuthUrl(): { url: string; verifier: string } {
-  const verifier = crypto.randomBytes(32).toString('base64url')
-  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url')
+  const verifier = crypto.randomBytes(64).toString('base64url').slice(0, 128)
+  const challenge = crypto.createHash('sha256').update(verifier, 'ascii').digest('base64url')
 
   const params = new URLSearchParams({
-    response_type: 'code',
+    code: 'true',
     client_id: OAUTH.clientId,
+    response_type: 'code',
     redirect_uri: OAUTH.redirectUri,
     scope: OAUTH.scopes,
     code_challenge: challenge,
     code_challenge_method: 'S256',
-    state: crypto.randomUUID()
+    state: verifier
   })
 
   saveTokens({ verifier })
@@ -96,18 +97,21 @@ export async function exchangeCode(code: string): Promise<boolean> {
   const { verifier } = getTokens()
   if (!verifier) throw new Error('No verifier found. Start auth flow first.')
 
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: OAUTH.clientId,
-    code,
-    redirect_uri: OAUTH.redirectUri,
-    code_verifier: verifier
-  })
-
   const resp = await fetch(OAUTH.tokenUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString()
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'application/json',
+      'Origin': 'https://console.anthropic.com'
+    },
+    body: JSON.stringify({
+      code,
+      grant_type: 'authorization_code',
+      client_id: OAUTH.clientId,
+      redirect_uri: OAUTH.redirectUri,
+      code_verifier: verifier
+    })
   })
 
   if (!resp.ok) {
@@ -183,7 +187,10 @@ export async function fetchUsage(): Promise<UsageData> {
   try {
     const currentTokens = getTokens()
     const resp = await fetch(OAUTH.usageUrl, {
-      headers: { Authorization: `Bearer ${currentTokens.accessToken}` }
+      headers: {
+        Authorization: `Bearer ${currentTokens.accessToken}`,
+        'anthropic-beta': 'oauth-2025-04-20'
+      }
     })
 
     if (resp.status === 401) {

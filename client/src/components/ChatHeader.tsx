@@ -74,27 +74,31 @@ export function ChatHeader() {
     <div className="chat-header">
       <div className="chat-header-left">
         {instance.agentRole && (
-          <span className={`role-pill role-${instance.agentRole} compact header-role-pill ${isOrchestratorLocked ? 'locked' : ''}`}>
+          <span
+            className={`role-pill role-${instance.agentRole} compact header-role-pill ${isOrchestratorLocked ? 'locked' : ''}`}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: `var(--role-${instance.agentRole})` }}
+          >
             {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
-            {instance.specialization && <span className="role-spec-label">{instance.specialization}</span>}
+            {instance.specialization && <span className="role-spec-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>{instance.specialization}</span>}
           </span>
         )}
         {overdriveLevel > 0 && (
           <span
             className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
             title={`Overdrive Lv.${overdriveLevel} — ${overdrive.label} | ${instance.overdriveTasks} tasks | Cache expires in ${minsLeft}min | ~${overdrive.savings}% token savings`}
+            style={{ fontFamily: 'var(--font-pixel)', fontSize: '7px' }}
           >
-            OD-{overdriveLevel}
+            Lv.{overdriveLevel}
           </span>
         )}
         {instance.agentRole && <span className="chat-instance-name-sep"> | </span>}
-        <span className="chat-instance-name">{instance.name}</span>
-        <span className={`chat-state-badge ${instance.state}`}>
+        <span className="chat-instance-name" style={{ fontFamily: 'var(--font-mono)', fontSize: '9px' }}>{instance.name}</span>
+        <span className={`chat-state-badge ${instance.state}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>
           {instance.state}
         </span>
       </div>
       <div className="chat-header-right">
-        <span className="chat-token-count">
+        <span className="chat-token-count" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
           {totalTokens.input.toLocaleString()}in / {totalTokens.output.toLocaleString()}out
         </span>
         {instance.state === 'running' && (

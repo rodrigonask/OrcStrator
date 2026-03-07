@@ -1,75 +1,75 @@
 {
   "frames": {
-    "archer-0": {
+    "archer-idle-0": {
       "frame": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     },
-    "archer-1": {
+    "archer-idle-1": {
       "frame": {
-        "x": 32,
+        "x": 128,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     },
-    "archer-2": {
+    "archer-idle-2": {
       "frame": {
-        "x": 64,
+        "x": 256,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     },
-    "archer-3": {
+    "archer-idle-3": {
       "frame": {
-        "x": 96,
+        "x": 384,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "sourceSize": {
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       },
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 32,
-        "h": 32
+        "w": 128,
+        "h": 128
       }
     }
   },
@@ -77,17 +77,17 @@
     "image": "archer.png",
     "format": "RGBA8888",
     "size": {
-      "w": 128,
-      "h": 32
+      "w": 512,
+      "h": 128
     },
-    "scale": 1
+    "scale": "1"
   },
   "animations": {
     "archer-idle": [
-      "archer-0",
-      "archer-1",
-      "archer-2",
-      "archer-3"
+      "archer-idle-0",
+      "archer-idle-1",
+      "archer-idle-2",
+      "archer-idle-3"
     ]
   }
 }

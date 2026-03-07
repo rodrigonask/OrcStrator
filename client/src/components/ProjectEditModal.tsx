@@ -91,19 +91,21 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Edit Project</span>
+          <span className="modal-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Edit Project</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-tabs">
           <button
             className={`modal-tab ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => setActiveTab('settings')}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}
           >
             Settings
           </button>
           <button
             className={`modal-tab ${activeTab === 'claude-md' ? 'active' : ''}`}
             onClick={() => setActiveTab('claude-md')}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}
           >
             CLAUDE.md
           </button>
@@ -112,7 +114,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
           {activeTab === 'claude-md' && (
             <div className="claude-md-editor">
               <div className="claude-md-header">
-                <span className="claude-md-path">{folder.path}/CLAUDE.md</span>
+                <span className="claude-md-path" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>{folder.path}/CLAUDE.md</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {claudeMdMsg && <span className="claude-md-msg">{claudeMdMsg}</span>}
                   <button className="btn btn-primary" onClick={handleSaveClaudeMd} disabled={claudeMdSaving}>
@@ -133,7 +135,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
           {/* Emoji + Display Name */}
           <div className="form-row">
             <div className="form-group" style={{ flex: '0 0 auto' }}>
-              <label className="form-label">Icon</label>
+              <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Icon</label>
               <div style={{ position: 'relative' }}>
                 <button
                   className="emoji-picker-btn"
@@ -157,7 +159,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
               </div>
             </div>
             <div className="form-group">
-              <label className="form-label">Display Name</label>
+              <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Display Name</label>
               <input
                 className="form-input"
                 value={displayName}
@@ -168,7 +170,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
 
           {/* Client */}
           <div className="form-group">
-            <label className="form-label">Client</label>
+            <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Client</label>
             <input
               className="form-input"
               placeholder="Client or team name"
@@ -179,7 +181,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
 
           {/* Project Type */}
           <div className="form-group">
-            <label className="form-label">Project Type</label>
+            <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Project Type</label>
             <select
               className="form-select"
               value={projectType}
@@ -193,7 +195,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
 
           {/* Color */}
           <div className="form-group">
-            <label className="form-label">Color</label>
+            <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Color</label>
             <div className="color-swatches">
               {PROJECT_COLORS.map(c => (
                 <div
@@ -208,7 +210,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
 
           {/* Status */}
           <div className="form-group">
-            <label className="form-label">Status</label>
+            <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Status</label>
             <div className="form-radio-group">
               {(['active', 'paused', 'archived'] as const).map(s => (
                 <label key={s} className="form-radio-label">
@@ -226,7 +228,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
 
           {/* Repo URL */}
           <div className="form-group">
-            <label className="form-label">Repository URL</label>
+            <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Repository URL</label>
             <input
               className="form-input"
               placeholder="https://github.com/..."
@@ -237,7 +239,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
 
           {/* Notes */}
           <div className="form-group">
-            <label className="form-label">Notes</label>
+            <label className="form-label" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Notes</label>
             <textarea
               className="form-textarea"
               placeholder="Project notes..."

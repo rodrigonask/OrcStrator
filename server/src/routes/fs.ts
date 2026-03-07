@@ -195,7 +195,22 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    return { exists, path: claudeMdPath, content }
+    const chars = content?.length ?? 0
+    const estimatedTokens = Math.round(chars / 4)
+
+    return {
+      exists,
+      path: claudeMdPath,
+      content,
+      chars,
+      estimatedTokens,
+      // Simple size warning for the UI
+      sizeWarning: estimatedTokens > 3000
+        ? `Your CLAUDE.md is ~${estimatedTokens.toLocaleString()} tokens. This is loaded into every agent session. Consider trimming it to speed up your agents.`
+        : estimatedTokens > 1500
+          ? `Your CLAUDE.md is ~${estimatedTokens.toLocaleString()} tokens. It is loaded into every agent session.`
+          : null,
+    }
   })
 
   // Write CLAUDE.md in a directory

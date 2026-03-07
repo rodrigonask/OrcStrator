@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -7,11 +7,12 @@ import { useInstances } from '../context/InstancesContext'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
+import { rest } from '../api/rest'
 import { ConnectionStatus } from './ConnectionStatus'
 import { FolderGroup } from './FolderGroup'
 import { FolderBrowserModal } from './FolderBrowserModal'
 import { ProjectEditModal } from './ProjectEditModal'
-import { SettingsModal } from './SettingsModal'
+
 import type { FolderConfig } from '@shared/types'
 
 function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
@@ -30,9 +31,23 @@ function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
 
 export function Sidebar() {
   const { folders } = useInstances()
-  const { showSettings, editingFolderId, showFolderBrowser, settings } = useUI()
+  const { editingFolderId, showFolderBrowser, settings, view } = useUI()
   const { dispatch } = useAppDispatch()
   const [collapsed, setCollapsed] = useState(false)
+  const [runningCount, setRunningCount] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    const poll = async () => {
+      try {
+        const h = await rest.getHealth()
+        if (active) setRunningCount(h.processes)
+      } catch { /* ignore */ }
+    }
+    poll()
+    const t = setInterval(poll, 3000)
+    return () => { active = false; clearInterval(t) }
+  }, [])
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
@@ -67,7 +82,7 @@ export function Sidebar() {
                 dispatch({ type: 'SET_VIEW', payload: 'chat' })
               }}
             >
-              OrcStrator
+              <span className="font-pixel" style={{ fontSize: '10px' }}>Orcstrator</span>
             </button>
           </div>
           <button
@@ -94,14 +109,51 @@ export function Sidebar() {
             className="add-folder-btn"
             onClick={() => dispatch({ type: 'OPEN_FOLDER_BROWSER' })}
           >
-            <span>+</span>
-            <span>Add Folder</span>
+            <span className="font-mono" style={{ fontSize: '12px' }}>+</span>
+            <span className="font-mono" style={{ fontSize: '12px' }}>Add Folder</span>
+          </button>
+        </div>
+
+        <div style={{ padding: '8px 10px 10px', borderTop: '1px solid var(--border)' }}>
+          <button
+            onClick={() => dispatch({ type: 'SET_VIEW', payload: view === 'monitor' ? 'chat' : 'monitor' })}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '7px 10px',
+              background: view === 'monitor' ? 'var(--error-muted)' : 'transparent',
+              border: `1px solid ${view === 'monitor' ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
+              borderRadius: 'var(--radius-sm)',
+              color: view === 'monitor' ? 'var(--error)' : 'var(--text-secondary)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: '10px',
+              fontWeight: 700,
+              letterSpacing: '1px',
+              cursor: 'pointer',
+              transition: 'all var(--transition-fast)',
+            }}
+          >
+            <span style={{ fontSize: '8px' }}>■</span>
+            <span>MONITOR</span>
+            {runningCount > 0 && (
+              <span style={{
+                marginLeft: 'auto',
+                background: 'var(--error)',
+                color: '#fff',
+                borderRadius: '10px',
+                padding: '1px 6px',
+                fontSize: '9px',
+                fontWeight: 700,
+              }}>
+                {runningCount}
+              </span>
+            )}
           </button>
         </div>
 
       </aside>
-
-      {showSettings && <SettingsModal onClose={() => dispatch({ type: 'CLOSE_SETTINGS' })} />}
 
       {editingFolderId && (() => {
         const folder = folders.find(f => f.id === editingFolderId)

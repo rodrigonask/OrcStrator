@@ -1,48 +1,62 @@
 import { Container, Application } from 'pixi.js'
-import type { InstanceConfig, FolderConfig } from '@shared/types'
+import type { InstanceConfig } from '@shared/types'
 import { ProjectilePool, ROLE_COLOR } from './projectile'
 import type { ProjectileRole } from './projectile'
 import { trail } from './particles'
-import { LEFT_ZONE, GAME_H } from './constants'
+import { IDLE_ZONE, ACTIVE_ZONE, GAME_H } from './constants'
 
-const SILO_PADDING  = 10
-const CHAR_SIZE     = 80
-const CHAR_GAP      = 8
-const SILO_HEADER_H = 22
-const SILO_GAP      = 14
-const MAX_SPRITES   = 5
+const PADDING     = 10
+const HEADER_H    = 10
+const IDLE_CHAR   = 80
+const ACTIVE_CHAR = 80
+const IDLE_ROW    = 100
+const ACTIVE_ROW  = 100
+const COLS        = 3
 
 const ROLE_TRAVEL_MS: Record<string, number> = {
   planner: 700, builder: 300, tester: 500, promoter: 600,
 }
 
-// Trail spawn interval (ms) — spawn a trail particle every N ms during travel
 const TRAIL_INTERVAL_MS = 40
 
 /**
  * Compute stage-space center of an instance's character sprite.
- * Replicates buildAgentPanel's layout math without modifying AgentPanel.ts.
+ * Checks the active zone first (green), then idle zone (blue).
  */
 export function getCharacterCenter(
   instanceId: string,
-  instances: InstanceConfig[],
-  folders: FolderConfig[],
+  activeInstanceIds: Set<string>,
+  allInstances: InstanceConfig[],
 ): { x: number; y: number } | null {
-  let currentY = 20
-  for (const folder of folders) {
-    const folderInstances = instances.filter(i => i.folderId === folder.id)
-    if (folderInstances.length === 0) continue
-    const visible = folderInstances.slice(0, MAX_SPRITES)
-    const spritesStartY = currentY + SILO_HEADER_H + SILO_PADDING
-    const idx = visible.findIndex(i => i.id === instanceId)
-    if (idx !== -1) {
-      const spriteX = LEFT_ZONE.x + SILO_PADDING + idx * (CHAR_SIZE + CHAR_GAP) + 4
-      return { x: spriteX + CHAR_SIZE / 2, y: spritesStartY + CHAR_SIZE / 2 }
-    }
-    const siloH = SILO_HEADER_H + CHAR_SIZE + SILO_PADDING * 2
-    currentY += siloH + SILO_GAP
-    if (currentY > GAME_H - 60) break
+  const activeList = allInstances.filter(i => activeInstanceIds.has(i.id))
+  const idleList   = allInstances.filter(i => !activeInstanceIds.has(i.id))
+
+  // Check active zone (3-column grid)
+  const activeIdx = activeList.findIndex(i => i.id === instanceId)
+  if (activeIdx !== -1) {
+    const maxRows = Math.floor((GAME_H - HEADER_H - PADDING) / ACTIVE_ROW)
+    if (activeIdx >= maxRows * COLS) return null
+    const colW = (ACTIVE_ZONE.w - PADDING * 2) / COLS
+    const col = activeIdx % COLS
+    const row = Math.floor(activeIdx / COLS)
+    const x = ACTIVE_ZONE.x + PADDING + col * colW + (colW - ACTIVE_CHAR) / 2
+    const y = HEADER_H + PADDING + row * ACTIVE_ROW
+    return { x: x + ACTIVE_CHAR / 2, y: y + ACTIVE_CHAR / 2 }
   }
+
+  // Check idle zone (3-column grid)
+  const idleIdx = idleList.findIndex(i => i.id === instanceId)
+  if (idleIdx !== -1) {
+    const maxRows = Math.floor((GAME_H - HEADER_H - PADDING) / IDLE_ROW)
+    if (idleIdx >= maxRows * COLS) return null
+    const colW = (IDLE_ZONE.w - PADDING * 2) / COLS
+    const col = idleIdx % COLS
+    const row = Math.floor(idleIdx / COLS)
+    const x = IDLE_ZONE.x + PADDING + col * colW + (colW - IDLE_CHAR) / 2
+    const y = HEADER_H + PADDING + row * IDLE_ROW
+    return { x: x + IDLE_CHAR / 2, y: y + IDLE_CHAR / 2 }
+  }
+
   return null
 }
 
@@ -60,10 +74,6 @@ export class AttackAnimator {
     this.pool = new ProjectilePool(10, stage)
   }
 
-  /**
-   * Fire a projectile from `from` to `to` position.
-   * Calls onHit() when the projectile arrives at the target.
-   */
   fire(
     from: { x: number; y: number },
     to:   { x: number; y: number },
@@ -73,7 +83,6 @@ export class AttackAnimator {
     const doFire = () => {
       const projectile = this.pool.acquire()
       if (!projectile) {
-        // Pool exhausted — skip animation but still call onHit
         onHit()
         return
       }
@@ -94,19 +103,15 @@ export class AttackAnimator {
         const elapsed = Date.now() - startTime
         const t = Math.min(elapsed / travelMs, 1)
 
-        // Base linear interpolation
         const baseX = from.x + (to.x - from.x) * t
         const baseY = from.y + (to.y - from.y) * t
 
-        // Per-role trajectory offset
         let yOffset = 0
         switch (r) {
           case 'tester':
-            // Arc trajectory — parabolic y offset
             yOffset = -Math.sin(t * Math.PI) * 40
             break
           case 'promoter':
-            // Slight upward curve
             yOffset = -Math.sin(t * Math.PI) * 15
             break
         }
@@ -114,14 +119,12 @@ export class AttackAnimator {
         projectile.gfx.x = baseX
         projectile.gfx.y = baseY + yOffset
 
-        // Rotation for arrow-type projectiles
         if (r === 'builder' || r === 'tester') {
           const dx = to.x - from.x
           const dy = (to.y - from.y) + (r === 'tester' ? -Math.cos(t * Math.PI) * 40 * Math.PI / travelMs : 0)
           projectile.gfx.rotation = Math.atan2(dy, dx)
         }
 
-        // Spawn trail particles
         const now = Date.now()
         if (now - lastTrailTime >= TRAIL_INTERVAL_MS && t < 0.95) {
           trail(this.stage, projectile.gfx.x, projectile.gfx.y, color, this.app)

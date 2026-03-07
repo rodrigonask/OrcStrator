@@ -3,6 +3,7 @@ import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { useGame } from '../context/GameContext'
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -15,6 +16,7 @@ export function MessageInput() {
   const { streamingContent } = useMessages()
   const { instances, folders } = useInstances()
   const { dispatch, sendMessage } = useAppDispatch()
+  const { addXp } = useGame()
   const [text, setText] = useState('')
   const [planMode, setPlanMode] = useState(false)
   const [model, setModel] = useState('claude-sonnet-4-6')
@@ -44,6 +46,7 @@ export function MessageInput() {
     if (!instanceId || (!text.trim() && images.length === 0)) return
     const messageText = planMode ? 'Use plan mode. ' + text.trim() : text.trim()
     sendMessage(instanceId, messageText, images.map(i => i.base64), [`--model=${model}`])
+    addXp('message-sent')
     setText('')
     setImages([])
     setPlanMode(false)
@@ -105,7 +108,7 @@ export function MessageInput() {
   return (
     <div className="message-input-container">
       {selectedFolder && (
-        <div className="message-input-project-label">{selectedFolder.displayName || selectedFolder.name}</div>
+        <div className="message-input-project-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{selectedFolder.displayName || selectedFolder.name}</div>
       )}
       {images.length > 0 && (
         <div className="image-preview-strip">
@@ -114,7 +117,7 @@ export function MessageInput() {
             return (
               <div key={i} className="image-preview-item">
                 <img src={`data:${img.mediaType};base64,${img.base64}`} alt="" />
-                {isLarge && <span className="image-preview-badge">auto-compress</span>}
+                {isLarge && <span className="image-preview-badge" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>auto-compress</span>}
                 <button className="image-preview-remove" onClick={() => removeImage(i)}>
                   x
                 </button>
@@ -125,7 +128,7 @@ export function MessageInput() {
       )}
       {isOrchestratorOwned && selectedFolder && (
         <div className="orchestrator-pov-banner">
-          <span className="orchestrator-pov-label">Managed by The Orc</span>
+          <span className="orchestrator-pov-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>Managed by The Orc</span>
           <button
             className="orchestrator-pov-btn"
             onClick={() => {
@@ -162,12 +165,15 @@ export function MessageInput() {
           onClick={handleSend}
           disabled={!instanceId || isStreaming || isOrchestratorOwned || (!text.trim() && images.length === 0)}
           title="Send message"
+          style={{ transition: 'box-shadow 0.2s ease' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 10px 2px rgba(34, 197, 94, 0.5), 0 0 4px 1px rgba(34, 197, 94, 0.3)' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.boxShadow = 'none' }}
         >
           &#9654;
         </button>
       </div>
       <div className="message-input-footer">
-        <label className={`plan-mode-toggle ${planMode ? 'active' : ''}`}>
+        <label className={`plan-mode-toggle ${planMode ? 'active' : ''}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>
           <input
             type="checkbox"
             checked={planMode}
@@ -190,7 +196,7 @@ export function MessageInput() {
             <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </div>
-        <span className="input-hint">Enter to send, Shift+Enter for newline</span>
+        <span className="input-hint" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>Enter to send, Shift+Enter for newline</span>
       </div>
     </div>
   )

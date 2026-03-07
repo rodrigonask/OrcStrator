@@ -8,6 +8,7 @@ import { rest } from '../../api/rest'
 import { useUI } from '../../context/UIContext'
 import { useInstances } from '../../context/InstancesContext'
 import { useAppDispatch } from '../../context/AppDispatchContext'
+import { ScheduleEditor } from './ScheduleEditor'
 
 marked.setOptions({ breaks: true })
 
@@ -182,35 +183,25 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
       <div className="task-detail-backdrop" onClick={onClose} />
       <div className="task-detail-panel">
         <div className="task-detail-header">
-          <span className="modal-title">Task Detail</span>
+          <span className="modal-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Task Detail</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
 
         <div className="task-detail-body">
-          {task.column === 'staging' && task.title.startsWith('[ACTION NEEDED]') && (
+          {labels.includes('stuck') && (
             <div style={{
-              background: 'rgba(245,158,11,0.12)',
-              border: '1px solid rgba(245,158,11,0.4)',
+              background: 'color-mix(in srgb, #ef4444 10%, transparent)',
+              border: '1px solid color-mix(in srgb, #ef4444 35%, transparent)',
               borderRadius: 8,
               padding: '12px 14px',
               marginBottom: 12,
-              fontSize: 13,
+              fontSize: 12,
+              fontFamily: 'var(--font-mono)',
             }}>
-              <div style={{ fontWeight: 600, color: '#f59e0b', marginBottom: 6 }}>
-                Action required from you
+              <div style={{ fontWeight: 700, color: '#ef4444', marginBottom: 4, fontSize: 11 }}>STUCK — needs attention</div>
+              <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                This task failed {task.retryCount ?? 0} time{task.retryCount !== 1 ? 's' : ''}. Review the comments, fix the blocker, then move it to the correct column.
               </div>
-              <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, color: 'var(--text-primary)' }}>
-                <li>Read the agent note in the description and comments below</li>
-                <li>Complete the required action (edit a file, add a credential, etc.)</li>
-                <li>Add a comment confirming what you did</li>
-                <li>
-                  Use <strong>Move to...</strong> to route it forward:
-                  <ul style={{ paddingLeft: 16, marginTop: 2 }}>
-                    <li><strong>build</strong> — agent resumes implementation</li>
-                    <li><strong>done</strong> — fully resolved, no further agent action</li>
-                  </ul>
-                </li>
-              </ol>
             </div>
           )}
           {/* Title */}
@@ -276,6 +267,13 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
 
               <span className="task-detail-meta-label">Created</span>
               <span className="task-detail-meta-value">{formatTime(task.createdAt)}</span>
+
+              {task.column === 'scheduled' && (
+                <>
+                  <span className="task-detail-meta-label">Skill</span>
+                  <span className="task-detail-meta-value" style={{ color: 'var(--col-scheduled)' }}>{task.skill || '—'}</span>
+                </>
+              )}
             </div>
           </div>
 
@@ -303,6 +301,13 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
               />
             </div>
           </div>
+
+          {/* Schedule Editor — only for scheduled column */}
+          {task.column === 'scheduled' && (
+            <div className="task-detail-section">
+              <ScheduleEditor task={task} projectId={projectId} />
+            </div>
+          )}
 
           {/* Attachments */}
           {task.attachments && task.attachments.length > 0 && (
@@ -368,7 +373,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
           <div className="task-detail-section">
             <div className="task-detail-section-label">History</div>
             <div className="task-history">
-              {task.history.map((entry, i) => (
+              {(task.history ?? []).map((entry, i) => (
                 <div key={i} className="task-history-item">
                   <div className="task-history-dot" />
                   <span className="task-history-time">{formatTime(entry.timestamp)}</span>

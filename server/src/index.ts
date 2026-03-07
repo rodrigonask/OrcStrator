@@ -8,6 +8,7 @@ import { initDb, db, closeDb } from './db.js'
 import { registerWebSocket } from './ws/handler.js'
 import { killAll, setOrchestratorCallback } from './services/claude-process.js'
 import { orchestrator, type ResumeSnapshot } from './services/orchestrator.js'
+import { schedulerService } from './services/scheduler-service.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
 import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
 
@@ -24,6 +25,7 @@ import agentRoutes from './routes/agents.js'
 import skillRoutes from './routes/skills.js'
 import fsRoutes from './routes/fs.js'
 import orchestratorRoutes from './routes/orchestrator.js'
+import mcpRoutes from './routes/mcp.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -84,6 +86,7 @@ async function main(): Promise<void> {
     fetchUsage().catch(() => {})
   })
   orchestrator.start()
+  schedulerService.start()
   if (resumeSnapshots.length > 0) {
     orchestrator.resumeStaleInstances(resumeSnapshots)
   } else {
@@ -117,6 +120,7 @@ async function main(): Promise<void> {
     await api.register(skillRoutes)
     await api.register(fsRoutes)
     await api.register(orchestratorRoutes)
+    await api.register(mcpRoutes)
   }, { prefix: '/api' })
 
   // In production, serve the client build as static files
@@ -142,6 +146,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     console.log('[server] Shutting down...')
     orchestrator.stop()
+    schedulerService.stop()
     killAll()
     await app.close()
     closeDb()

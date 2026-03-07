@@ -2,6 +2,7 @@ import { AnimatedSprite, Container, Graphics, Text, Texture, Ticker } from 'pixi
 import { HealthBar } from './HealthBar'
 import { SpriteManager } from './SpriteManager'
 import type { PipelineTask } from '@shared/types'
+import type { GameDisplayMode } from './constants'
 
 const MONSTER_COLORS: Record<number, number> = {
   1: 0xcc2222,
@@ -10,7 +11,7 @@ const MONSTER_COLORS: Record<number, number> = {
   4: 0x4488cc,
 }
 export const MONSTER_SIZES: Record<number, number> = {
-  1: 80, 2: 64, 3: 52, 4: 44,
+  1: 100, 2: 84, 3: 72, 4: 64,
 }
 
 export class MonsterSprite {
@@ -24,8 +25,16 @@ export class MonsterSprite {
   private _idleTextures: Texture[] = []
   private _hurtTextures: Texture[] = []
   private _hurtTimer: ReturnType<typeof setTimeout> | null = null
+  private _idleAnimTimer: ReturnType<typeof setTimeout> | null = null
+  private _labelBg: Graphics | null = null
+  private _idLabel: Text | null = null
+  private _descLabel: Text | null = null
+  private _pillCodeW = 0
+  private _pillNameW = 0
+  private _pillCenterX = 0
+  private _nameplateY = 0
 
-  constructor(task: PipelineTask, x: number, y: number, hp: number, ticker?: Ticker) {
+  constructor(task: PipelineTask, x: number, y: number, hp: number, ticker?: Ticker, scale = 1.0) {
     this._taskId = task.id
     this.priority = task.priority
     this._ticker = ticker ?? null
@@ -34,18 +43,27 @@ export class MonsterSprite {
     this.container.x = x
     this.container.y = y
 
-    const size = MONSTER_SIZES[task.priority] ?? 28
+    const size = Math.round((MONSTER_SIZES[task.priority] ?? 28) * scale)
     const color = MONSTER_COLORS[task.priority] ?? 0x888888
 
-    // Task title above monster
-    const label = new Text({
-      text: task.title.slice(0, 20),
-      style: { fontFamily: 'monospace', fontSize: 9, fill: 0xaaaaaa },
-    })
-    label.anchor.set(0.5, 1)
-    label.x = size / 2
-    label.y = 14
-    this.container.addChild(label)
+    // Two-line nameplate: ID (bright) + short description (dimmer)
+    const actionNeeded = /^\[ACTION NEEDED\]/i.test(task.title)
+    const raw = task.title.replace(/^\[ACTION NEEDED\]\s*/i, '')
+    // Matches: "ID: desc", "ID - desc", "ID – desc", "ID — desc"
+    const m       = raw.match(/^(.+?)(?:\s*:\s*|\s+[-–—]\s*)(.+)$/)
+    const idPart  = (actionNeeded ? '⚠ ' : '') + (m ? m[1].trim() : raw.slice(0, 12).trim())
+    const rawDesc = m ? m[2].trim() : ''
+    const descPart = rawDesc.length > 15 ? rawDesc.slice(0, 15) + '…' : rawDesc
+
+    const pillCodeW = Math.max(idPart.length * 9 + 16, 64)
+    const pillNameW = descPart ? Math.max(descPart.length * 7.5 + 16, 64) : pillCodeW
+    const pillW = Math.max(pillCodeW, pillNameW)
+    const pillH = descPart ? 38 : 24
+
+    this._pillCodeW   = pillCodeW
+    this._pillNameW   = pillNameW
+    this._pillCenterX = size / 2
+    this._nameplateY  = size + 4   // below the body
 
     // Body: AnimatedSprite if available, fallback to Graphics
     this._idleTextures = SpriteManager.getMonsterFrames(task.priority, 'idle')
@@ -53,29 +71,70 @@ export class MonsterSprite {
 
     if (this._idleTextures.length > 0) {
       const sprite = new AnimatedSprite(this._idleTextures)
-      sprite.animationSpeed = 6 / 60 // ~6fps at 60fps ticker
-      sprite.play()
-      // Scale 32px sprite frames to fit MONSTER_SIZES
-      const scale = size / 32
+      sprite.animationSpeed = 0.15
+      sprite.loop = false
+      sprite.gotoAndStop(0)
+      const scale = size / 128
       sprite.scale.set(scale)
       sprite.x = 0
-      sprite.y = 16
+      sprite.y = 0
       this._animSprite = sprite
       this.container.addChild(sprite)
+
+      // Random idle animation every 7-30 seconds
+      const scheduleIdle = () => {
+        const delayMs = 7000 + Math.random() * 23000
+        this._idleAnimTimer = setTimeout(() => {
+          if (this._animSprite && !this._animSprite.destroyed) {
+            this._animSprite.gotoAndPlay(0)
+          }
+        }, delayMs)
+      }
+      sprite.onComplete = () => { scheduleIdle() }
+      setTimeout(() => { if (sprite && !sprite.destroyed) sprite.gotoAndPlay(0) }, Math.random() * 5000)
     } else {
       // Fallback: geometric Graphics
       const body = new Graphics()
       this._drawMonster(body, task.priority, size, color)
       body.x = 0
-      body.y = 16
+      body.y = 0
       this.container.addChild(body)
     }
 
-    // Health bar below monster
-    const barW = Math.max(size, 32)
-    this._hp = new HealthBar(0, 16 + size + 4, barW, ticker ?? new Ticker())
+    // Health bar squares at bottom-right of body
+    this._hp = new HealthBar(0, 0, size, ticker ?? new Ticker())
     this._hp.update(hp)
     this.container.addChild(this._hp.container)
+
+    // Nameplate at the monster's feet (below body)
+    const ny = this._nameplateY
+    const labelBg = new Graphics()
+    labelBg.roundRect(size / 2 - pillW / 2, ny, pillW, pillH, 4)
+    labelBg.fill({ color: 0x000000, alpha: 0.88 })
+    this.container.addChild(labelBg)
+    this._labelBg = labelBg
+
+    const idLabel = new Text({
+      text: idPart,
+      style: { fontFamily: 'monospace', fontSize: 14, fill: 0xffffff, fontWeight: 'bold' },
+    })
+    idLabel.anchor.set(0.5, 0)
+    idLabel.x = size / 2
+    idLabel.y = ny + 4
+    this.container.addChild(idLabel)
+    this._idLabel = idLabel
+
+    if (descPart) {
+      const descLabel = new Text({
+        text: descPart,
+        style: { fontFamily: 'monospace', fontSize: 11, fill: 0xddeeff },
+      })
+      descLabel.anchor.set(0.5, 0)
+      descLabel.x = size / 2
+      descLabel.y = ny + 22
+      this.container.addChild(descLabel)
+      this._descLabel = descLabel
+    }
   }
 
   get taskId() { return this._taskId }
@@ -117,17 +176,17 @@ export class MonsterSprite {
     const size = MONSTER_SIZES[this.priority] ?? 28
     const txt = new Text({
       text: `-${dmg}`,
-      style: { fontFamily: 'monospace', fontSize: 10, fill: 0xdd4422 },
+      style: { fontFamily: 'monospace', fontSize: 14, fill: 0xff5533, fontWeight: 'bold', stroke: { color: 0x000000, width: 2 } },
     })
     txt.anchor.set(0.5, 0.5)
     txt.x = size / 2
-    txt.y = 16 + size / 2
+    txt.y = size / 2
     this.container.addChild(txt)
 
     const startTime = Date.now()
     const tick = () => {
       const t = Math.min((Date.now() - startTime) / 600, 1)
-      txt.y = (16 + size / 2) - t * 20
+      txt.y = size / 2 - t * 20
       txt.alpha = 1 - t
       if (t >= 1) {
         this._ticker!.remove(tick)
@@ -171,8 +230,41 @@ export class MonsterSprite {
     g.circle(size * 0.65, eyeY, eyeR).fill({ color: 0xffffff })
   }
 
+  applyDisplayMode(mode: GameDisplayMode) {
+    const showCode    = mode === 'code' || mode === 'both'
+    const showName    = mode === 'name' || mode === 'both'
+    const showBars    = mode !== 'immersive'
+    const showAnyText = showCode || showName
+    if (this._idLabel)   this._idLabel.visible   = showCode
+    if (this._descLabel) this._descLabel.visible  = showName
+    this._hp.container.visible = showBars
+
+    if (this._labelBg) {
+      this._labelBg.visible = showAnyText
+      if (showAnyText) {
+        const ny      = this._nameplateY
+        const hasDesc = this._descLabel !== null
+        let w: number, h: number
+        if (showCode && showName && hasDesc) {
+          w = Math.max(this._pillCodeW, this._pillNameW); h = 38
+          if (this._descLabel) this._descLabel.y = ny + 22
+        } else if (showName && hasDesc) {
+          w = this._pillNameW; h = 24
+          if (this._descLabel) this._descLabel.y = ny + 4
+        } else {
+          w = this._pillCodeW; h = 24
+          if (this._descLabel) this._descLabel.y = ny + 22
+        }
+        this._labelBg.clear()
+        this._labelBg.roundRect(this._pillCenterX - w / 2, ny, w, h, 4)
+        this._labelBg.fill({ color: 0x000000, alpha: 0.88 })
+      }
+    }
+  }
+
   destroy() {
     if (this._hurtTimer) clearTimeout(this._hurtTimer)
+    if (this._idleAnimTimer) clearTimeout(this._idleAnimTimer)
     this._hp.destroy()
     this.container.destroy()
   }
