@@ -76,6 +76,14 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
 
   const projectId = activePipelineId || folders[0]?.id || ''
 
+  // Fetch full task (with description) on mount — the list endpoint omits it for performance
+  useEffect(() => {
+    if (!projectId) return
+    rest.getTask(projectId, task.id).then(full => {
+      if (full.description) setDescription(full.description)
+    }).catch(() => {})
+  }, [projectId, task.id])
+
   useEffect(() => {
     if (!projectId) return
     rest.getTaskComments(projectId, task.id).then(setComments).catch(() => {})
