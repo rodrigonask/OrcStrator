@@ -1,9 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import type { FolderConfig } from '@nasklaude/shared'
+import type { FolderConfig } from '@orcstrator/shared'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { killProcess } from '../services/claude-process.js'
-import { orchestrator } from '../services/orchestrator.js'
+import { processRegistry } from '../services/process-registry.js'
 import crypto from 'crypto'
 
 function rowToFolder(r: Record<string, unknown>): FolderConfig {
@@ -124,9 +123,7 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     const { id: folderId } = request.params as { id: string }
     const instances = db.prepare('SELECT * FROM instances WHERE folder_id = ?').all(folderId) as Record<string, unknown>[]
 
-    for (const inst of instances) {
-      killProcess(inst.id as string)
-    }
+    await Promise.all(instances.map(inst => processRegistry.killProcess(inst.id as string)))
 
     db.prepare("UPDATE instances SET state = 'idle' WHERE folder_id = ?").run(folderId)
     db.prepare('UPDATE folders SET orchestrator_active = 0 WHERE id = ?').run(folderId)
@@ -143,18 +140,27 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     return { paused: idleAgents }
   })
 
-  // Release all sessions in a folder (clears session IDs)
+  // Release all sessions in a folder (clears session IDs, stops orchestrator, unlocks tasks)
   app.post('/folders/:id/release-all', async (request) => {
     const { id: folderId } = request.params as { id: string }
     const instances = db.prepare('SELECT * FROM instances WHERE folder_id = ?').all(folderId) as Record<string, unknown>[]
 
-    for (const inst of instances) {
-      killProcess(inst.id as string)
-    }
+    await Promise.all(instances.map(inst => processRegistry.killProcess(inst.id as string)))
 
     db.prepare("UPDATE instances SET state = 'idle', session_id = NULL WHERE folder_id = ?").run(folderId)
+    db.prepare('UPDATE folders SET orchestrator_active = 0 WHERE id = ?').run(folderId)
 
+    // Release any pipeline tasks locked by instances in this folder
     const instanceIds = instances.map(i => i.id as string)
+    if (instanceIds.length > 0) {
+      const placeholders = instanceIds.map(() => '?').join(',')
+      db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IN (${placeholders})`).run(...instanceIds)
+    }
+
+    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','spec','build','qa','ship') AND locked_by IS NULL`)
+      .get(folderId) as { count: number }
+    broadcastEvent({ type: 'orchestrator:status', payload: { folderId, active: false, idleAgents: instances.length, pendingTasks: pendingTasks.count } })
+
     for (const inst of instances) {
       broadcastEvent({ type: 'instance:updated', payload: { id: inst.id, state: 'idle', sessionId: null } })
     }
@@ -166,9 +172,7 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
   app.post('/shutdown', async () => {
     const instances = db.prepare('SELECT * FROM instances').all() as Record<string, unknown>[]
 
-    for (const inst of instances) {
-      killProcess(inst.id as string)
-    }
+    await Promise.all(instances.map(inst => processRegistry.killProcess(inst.id as string)))
 
     db.prepare("UPDATE instances SET state = 'idle', session_id = NULL").run()
     db.prepare('UPDATE folders SET orchestrator_active = 0').run()
@@ -179,5 +183,25 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     }
 
     return { killed: instances.length, instanceIds }
+  })
+
+  // Terminate — kill everything then shut down the server process
+  app.post('/terminate', async () => {
+    const instances = db.prepare('SELECT * FROM instances').all() as Record<string, unknown>[]
+
+    await Promise.all(instances.map(inst => processRegistry.killProcess(inst.id as string)))
+
+    db.prepare("UPDATE instances SET state = 'idle', session_id = NULL").run()
+    db.prepare('UPDATE folders SET orchestrator_active = 0').run()
+
+    const instanceIds = instances.map(i => i.id as string)
+    for (const inst of instances) {
+      broadcastEvent({ type: 'instance:updated', payload: { id: inst.id, state: 'idle', sessionId: null } })
+    }
+
+    // Exit after response is sent
+    setTimeout(() => process.exit(0), 500)
+
+    return { ok: true, killed: instances.length, instanceIds }
   })
 }
