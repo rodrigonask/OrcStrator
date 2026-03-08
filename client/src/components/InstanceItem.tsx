@@ -270,12 +270,19 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
             : <span className="instance-name-text">{instance.name}</span>
           }
           {overdriveLevel > 0 && (
-            <span
-              className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
-              style={{ fontFamily: 'var(--font-pixel)', fontSize: '7px' }}
-              title={`Overdrive Lv.${overdriveLevel} — ${overdrive.label} | ${instance.overdriveTasks} tasks | Cache expires in ${minsLeft}min | ~${overdrive.savings}% token savings`}
-            >
-              Lv.{overdriveLevel}
+            <span className="od-badge-wrap">
+              <span
+                className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
+                style={{ fontFamily: 'var(--font-pixel)', fontSize: '7px' }}
+              >
+                Lv.{overdriveLevel}
+              </span>
+              <span className="od-badge-tip">
+                Smart Context Caching — {overdrive.label}<br />
+                {instance.overdriveTasks} tasks cached this session<br />
+                Cache window expires in {minsLeft}min<br />
+                Saves up to 90% on token costs using Claude native prompt caching
+              </span>
             </span>
           )}
         </div>

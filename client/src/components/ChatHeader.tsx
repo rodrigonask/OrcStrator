@@ -85,7 +85,7 @@ export function ChatHeader() {
         {overdriveLevel > 0 && (
           <span
             className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
-            title={`Overdrive Lv.${overdriveLevel} — ${overdrive.label} | ${instance.overdriveTasks} tasks | Cache expires in ${minsLeft}min | ~${overdrive.savings}% token savings`}
+            title={`Smart Context Caching — ${overdrive.label} | ${instance.overdriveTasks} tasks cached this session | Cache window expires in ${minsLeft}min | Saves up to 90% on token costs using Claude native prompt caching`}
             style={{ fontFamily: 'var(--font-pixel)', fontSize: '7px' }}
           >
             Lv.{overdriveLevel}
