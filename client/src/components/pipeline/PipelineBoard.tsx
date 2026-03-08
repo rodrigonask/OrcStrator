@@ -1,21 +1,14 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import type { PipelineTask, PipelineColumn } from '@shared/types'
 import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
-import { useUI } from '../../context/UIContext'
+import { useUI, COLUMN_TO_ROLE } from '../../context/UIContext'
 import { useInstances } from '../../context/InstancesContext'
 import { useAppDispatch } from '../../context/AppDispatchContext'
 import { api } from '../../api'
 import { TaskCard } from './TaskCard'
 import { TaskDetailPanel } from './TaskDetailPanel'
 import { CreateTaskModal } from './CreateTaskModal'
-
-const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
-  spec: 'planner',
-  build: 'builder',
-  qa: 'tester',
-  ship: 'promoter',
-}
 
 export function PipelineBoard() {
   const { activePipelineId, settings } = useUI()
@@ -27,6 +20,7 @@ export function PipelineBoard() {
   const [editingColumn, setEditingColumn] = useState<PipelineColumn | null>(null)
   const [editValue, setEditValue] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; task: PipelineTask } | null>(null)
 
   const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
 
@@ -78,6 +72,30 @@ export function PipelineBoard() {
       pipeline.moveTask(taskId, col)
     }
   }, [pipeline])
+
+  const handleTaskContextMenu = useCallback((e: React.MouseEvent, task: PipelineTask) => {
+    setTaskContextMenu({ x: e.clientX, y: e.clientY, task })
+  }, [])
+
+  const contextMenuInstances = useMemo(() => {
+    if (!taskContextMenu) return []
+    const role = COLUMN_TO_ROLE[taskContextMenu.task.column]
+    if (!role) return []
+    return instances.filter(i => i.folderId === projectId && i.agentRole === role)
+  }, [taskContextMenu, instances, projectId])
+
+  const handleAssignAgent = useCallback((task: PipelineTask, agentRole: string) => {
+    pipeline.moveTask(task.id, task.column, agentRole)
+    setTaskContextMenu(null)
+  }, [pipeline])
+
+  // Close context menu on mousedown outside
+  useEffect(() => {
+    if (!taskContextMenu) return
+    const handler = () => setTaskContextMenu(null)
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [taskContextMenu])
 
   const handleColumnLabelDoubleClick = useCallback((col: PipelineColumn) => {
     setEditingColumn(col)
@@ -217,6 +235,7 @@ export function PipelineBoard() {
                     key={task.id}
                     task={task}
                     onClick={() => setSelectedTask(task)}
+                    onContextMenu={handleTaskContextMenu}
                   />
                 ))}
                 {colTasks.length === 0 && (
@@ -257,6 +276,42 @@ export function PipelineBoard() {
           projectId={projectId}
           onClose={() => setShowCreate(false)}
         />
+      )}
+
+      {taskContextMenu && (
+        <div
+          className="context-menu"
+          style={{ position: 'fixed', top: taskContextMenu.y, left: taskContextMenu.x, zIndex: 200 }}
+          onMouseDown={e => e.stopPropagation()}
+        >
+          {COLUMN_TO_ROLE[taskContextMenu.task.column] ? (
+            <>
+              <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                Assign to {COLUMN_TO_ROLE[taskContextMenu.task.column]}
+              </div>
+              {contextMenuInstances.length > 0 ? (
+                contextMenuInstances.map(inst => (
+                  <button
+                    key={inst.id}
+                    className={`context-menu-item${taskContextMenu.task.assignedAgent === inst.agentRole ? ' active' : ''}`}
+                    onClick={() => handleAssignAgent(taskContextMenu.task, inst.agentRole!)}
+                  >
+                    {inst.name}
+                    {inst.specialization && <span style={{ marginLeft: 6, opacity: 0.6, fontSize: 10 }}>{inst.specialization}</span>}
+                  </button>
+                ))
+              ) : (
+                <span className="context-menu-item" style={{ opacity: 0.5, cursor: 'default', fontSize: 11 }}>
+                  No matching agents
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="context-menu-item" style={{ opacity: 0.5, cursor: 'default', fontSize: 11 }}>
+              No agent role for this column
+            </span>
+          )}
+        </div>
       )}
     </div>
   )

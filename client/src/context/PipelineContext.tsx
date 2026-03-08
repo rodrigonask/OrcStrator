@@ -11,7 +11,8 @@ interface PipelineContextValue {
   createTask: (data: Partial<PipelineTask>) => Promise<PipelineTask | null>
   updateTask: (taskId: string, data: Partial<PipelineTask>) => Promise<void>
   deleteTask: (taskId: string) => Promise<void>
-  moveTask: (taskId: string, column: PipelineColumn) => Promise<void>
+  moveTask: (taskId: string, column: PipelineColumn, agent?: string) => Promise<void>
+  assignAgent: (taskId: string, agentRole: string) => Promise<void>
   claimTask: (taskId: string, agent: string) => Promise<void>
   blockTask: (taskId: string, reason: string) => Promise<void>
   unblockTask: (taskId: string) => Promise<void>
@@ -49,7 +50,7 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
     setLoading(true)
     setError(null)
     try {
-      const data = await api.getProjectPipeline(activePipelineId)
+      const data = await api.getProjectPipeline(activePipelineId, true)
       if (seq === fetchSeqRef.current) setTasks(data)
     } catch (err) {
       if (seq === fetchSeqRef.current) setError(err instanceof Error ? err.message : 'Failed to load pipeline')
@@ -143,16 +144,31 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
   )
 
   const moveTask = useCallback(
-    async (taskId: string, column: PipelineColumn) => {
+    async (taskId: string, column: PipelineColumn, agent?: string) => {
       if (!activePipelineId) return
       try {
-        const updated = await api.moveTask(activePipelineId, taskId, column)
+        const updated = await api.moveTask(activePipelineId, taskId, column, agent)
         setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)))
       } catch (err) {
         console.error('Failed to move task:', err)
       }
     },
     [activePipelineId]
+  )
+
+  const assignAgent = useCallback(
+    async (taskId: string, agentRole: string) => {
+      if (!activePipelineId) return
+      try {
+        const task = tasks.find(t => t.id === taskId)
+        if (!task) return
+        const updated = await api.moveTask(activePipelineId, taskId, task.column, agentRole)
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)))
+      } catch (err) {
+        console.error('Failed to assign agent:', err)
+      }
+    },
+    [activePipelineId, tasks]
   )
 
   const claimTask = useCallback(
@@ -204,12 +220,13 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
       updateTask,
       deleteTask,
       moveTask,
+      assignAgent,
       claimTask,
       blockTask,
       unblockTask,
       refresh: fetchTasks,
     }),
-    [tasks, loading, error, tasksByColumn, createTask, updateTask, deleteTask, moveTask, claimTask, blockTask, unblockTask, fetchTasks]
+    [tasks, loading, error, tasksByColumn, createTask, updateTask, deleteTask, moveTask, assignAgent, claimTask, blockTask, unblockTask, fetchTasks]
   )
 
   return <PipelineContext.Provider value={value}>{children}</PipelineContext.Provider>

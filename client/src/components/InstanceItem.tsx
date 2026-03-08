@@ -2,11 +2,14 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
 import { OVERDRIVE_LEVELS } from '@shared/constants'
-import { useUI } from '../context/UIContext'
+import { useUI, ROLE_TO_COLUMN } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { usePipeline } from '../context/PipelineContext'
+import { useFeatureGate } from '../hooks/useFeatureGate'
 import { api } from '../api'
 import { sounds } from '../utils/sounds'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
 
 interface InstanceItemProps {
   instance: InstanceConfig
@@ -28,6 +31,9 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [skills, setSkills] = useState<SkillConfig[]>([])
   const [showSkillsMenu, setShowSkillsMenu] = useState(false)
+  const agentsGate = useFeatureGate('agents')
+  const [dragTargetHighlight, setDragTargetHighlight] = useState(false)
+  const pipeline = usePipeline()
 
   const animEnabled = settings.animationsEnabled !== false
   const soundEnabled = settings.soundsEnabled !== false
@@ -194,16 +200,53 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     return props
   }, [dragHandleProps])
 
+  const handleTaskDragOver = useCallback((e: React.DragEvent) => {
+    if (!instance.agentRole) return
+    const expectedColumn = ROLE_TO_COLUMN[instance.agentRole]
+    if (!expectedColumn) return
+    // Check if the dragged task's column matches this instance's role
+    if (e.dataTransfer.types.includes(`application/x-task-column-${expectedColumn}`)) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      setDragTargetHighlight(true)
+    }
+  }, [instance.agentRole])
+
+  const handleTaskDragLeave = useCallback(() => {
+    setDragTargetHighlight(false)
+  }, [])
+
+  const handleTaskDrop = useCallback((e: React.DragEvent) => {
+    setDragTargetHighlight(false)
+    if (!instance.agentRole) return
+    const jsonData = e.dataTransfer.getData('application/json')
+    if (!jsonData) return
+    try {
+      const { taskId, column } = JSON.parse(jsonData)
+      if (taskId && column) {
+        e.preventDefault()
+        e.stopPropagation()
+        pipeline.assignAgent(taskId, instance.agentRole)
+      }
+    } catch { /* ignore */ }
+  }, [instance.agentRole, pipeline])
+
   return (
     <div
       className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${activeAnimClass}`}
-      style={instance.state === 'running' && instance.agentRole ? { boxShadow: `0 0 8px 2px color-mix(in srgb, var(--role-${instance.agentRole}) 40%, transparent)` } : undefined}
+      style={{
+        ...(instance.state === 'running' && instance.agentRole ? { boxShadow: `0 0 8px 2px color-mix(in srgb, var(--role-${instance.agentRole}) 40%, transparent)` } : {}),
+        ...(dragTargetHighlight && instance.agentRole ? { boxShadow: `0 0 12px 3px color-mix(in srgb, var(--role-${instance.agentRole}) 60%, transparent)`, outline: `2px dashed var(--role-${instance.agentRole})`, outlineOffset: '-2px', background: 'var(--bg-hover)' } : {}),
+      }}
       {...(safeDragProps as React.HTMLAttributes<HTMLDivElement>)}
       onClick={() => {
         selectInstance(instance.id)
         if (view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
       }}
       onContextMenu={handleContextMenu}
+      onDragOver={handleTaskDragOver}
+      onDragLeave={handleTaskDragLeave}
+      onDrop={handleTaskDrop}
     >
       <div className={`instance-state-dot ${instance.state}`} />
       <div className="instance-info">
@@ -217,14 +260,15 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
                 >
                   {isOrchestratorLocked ? '🔒 ' : ''}{agentNames[instance.agentRole]}
                 </span>
-                <span className="instance-name-sep" style={{ fontFamily: 'var(--font-mono)' }}> | </span>
-                {instance.name}
-                {instance.specialization && <span className="spec-pill compact" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>{instance.specialization}</span>}
+                <span className="instance-name-text">
+                  <span className="instance-name-sep" style={{ fontFamily: 'var(--font-mono)' }}> | </span>
+                  {instance.name}
+                  {instance.specialization && <span className="spec-pill compact" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>{instance.specialization}</span>}
+                </span>
               </>
             )
-            : instance.name
+            : <span className="instance-name-text">{instance.name}</span>
           }
-          {instance.orchestratorManaged && <span className="orchestrator-bot-icon" title="Orc-managed">⚡</span>}
           {overdriveLevel > 0 && (
             <span
               className={`od-badge od-level-${overdriveLevel}${isExpiringSoon ? ' od-pulse' : ''}`}
@@ -279,7 +323,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
               <button
                 key={role}
                 className={`context-menu-item ${instance.agentRole === role ? 'active' : ''}`}
-                onClick={() => { handleRoleChange(role); setContextMenu(null) }}
+                onClick={() => { if (agentsGate.check()) { handleRoleChange(role); setContextMenu(null) } else { setContextMenu(null) } }}
               >
                 {agentNames[role]}
               </button>
@@ -356,6 +400,10 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
           </div>
         </>,
         document.body
+      )}
+
+      {agentsGate.showLockedModal && agentsGate.gate && (
+        <FeatureLockedModal gate={agentsGate.gate} onClose={agentsGate.dismissModal} />
       )}
     </div>
   )

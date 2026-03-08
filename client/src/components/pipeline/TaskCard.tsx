@@ -4,6 +4,7 @@ import { useCallback } from 'react'
 interface TaskCardProps {
   task: PipelineTask
   onClick: () => void
+  onContextMenu?: (e: React.MouseEvent, task: PipelineTask) => void
 }
 
 const PRIORITY_CLASSES: Record<number, string> = {
@@ -13,15 +14,17 @@ const PRIORITY_CLASSES: Record<number, string> = {
   4: 'p4',
 }
 
-export function TaskCard({ task, onClick }: TaskCardProps) {
+export function TaskCard({ task, onClick, onContextMenu }: TaskCardProps) {
   const isStuck = task.labels.includes('stuck')
   const isRunning = task.schedule?.currentlyRunning
 
   const handleDragStart = useCallback((e: React.DragEvent) => {
     e.dataTransfer.setData('text/plain', task.id)
+    e.dataTransfer.setData('application/json', JSON.stringify({ taskId: task.id, column: task.column }))
+    e.dataTransfer.setData(`application/x-task-column-${task.column}`, task.id)
     e.dataTransfer.effectAllowed = 'move'
     ;(e.currentTarget as HTMLElement).classList.add('dragging')
-  }, [task.id])
+  }, [task.id, task.column])
 
   const handleDragEnd = useCallback((e: React.DragEvent) => {
     ;(e.currentTarget as HTMLElement).classList.remove('dragging')
@@ -34,6 +37,7 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onClick={onClick}
+      onContextMenu={onContextMenu ? (e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(e, task) } : undefined}
       style={{ '--card-glow': `var(--col-${task.column})` } as React.CSSProperties}
     >
       <div className="task-card-header">
