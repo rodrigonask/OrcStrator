@@ -6,11 +6,13 @@ import { CSS } from '@dnd-kit/utilities'
 import { useInstances } from '../context/InstancesContext'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { useFeatureGate } from '../hooks/useFeatureGate'
 import { api } from '../api'
 import { ConnectionStatus } from './ConnectionStatus'
 import { FolderGroup } from './FolderGroup'
 import { FolderBrowserModal } from './FolderBrowserModal'
 import { ProjectEditModal } from './ProjectEditModal'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
 
 import type { FolderConfig } from '@shared/types'
 
@@ -30,8 +32,10 @@ function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
 
 export function Sidebar() {
   const { folders } = useInstances()
-  const { editingFolderId, showFolderBrowser, settings } = useUI()
+  const { editingFolderId, showFolderBrowser, settings, view } = useUI()
   const { dispatch } = useAppDispatch()
+  const multiProjectGate = useFeatureGate('multi-project')
+  const createProjectGate = useFeatureGate('create-project')
   const [collapsed, setCollapsed] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
@@ -60,6 +64,7 @@ export function Sidebar() {
         <div className="sidebar-header">
           <div className="sidebar-header-left">
             <ConnectionStatus />
+            <div className="orc-logo" />
             <button
               className="sidebar-title"
               onClick={() => {
@@ -67,7 +72,7 @@ export function Sidebar() {
                 dispatch({ type: 'SET_VIEW', payload: 'chat' })
               }}
             >
-              <span className="font-pixel" style={{ fontSize: '10px' }}>Orcstrator</span>
+              <span className="font-pixel" style={{ fontSize: '10px' }}>OrcStrator</span>
             </button>
           </div>
           <button
@@ -79,7 +84,7 @@ export function Sidebar() {
           </button>
         </div>
 
-        <div className="sidebar-folders">
+        <div className="sidebar-folders" data-tour-id="tour-projects">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleFolderDragEnd}>
             <SortableContext items={sortedFolders.map(f => f.id)} strategy={verticalListSortingStrategy}>
               {sortedFolders.map(folder => (
@@ -89,13 +94,63 @@ export function Sidebar() {
           </DndContext>
         </div>
 
-        <div className="sidebar-add-folder">
+        <div className="sidebar-nav-links" style={{ padding: '4px 8px', borderTop: '1px solid var(--border)' }}>
+          <button
+            className={`sidebar-nav-btn${view === 'agents' ? ' active' : ''}`}
+            onClick={() => {
+              dispatch({ type: 'SELECT_INSTANCE', payload: null })
+              dispatch({ type: 'SET_VIEW', payload: 'agents' })
+            }}
+          >
+            <span className="font-mono" style={{ fontSize: '11px' }}>Agents</span>
+          </button>
+        </div>
+
+        <div className="sidebar-add-folder" style={{ display: 'flex', gap: 4, padding: '8px 8px' }}>
           <button
             className="add-folder-btn"
-            onClick={() => dispatch({ type: 'OPEN_FOLDER_BROWSER' })}
+            data-tour-id="tour-add-project"
+            onClick={() => { if (multiProjectGate.check()) dispatch({ type: 'OPEN_FOLDER_BROWSER' }) }}
+            style={{ flex: 1 }}
           >
-            <span className="font-mono" style={{ fontSize: '12px' }}>+</span>
-            <span className="font-mono" style={{ fontSize: '12px' }}>Add Folder</span>
+            <span className="font-mono" style={{ fontSize: '11px' }}>Add Project</span>
+          </button>
+          <button
+            className="add-folder-btn"
+            onClick={async () => {
+              if (!createProjectGate.check()) return
+              const root = settings.rootFolder
+              if (!root) {
+                dispatch({ type: 'OPEN_FOLDER_BROWSER' })
+                return
+              }
+              // Find or use first folder as parent context
+              const parentFolderId = folders[0]?.id
+              if (!parentFolderId) {
+                dispatch({ type: 'OPEN_FOLDER_BROWSER' })
+                return
+              }
+              try {
+                const inst = await api.createInstance({
+                  folderId: parentFolderId,
+                  name: 'New Project',
+                  cwd: root,
+                })
+                dispatch({ type: 'ADD_INSTANCE', payload: inst })
+                dispatch({ type: 'SELECT_INSTANCE', payload: inst.id })
+                dispatch({ type: 'SET_VIEW', payload: 'chat' })
+                // Auto-send scaffolding prompt
+                api.sendMessage(inst.id, {
+                  text: 'I want to create a new project in this directory. Ask me what kind of project I want to build, help me pick a name, then create the folder and scaffold it step by step.',
+                  flags: ['--model=claude-opus-4-6'],
+                })
+              } catch (err) {
+                console.error('Failed to create new project instance:', err)
+              }
+            }}
+            style={{ flex: 1 }}
+          >
+            <span className="font-mono" style={{ fontSize: '11px' }}>Create New</span>
           </button>
         </div>
 
@@ -125,6 +180,13 @@ export function Sidebar() {
             }
           }}
         />
+      )}
+
+      {multiProjectGate.showLockedModal && multiProjectGate.gate && (
+        <FeatureLockedModal gate={multiProjectGate.gate} onClose={multiProjectGate.dismissModal} />
+      )}
+      {createProjectGate.showLockedModal && createProjectGate.gate && (
+        <FeatureLockedModal gate={createProjectGate.gate} onClose={createProjectGate.dismissModal} />
       )}
     </>
   )
