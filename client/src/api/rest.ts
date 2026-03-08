@@ -59,7 +59,7 @@ export const rest = {
 
   // State
   getState: () => get<AppState>('/api/state'),
-  getHealth: () => get<{ status: string; uptime: number; clients: number; processes: number; totalInstances: number; runningInstances: number; memoryMb: number; heapMb: number }>('/api/health'),
+  getHealth: () => get<{ status: string; uptime: number; bootTime: number; clients: number; processes: number; maxProcesses: number; totalInstances: number; runningInstances: number; memoryMb: number; heapMb: number }>('/api/health'),
   getProcesses: () => get<{ processes: Array<{ instanceId: string; instanceName: string; agentRole: string | null; pid: number; state: string; runningSec: number; taskId: string | null; taskTitle: string | null; lastCostUsd: number | null; lastInputTokens: number | null; lastOutputTokens: number | null }>; timestamp: number }>('/api/processes'),
 
   // Folders
