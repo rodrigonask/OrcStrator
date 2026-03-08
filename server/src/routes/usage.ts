@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { getCurrentUsage, generateAuthUrl, exchangeCode, disconnect, fetchUsage } from '../services/usage-monitor.js'
 import { db } from '../db.js'
-import type { DailySavingsEntry, SavingsSummary } from '@nasklaude/shared'
+import type { DailySavingsEntry, SavingsSummary } from '@orcstrator/shared'
 
 export default async function usageRoutes(app: FastifyInstance): Promise<void> {
   // Token usage history (from pipeline monitoring)
@@ -70,6 +70,151 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
       savedUsd,
       recommendation,
     } satisfies SavingsSummary
+  })
+
+  // Usage log with task and project names
+  app.get('/usage/log', async (request) => {
+    const { limit = '100', days } = request.query as Record<string, string>
+    const params: unknown[] = []
+    let whereClause = ''
+    if (days) {
+      const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+      whereClause = 'WHERE tu.created_at >= ?'
+      params.push(Date.now() - n * 86_400_000)
+    }
+    params.push(Math.min(parseInt(limit) || 100, 500))
+    const rows = db.prepare(`
+      SELECT
+        tu.session_id,
+        tu.role,
+        tu.input_tokens,
+        tu.output_tokens,
+        tu.cost_usd,
+        tu.created_at,
+        pt.title AS task_title,
+        COALESCE(f.display_name, f.name) AS project_name
+      FROM token_usage tu
+      LEFT JOIN pipeline_tasks pt ON tu.task_id = pt.id
+      LEFT JOIN instances i ON tu.instance_id = i.id
+      LEFT JOIN folders f ON i.folder_id = f.id
+      ${whereClause}
+      ORDER BY tu.created_at DESC
+      LIMIT ?
+    `).all(...params)
+    return rows
+  })
+
+  // Usage log grouped by project
+  app.get('/usage/log/by-project', async (request) => {
+    const { days } = request.query as Record<string, string>
+    const params: unknown[] = []
+    let whereClause = ''
+    if (days) {
+      const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+      whereClause = 'WHERE tu.created_at >= ?'
+      params.push(Date.now() - n * 86_400_000)
+    }
+    const rows = db.prepare(`
+      SELECT
+        COALESCE(f.display_name, f.name, 'Unknown') AS project_name,
+        SUM(tu.cost_usd) AS total_cost_usd,
+        COUNT(*) AS session_count
+      FROM token_usage tu
+      LEFT JOIN instances i ON tu.instance_id = i.id
+      LEFT JOIN folders f ON i.folder_id = f.id
+      ${whereClause}
+      GROUP BY COALESCE(f.display_name, f.name, 'Unknown')
+      ORDER BY total_cost_usd DESC
+    `).all(...params)
+    return rows
+  })
+
+  // Usage stats: summary + by role + by weekday + by day
+  app.get('/usage/stats', async (request) => {
+    const { days = '7' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const summaryRow = db.prepare(`
+      SELECT
+        COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+        COUNT(*) AS total_sessions,
+        CASE WHEN COUNT(*) > 0 THEN SUM(cost_usd) / COUNT(*) ELSE 0 END AS avg_cost_per_session,
+        COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+        CASE WHEN SUM(input_tokens) > 0
+          THEN CAST(SUM(cache_read_tokens) AS REAL) / SUM(input_tokens)
+          ELSE 0 END AS cache_hit_ratio
+      FROM token_usage
+      WHERE created_at >= ?
+    `).get(since) as Record<string, number>
+
+    const byRole = db.prepare(`
+      SELECT
+        role,
+        COUNT(*) AS session_count,
+        SUM(cost_usd) AS total_cost_usd,
+        CASE WHEN COUNT(*) > 0 THEN SUM(cost_usd) / COUNT(*) ELSE 0 END AS avg_cost_usd,
+        CASE WHEN SUM(input_tokens) > 0
+          THEN CAST(SUM(cache_read_tokens) AS REAL) / SUM(input_tokens)
+          ELSE 0 END AS cache_hit_ratio
+      FROM token_usage
+      WHERE created_at >= ?
+      GROUP BY role
+      ORDER BY total_cost_usd DESC
+    `).all(since) as Array<Record<string, unknown>>
+
+    const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    const byWeekday = db.prepare(`
+      SELECT
+        CAST(strftime('%w', created_at / 1000, 'unixepoch') AS INTEGER) AS weekday,
+        COUNT(*) AS session_count,
+        SUM(cost_usd) AS total_cost_usd
+      FROM token_usage
+      WHERE created_at >= ?
+      GROUP BY weekday
+      ORDER BY weekday
+    `).all(since) as Array<Record<string, number>>
+
+    const byDay = db.prepare(`
+      SELECT
+        date(created_at / 1000, 'unixepoch') AS day,
+        COUNT(*) AS session_count,
+        SUM(cost_usd) AS total_cost_usd
+      FROM token_usage
+      WHERE created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(since) as Array<Record<string, unknown>>
+
+    return {
+      summary: {
+        total_cost_usd: Number(summaryRow.total_cost_usd) || 0,
+        total_sessions: Number(summaryRow.total_sessions) || 0,
+        avg_cost_per_session: Number(summaryRow.avg_cost_per_session) || 0,
+        cache_hit_ratio: Number(summaryRow.cache_hit_ratio) || 0,
+        total_input_tokens: Number(summaryRow.total_input_tokens) || 0,
+        total_output_tokens: Number(summaryRow.total_output_tokens) || 0,
+      },
+      byRole: byRole.map(r => ({
+        role: r.role as string,
+        session_count: Number(r.session_count) || 0,
+        total_cost_usd: Number(r.total_cost_usd) || 0,
+        avg_cost_usd: Number(r.avg_cost_usd) || 0,
+        cache_hit_ratio: Number(r.cache_hit_ratio) || 0,
+      })),
+      byWeekday: byWeekday.map(r => ({
+        weekday: Number(r.weekday),
+        label: WEEKDAY_LABELS[Number(r.weekday)] || '?',
+        session_count: Number(r.session_count) || 0,
+        total_cost_usd: Number(r.total_cost_usd) || 0,
+      })),
+      byDay: byDay.map(r => ({
+        day: r.day as string,
+        session_count: Number(r.session_count) || 0,
+        total_cost_usd: Number(r.total_cost_usd) || 0,
+      })),
+    }
   })
 
   // Get current usage data
