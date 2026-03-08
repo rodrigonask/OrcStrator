@@ -173,6 +173,14 @@ export function UsageReportPage() {
         <EfficiencyTable data={efficiency} />
       </div>
 
+      {/* Top Tasks by Cost */}
+      {anomalies.length > 0 && (
+        <div className="usage-section">
+          <h3 className="usage-section-title font-pixel">Top Tasks by Cost</h3>
+          <TopTasksTable tasks={anomalies} />
+        </div>
+      )}
+
       {/* Anomalies */}
       {anomalyCount > 0 && (
         <div className="usage-section">
@@ -361,6 +369,32 @@ function EfficiencyTable({ data }: { data: UsageEfficiencyDay[] }) {
             <td className="font-mono">{d.yieldRatio.toFixed(2)}</td>
             <td className="font-mono">{d.avgPromptChars.toLocaleString()}</td>
             <td className={`font-mono usage-grade-${d.cacheGrade}`}>{d.cacheGrade}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function TopTasksTable({ tasks }: { tasks: UsageAnomaly[] }) {
+  const top = [...tasks].sort((a, b) => b.costUsd - a.costUsd).slice(0, 10)
+  return (
+    <table className="usage-table">
+      <thead>
+        <tr>
+          <th className="font-mono">Task</th>
+          <th className="font-mono">Role</th>
+          <th className="font-mono">Cost</th>
+          <th className="font-mono">vs Median</th>
+        </tr>
+      </thead>
+      <tbody>
+        {top.map(t => (
+          <tr key={t.sessionId}>
+            <td className="font-mono">{t.taskTitle || '—'}</td>
+            <td className="font-mono">{t.role}</td>
+            <td className="font-mono">${t.costUsd.toFixed(3)}</td>
+            <td className="font-mono">{t.multiplier}x</td>
           </tr>
         ))}
       </tbody>

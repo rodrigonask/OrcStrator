@@ -16,6 +16,11 @@ import type {
   SavingsSummary,
   McpServerInfo,
   ScheduleConfig,
+  UsageTrendDay,
+  UsageByColumn,
+  UsageForecast,
+  UsageAnomaly,
+  UsageEfficiencyDay,
 } from '@shared/types'
 
 const BASE = import.meta.env.VITE_API_URL || ''
@@ -108,8 +113,8 @@ export const rest = {
     put<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}`, data),
   deleteTask: (projectId: string, taskId: string) =>
     del<{ ok: true }>(`/api/pipelines/${projectId}/tasks/${taskId}`),
-  moveTask: (projectId: string, taskId: string, column: PipelineColumn) =>
-    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/move`, { column }),
+  moveTask: (projectId: string, taskId: string, column: PipelineColumn, agent?: string) =>
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/move`, { column, agent }),
   claimTask: (projectId: string, taskId: string, agentRole: string) =>
     post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/claim`, { agentRole }),
   blockTask: (projectId: string, taskId: string, reason: string) =>
@@ -174,6 +179,7 @@ export const rest = {
   // Orchestrator
   activateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/activate`),
   deactivateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/deactivate`),
+  getRestartStatus: () => get<{ lastRestartAt: number; cooldownRemaining: number; cooldownActive: boolean }>('/api/orchestrator/restart-status'),
   getOrchestratorStatus: (folderId: string) => get<{ folderId: string; active: boolean; idleAgents: number; runningAgents: number; pendingTasks: number }>(`/api/orchestrator/${folderId}/status`),
   getOrchestratorLogs: (params?: { type?: string; limit?: number }) =>
     get<{ logs: Array<{ id: number; type: string; timestamp: number; instanceId?: string; instanceName?: string; taskId?: string; taskTitle?: string; detail?: string }> }>(
@@ -223,4 +229,16 @@ export const rest = {
       byWeekday: Array<{ weekday: number; label: string; session_count: number; total_cost_usd: number }>;
       byDay: Array<{ day: string; session_count: number; total_cost_usd: number }>;
     }>(`/api/usage/stats?days=${days}`),
+
+  // Analytics endpoints
+  getUsageTrend: (days = 14) =>
+    get<UsageTrendDay[]>(`/api/usage/trend?days=${days}`),
+  getUsageByColumn: (days = 14) =>
+    get<UsageByColumn[]>(`/api/usage/by-column?days=${days}`),
+  getUsageForecast: (days = 14) =>
+    get<UsageForecast>(`/api/usage/forecast?days=${days}`),
+  getUsageAnomalies: (days = 14) =>
+    get<UsageAnomaly[]>(`/api/usage/anomalies?days=${days}`),
+  getUsageEfficiency: (days = 14) =>
+    get<UsageEfficiencyDay[]>(`/api/usage/efficiency?days=${days}`),
 }

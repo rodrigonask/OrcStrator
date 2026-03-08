@@ -1,9 +1,192 @@
 import type { FastifyInstance } from 'fastify'
 import { getCurrentUsage, generateAuthUrl, exchangeCode, disconnect, fetchUsage } from '../services/usage-monitor.js'
 import { db } from '../db.js'
-import type { DailySavingsEntry, SavingsSummary } from '@orcstrator/shared'
+import type { DailySavingsEntry, SavingsSummary, UsageTrendDay, UsageByColumn, UsageForecast, UsageAnomaly, UsageEfficiencyDay } from '@orcstrator/shared'
 
 export default async function usageRoutes(app: FastifyInstance): Promise<void> {
+
+  // === ANALYTICS ENDPOINTS ===
+
+  // Daily trend with token type breakdown
+  app.get('/usage/trend', async (request) => {
+    const { days = '7' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const rows = db.prepare(`
+      SELECT
+        date(created_at / 1000, 'unixepoch') AS day,
+        COALESCE(SUM(input_tokens) - SUM(COALESCE(cache_read_tokens, 0)) - SUM(COALESCE(cache_creation_tokens, 0)), 0) AS cold_input,
+        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cost_usd), 0) AS cost_usd,
+        COUNT(*) AS sessions
+      FROM token_usage
+      WHERE created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(since) as Array<Record<string, number | string>>
+
+    return rows.map(r => ({
+      day: r.day as string,
+      coldInput: Math.max(0, Number(r.cold_input) || 0),
+      cacheCreation: Number(r.cache_creation) || 0,
+      cacheRead: Number(r.cache_read) || 0,
+      outputTokens: Number(r.output_tokens) || 0,
+      costUsd: Number(r.cost_usd) || 0,
+      sessions: Number(r.sessions) || 0,
+    } satisfies UsageTrendDay))
+  })
+
+  // Cost breakdown by pipeline column
+  app.get('/usage/by-column', async (request) => {
+    const { days = '7' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const rows = db.prepare(`
+      SELECT
+        COALESCE(pt."column", 'other') AS col,
+        COALESCE(SUM(tu.cost_usd), 0) AS cost_usd,
+        COUNT(*) AS sessions
+      FROM token_usage tu
+      LEFT JOIN pipeline_tasks pt ON tu.task_id = pt.id
+      WHERE tu.created_at >= ?
+      GROUP BY col
+      ORDER BY cost_usd DESC
+    `).all(since) as Array<Record<string, number | string>>
+
+    return rows.map(r => ({
+      column: r.col as string,
+      costUsd: Number(r.cost_usd) || 0,
+      sessions: Number(r.sessions) || 0,
+    } satisfies UsageByColumn))
+  })
+
+  // Linear regression forecast
+  app.get('/usage/forecast', async (request) => {
+    const { days = '14' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 14, 3), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const rows = db.prepare(`
+      SELECT
+        date(created_at / 1000, 'unixepoch') AS day,
+        COALESCE(SUM(cost_usd), 0) AS cost_usd
+      FROM token_usage
+      WHERE created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(since) as Array<{ day: string; cost_usd: number }>
+
+    if (rows.length < 2) {
+      return { projectedMonthly: 0, dailyRate: 0, r2: 0 } satisfies UsageForecast
+    }
+
+    const costs = rows.map(r => Number(r.cost_usd) || 0)
+    const nPts = costs.length
+    const xs = costs.map((_, i) => i)
+    const sumX = xs.reduce((a, b) => a + b, 0)
+    const sumY = costs.reduce((a, b) => a + b, 0)
+    const sumXY = xs.reduce((a, x, i) => a + x * costs[i], 0)
+    const sumX2 = xs.reduce((a, x) => a + x * x, 0)
+    const meanY = sumY / nPts
+
+    const denom = nPts * sumX2 - sumX * sumX
+    const m = denom !== 0 ? (nPts * sumXY - sumX * sumY) / denom : 0
+    const b = (sumY - m * sumX) / nPts
+
+    const ssRes = costs.reduce((a, y, i) => a + (y - (m * i + b)) ** 2, 0)
+    const ssTot = costs.reduce((a, y) => a + (y - meanY) ** 2, 0)
+    const r2 = ssTot > 0 ? Math.max(0, 1 - ssRes / ssTot) : 0
+
+    const dailyRate = Math.max(0, sumY / nPts)
+    const projectedMonthly = +(dailyRate * 30).toFixed(2)
+
+    return { projectedMonthly, dailyRate: +dailyRate.toFixed(4), r2: +r2.toFixed(4) } satisfies UsageForecast
+  })
+
+  // Anomaly detection: sessions costing > 2x rolling median
+  app.get('/usage/anomalies', async (request) => {
+    const { days = '7' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const rows = db.prepare(`
+      SELECT
+        tu.session_id,
+        tu.role,
+        tu.cost_usd,
+        tu.created_at,
+        pt.title AS task_title
+      FROM token_usage tu
+      LEFT JOIN pipeline_tasks pt ON tu.task_id = pt.id
+      WHERE tu.created_at >= ? AND tu.cost_usd > 0
+      ORDER BY tu.cost_usd DESC
+    `).all(since) as Array<Record<string, unknown>>
+
+    const costs = rows.map(r => Number(r.cost_usd) || 0).sort((a, b) => a - b)
+    const median = costs.length > 0 ? costs[Math.floor(costs.length / 2)] : 0
+    const threshold = median * 2
+
+    return rows.map(r => {
+      const cost = Number(r.cost_usd) || 0
+      return {
+        sessionId: r.session_id as string,
+        role: (r.role as string) || 'unknown',
+        costUsd: cost,
+        medianCost: +median.toFixed(4),
+        multiplier: median > 0 ? +(cost / median).toFixed(1) : 0,
+        taskTitle: (r.task_title as string) || null,
+        createdAt: r.created_at as number,
+        isAnomaly: cost > threshold,
+      } satisfies UsageAnomaly
+    })
+  })
+
+  // Daily efficiency metrics
+  app.get('/usage/efficiency', async (request) => {
+    const { days = '7' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 7, 1), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const rows = db.prepare(`
+      SELECT
+        date(created_at / 1000, 'unixepoch') AS day,
+        CASE WHEN SUM(input_tokens) > 0
+          THEN CAST(SUM(output_tokens) AS REAL) / SUM(input_tokens)
+          ELSE 0 END AS yield_ratio,
+        CASE WHEN COUNT(*) > 0
+          THEN SUM(prompt_chars) / COUNT(*)
+          ELSE 0 END AS avg_prompt_chars,
+        CASE WHEN SUM(input_tokens) > 0
+          THEN CAST(SUM(COALESCE(cache_read_tokens, 0)) AS REAL) / SUM(input_tokens)
+          ELSE 0 END AS cache_hit_ratio
+      FROM token_usage
+      WHERE created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(since) as Array<Record<string, number | string>>
+
+    return rows.map(r => {
+      const hitRatio = Number(r.cache_hit_ratio) || 0
+      let grade: 'A' | 'B' | 'C' | 'D' | 'F'
+      if (hitRatio >= 0.8) grade = 'A'
+      else if (hitRatio >= 0.6) grade = 'B'
+      else if (hitRatio >= 0.4) grade = 'C'
+      else if (hitRatio >= 0.2) grade = 'D'
+      else grade = 'F'
+
+      return {
+        day: r.day as string,
+        yieldRatio: +(Number(r.yield_ratio) || 0).toFixed(4),
+        avgPromptChars: Math.round(Number(r.avg_prompt_chars) || 0),
+        cacheGrade: grade,
+      } satisfies UsageEfficiencyDay
+    })
+  })
+
   // Token usage history (from pipeline monitoring)
   app.get('/usage/history', async (request) => {
     const { limit = '50' } = request.query as Record<string, string>
