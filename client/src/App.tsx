@@ -15,6 +15,7 @@ import { WelcomeOverlay } from './components/tour/WelcomeOverlay'
 import { GuidedTour } from './components/tour/GuidedTour'
 import { LevelUpFeaturePopup } from './components/tour/LevelUpFeaturePopup'
 import { GameScreen } from './components/game'
+import { AgentsPage } from './components/AgentsPage'
 import { api } from './api'
 
 function AppContent() {
@@ -80,7 +81,7 @@ function AppContent() {
         if (preview) parts.push(preview)
       }
     }
-    document.title = 'OrcStrator: ' + parts.join(' | ')
+    document.title = parts.join(' | ')
   }, [selectedInstanceId, instances, folders, messages])
 
   return (
@@ -93,6 +94,7 @@ function AppContent() {
           <>
             {view === 'chat' && selectedInstanceId && <ChatView />}
             {view === 'pipeline' && <PipelineBoard />}
+            {view === 'agents' && <AgentsPage />}
 {!selectedInstanceId && view === 'chat' && <GameScreen />}
           </>
         )}

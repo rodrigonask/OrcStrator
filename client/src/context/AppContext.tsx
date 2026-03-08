@@ -41,9 +41,11 @@ interface UISlice {
   sidebarCollapsed: boolean
   showFolderBrowser: boolean
   editingFolderId: string | null
-  view: 'chat' | 'pipeline' | 'monitor'
+  view: 'chat' | 'pipeline' | 'monitor' | 'agents'
   activePipelineId: string | null
   connected: boolean
+  serverRestarted: boolean
+  serverBootTime: number | null
   usage: UsageData | null
   terminalPanelOpen: boolean
   showSettings: boolean
@@ -85,11 +87,13 @@ export type Action =
   | { type: 'TOOL_COMPLETE'; payload: { instanceId: string; toolId: string; output: string; isError?: boolean } }
   | { type: 'SET_MESSAGE_TOKENS'; payload: { instanceId: string; messageId: string; inputTokens?: number; outputTokens?: number; costUsd?: number } }
   | { type: 'TOGGLE_SIDEBAR' }
-  | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' | 'monitor' }
+  | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' | 'monitor' | 'agents' }
   | { type: 'SET_ACTIVE_PIPELINE'; payload: string | null }
   | { type: 'CLEAR_UNREAD'; payload: string }
   | { type: 'INCREMENT_UNREAD'; payload: string }
   | { type: 'SET_CONNECTED'; payload: boolean }
+  | { type: 'SET_SERVER_BOOT_TIME'; payload: number }
+  | { type: 'DISMISS_SERVER_RESTART' }
   | { type: 'SET_USAGE'; payload: UsageData | null }
   | { type: 'UPDATE_SETTINGS'; payload: Partial<AppSettings> }
   | { type: 'CLEAR_MESSAGES'; payload: string }
@@ -140,6 +144,8 @@ const initialUI: UISlice = {
   view: 'chat',
   activePipelineId: null,
   connected: false,
+  serverRestarted: false,
+  serverBootTime: null,
   usage: null,
   terminalPanelOpen: false,
   showSettings: false,
@@ -294,6 +300,13 @@ function uiReducer(state: UISlice, action: Action): UISlice {
       return { ...state, activePipelineId: action.payload }
     case 'SET_CONNECTED':
       return { ...state, connected: action.payload }
+    case 'SET_SERVER_BOOT_TIME': {
+      const prev = state.serverBootTime
+      const restarted = prev !== null && prev !== action.payload
+      return { ...state, serverBootTime: action.payload, serverRestarted: restarted || state.serverRestarted }
+    }
+    case 'DISMISS_SERVER_RESTART':
+      return { ...state, serverRestarted: false }
     case 'SET_USAGE':
       return { ...state, usage: action.payload }
     case 'OPEN_FOLDER_BROWSER':
@@ -398,6 +411,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'SET_VIEW':
       case 'SET_ACTIVE_PIPELINE':
       case 'SET_CONNECTED':
+      case 'SET_SERVER_BOOT_TIME':
+      case 'DISMISS_SERVER_RESTART':
       case 'SET_USAGE':
       case 'OPEN_FOLDER_BROWSER':
       case 'CLOSE_FOLDER_BROWSER':
@@ -447,13 +462,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(
       api.onConnection((payload: { connected: boolean; reconnected?: boolean }) => {
         dispatch({ type: 'SET_CONNECTED', payload: payload.connected })
-        if (payload.connected && payload.reconnected && uiStateRef.current.selectedInstanceId) {
-          const id = uiStateRef.current.selectedInstanceId
-          api.getHistory(id, { limit: 50 }).then((data) => {
-            const messages = (data as any).messages ?? data
-            const hasMore = (data as any).hasMore ?? false
-            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
+        if (payload.connected) {
+          // Check server boot time to detect restarts
+          api.getHealth().then(health => {
+            dispatch({ type: 'SET_SERVER_BOOT_TIME', payload: health.bootTime })
           }).catch(() => {})
+
+          if (payload.reconnected && uiStateRef.current.selectedInstanceId) {
+            const id = uiStateRef.current.selectedInstanceId
+            api.getHistory(id, { limit: 50 }).then((data) => {
+              const messages = (data as any).messages ?? data
+              const hasMore = (data as any).hasMore ?? false
+              dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
+            }).catch(() => {})
+          }
         }
       })
     )
@@ -712,6 +734,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       editingFolderId: uiState.editingFolderId,
       activePipelineId: uiState.activePipelineId,
       connected: uiState.connected,
+      serverRestarted: uiState.serverRestarted,
       usage: uiState.usage,
       settings: instState.settings,
     }),
@@ -773,6 +796,7 @@ export function useApp(): AppContextValue {
       view: ui.view,
       activePipelineId: ui.activePipelineId,
       connected: ui.connected,
+      serverRestarted: ui.serverRestarted,
       usage: ui.usage,
       terminalPanelOpen: ui.terminalPanelOpen,
       showSettings: ui.showSettings,
