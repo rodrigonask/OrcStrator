@@ -1,8 +1,24 @@
 import { createContext, useContext } from 'react'
-import type { AppSettings, UsageData } from '@shared/types'
+import type { AppSettings, UsageData, PipelineColumn } from '@shared/types'
+
+/** Maps pipeline columns to the agent role responsible for that phase */
+export const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
+  spec: 'planner',
+  build: 'builder',
+  qa: 'tester',
+  ship: 'promoter',
+}
+
+/** Inverse mapping: agent role → pipeline column */
+export const ROLE_TO_COLUMN: Record<string, PipelineColumn> = {
+  planner: 'spec',
+  builder: 'build',
+  tester: 'qa',
+  promoter: 'ship',
+}
 
 export interface UIContextValue {
-  view: 'chat' | 'pipeline' | 'monitor'
+  view: 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage'
   selectedInstanceId: string | null
   sidebarCollapsed: boolean
   terminalPanelOpen: boolean
@@ -11,6 +27,7 @@ export interface UIContextValue {
   editingFolderId: string | null
   activePipelineId: string | null
   connected: boolean
+  serverRestarted: boolean
   usage: UsageData | null
   settings: AppSettings
 }
@@ -36,6 +53,7 @@ const defaultValue: UIContextValue = {
   editingFolderId: null,
   activePipelineId: null,
   connected: false,
+  serverRestarted: false,
   usage: null,
   settings: defaultSettings,
 }

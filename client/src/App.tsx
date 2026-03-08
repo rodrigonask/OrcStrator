@@ -16,6 +16,7 @@ import { GuidedTour } from './components/tour/GuidedTour'
 import { LevelUpFeaturePopup } from './components/tour/LevelUpFeaturePopup'
 import { GameScreen } from './components/game'
 import { AgentsPage } from './components/AgentsPage'
+import { UsageReportPage } from './components/UsageReportPage'
 import { api } from './api'
 
 function AppContent() {
@@ -95,6 +96,7 @@ function AppContent() {
             {view === 'chat' && selectedInstanceId && <ChatView />}
             {view === 'pipeline' && <PipelineBoard />}
             {view === 'agents' && <AgentsPage />}
+            {view === 'usage' && <UsageReportPage />}
 {!selectedInstanceId && view === 'chat' && <GameScreen />}
           </>
         )}

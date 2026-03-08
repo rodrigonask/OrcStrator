@@ -104,6 +104,15 @@ export function Sidebar() {
           >
             <span className="font-mono" style={{ fontSize: '11px' }}>Agents</span>
           </button>
+          <button
+            className={`sidebar-nav-btn${view === 'usage' ? ' active' : ''}`}
+            onClick={() => {
+              dispatch({ type: 'SELECT_INSTANCE', payload: null })
+              dispatch({ type: 'SET_VIEW', payload: 'usage' })
+            }}
+          >
+            <span className="font-mono" style={{ fontSize: '11px' }}>Usage</span>
+          </button>
         </div>
 
         <div className="sidebar-add-folder" style={{ display: 'flex', gap: 4, padding: '8px 8px' }}>

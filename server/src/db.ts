@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import fs from 'fs'
 import { DATA_DIR, DB_PATH } from './config.js'
-import { DEFAULT_SETTINGS } from '@nasklaude/shared'
+import { DEFAULT_SETTINGS } from '@orcstrator/shared'
 
 let db: Database.Database
 
@@ -138,7 +138,8 @@ function migration001(): void {
       current_level INTEGER DEFAULT 1,
       level_challenges_completed TEXT DEFAULT '[]',
       dismissed_hints TEXT DEFAULT '[]',
-      onboarding_complete INTEGER DEFAULT 0
+      onboarding_complete INTEGER DEFAULT 0,
+      guided_mode TEXT DEFAULT NULL
     );
 
     CREATE TABLE IF NOT EXISTS oauth_tokens (
@@ -369,6 +370,30 @@ function migration015(): void {
   setSchemaVersion(15)
 }
 
+function migration016(): void {
+  try {
+    db.prepare('ALTER TABLE instances ADD COLUMN process_pid INTEGER DEFAULT NULL').run()
+  } catch {
+    // column already exists
+  }
+  setSchemaVersion(16)
+}
+
+function migration017(): void {
+  const columns: Array<[string, string]> = [
+    ['agents', 'personality TEXT DEFAULT NULL'],
+    ['agents', "source TEXT DEFAULT 'user'"],
+  ]
+  for (const [table, col] of columns) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
+    } catch {
+      // column already exists
+    }
+  }
+  setSchemaVersion(17)
+}
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
 
@@ -430,6 +455,14 @@ function runMigrations(): void {
 
   if (currentVersion < 15) {
     migration015()
+  }
+
+  if (currentVersion < 16) {
+    migration016()
+  }
+
+  if (currentVersion < 17) {
+    migration017()
   }
 }
 

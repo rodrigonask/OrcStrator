@@ -112,6 +112,48 @@ export interface SavingsSummary {
   recommendation: string | null
 }
 
+// === USAGE ANALYTICS ===
+
+export interface UsageTrendDay {
+  day: string
+  coldInput: number
+  cacheCreation: number
+  cacheRead: number
+  outputTokens: number
+  costUsd: number
+  sessions: number
+}
+
+export interface UsageByColumn {
+  column: string
+  costUsd: number
+  sessions: number
+}
+
+export interface UsageForecast {
+  projectedMonthly: number
+  dailyRate: number
+  r2: number
+}
+
+export interface UsageAnomaly {
+  sessionId: string
+  role: string
+  costUsd: number
+  medianCost: number
+  multiplier: number
+  taskTitle: string | null
+  createdAt: number
+  isAnomaly: boolean
+}
+
+export interface UsageEfficiencyDay {
+  day: string
+  yieldRatio: number
+  avgPromptChars: number
+  cacheGrade: 'A' | 'B' | 'C' | 'D' | 'F'
+}
+
 // === PIPELINE ===
 
 export type PipelineColumn = 'backlog' | 'scheduled' | 'spec' | 'build' | 'qa' | 'ship' | 'done'
@@ -213,6 +255,14 @@ export interface PipelineEvent {
 
 // === AGENTS & SKILLS ===
 
+export interface AgentPersonality {
+  disc?: { D: number; I: number; S: number; C: number }
+  mbti?: string
+  big5?: { O: number; C: number; E: number; A: number; N: number }
+  tone?: 'formal' | 'casual' | 'playful' | 'technical'
+  formality?: number
+}
+
 export interface AgentConfig {
   id: string
   name: string
@@ -220,6 +270,8 @@ export interface AgentConfig {
   level: number        // 0=empty, 1=identity, 2=behavior, 3=full
   skills: string[]
   mcpServers: string[]
+  personality?: AgentPersonality | null
+  source?: 'user' | 'native'
   createdAt: number
 }
 
@@ -270,6 +322,7 @@ export interface AppSettings {
   animationsEnabled?: boolean
   soundsEnabled?: boolean
   namingTheme?: 'fruits' | 'rpg' | 'wow' | 'memes'
+  maxConcurrentProcesses?: number
 }
 
 // === USAGE MONITORING ===
@@ -306,6 +359,7 @@ export interface TourState {
   levelChallengesCompleted: string[]
   dismissedHints: string[]
   onboardingComplete: boolean
+  guidedMode?: 'guided' | 'god'
 }
 
 export type XpEventType =
