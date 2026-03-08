@@ -163,6 +163,8 @@ export const rest = {
   updateAgent: (id: string, data: Partial<AgentConfig>) => put<AgentConfig>(`/api/agents/${id}`, data),
   deleteAgent: (id: string) => del<{ ok: true }>(`/api/agents/${id}`),
   scanAgents: () => post<AgentConfig[]>('/api/agents/scan'),
+  syncNativeAgents: () => post<{ synced: number; agents: AgentConfig[] }>('/api/agents/sync-native'),
+  createAgentEditSession: (agentId: string) => post<{ instanceId: string }>(`/api/agents/${agentId}/edit-session`),
 
   // Skills
   getSkills: () => get<SkillConfig[]>('/api/skills'),
@@ -173,6 +175,10 @@ export const rest = {
   activateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/activate`),
   deactivateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/deactivate`),
   getOrchestratorStatus: (folderId: string) => get<{ folderId: string; active: boolean; idleAgents: number; runningAgents: number; pendingTasks: number }>(`/api/orchestrator/${folderId}/status`),
+  getOrchestratorLogs: (params?: { type?: string; limit?: number }) =>
+    get<{ logs: Array<{ id: number; type: string; timestamp: number; instanceId?: string; instanceName?: string; taskId?: string; taskTitle?: string; detail?: string }> }>(
+      `/api/orchestrator/logs${params ? '?' + new URLSearchParams(params as Record<string, string>) : ''}`
+    ),
   pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
   shutdownAll: () => post<{ killed: number; instanceIds: string[] }>('/api/shutdown'),

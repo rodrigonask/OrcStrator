@@ -1,9 +1,12 @@
 import { useState, useCallback, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useUI } from '../context/UIContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
+import { useFeatureGate } from '../hooks/useFeatureGate'
 import { OrcFeed } from './pipeline/OrcFeed'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { api } from '../api'
 import type { SavingsSummary } from '@shared/types'
 
@@ -44,6 +47,7 @@ export function RightSidebar() {
   const { instances, folders } = useInstances()
   const { dispatch } = useAppDispatch()
   const { profile, currentLevel, nextLevel, xpProgress } = useGame()
+  const overdriveGate = useFeatureGate('overdrive')
   const [collapsed, setCollapsed] = useState(false)
   const [orcMode, setOrcMode] = useState(false)
   const [savings, setSavings] = useState<SavingsSummary | null>(null)
@@ -80,7 +84,7 @@ export function RightSidebar() {
     dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: orcFolderId })
   }, [dispatch, orcFolderId])
 
-  const userName = (settings.userName as string | undefined) || 'Nask'
+  const userName = (settings.userName as string | undefined) || 'The Human'
   const userEmoji = (settings.userEmoji as string | undefined) || '🧠'
   const tier = currentLevel?.tier ?? 'Beginner'
   const tierColor = TIER_COLORS[tier] ?? '#10b981'
@@ -93,19 +97,11 @@ export function RightSidebar() {
   const handleShutdownConfirm = useCallback(async () => {
     setShowShutdown(false)
     try {
-      const result = await api.shutdownAll()
-      for (const id of result.instanceIds) {
-        dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle', sessionId: undefined } } })
-      }
-      for (const f of folders) {
-        if (f.orchestratorActive) {
-          dispatch({ type: 'UPDATE_FOLDER', payload: { id: f.id, updates: { orchestratorActive: false } } })
-        }
-      }
-    } catch (err) {
-      console.error('Shutdown failed:', err)
+      await api.terminate()
+    } catch {
+      // Server will be unreachable after terminate — that's expected
     }
-  }, [dispatch, folders])
+  }, [])
 
   const STATS = [
     { icon: '⚔️', value: fmtNum(profile?.tasksDone ?? 0), label: 'Tasks Done' },
@@ -183,6 +179,9 @@ export function RightSidebar() {
         <>
           {/* ── Identity card (compact) ── */}
           <div className="rs-identity-card">
+            <div style={{ fontFamily: 'var(--font-pixel)', fontSize: 7, color: 'var(--text-tertiary)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 4 }}>
+              The Human
+            </div>
             <div className="rs-identity-top">
               <span
                 className="rs-avatar-sm"
@@ -258,7 +257,7 @@ export function RightSidebar() {
           </div>
 
           {/* ── Stats grid ── */}
-          <div className="rs-section">
+          <div className="rs-section" data-tour-id="tour-stats">
             <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Stats</div>
             <div className="rs-stats-grid">
               {STATS.map(({ icon, value, label }) => (
@@ -272,7 +271,7 @@ export function RightSidebar() {
           </div>
 
           {/* ── Overdrive Meter ── */}
-          {savings && (
+          {savings && overdriveGate.unlocked && (
             <div className="rs-section">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                 <span style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -307,6 +306,17 @@ export function RightSidebar() {
               </div>
             </div>
           )}
+          {!overdriveGate.unlocked && (
+            <div
+              className="rs-section"
+              style={{ cursor: 'pointer', opacity: 0.5 }}
+              onClick={() => overdriveGate.check()}
+            >
+              <div style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {'\uD83D\uDD12'} Overdrive — Lv.{overdriveGate.gate?.level}
+              </div>
+            </div>
+          )}
 
           {/* ── Usage (OAuth) ── */}
           {usage && usage.buckets.length > 0 && (
@@ -335,7 +345,7 @@ export function RightSidebar() {
 
           {/* ── Footer ── */}
           <div className="rs-footer">
-            <button className="rs-settings-btn" onClick={() => dispatch({ type: 'OPEN_SETTINGS' })} title="Settings">
+            <button className="rs-settings-btn" data-tour-id="tour-settings" onClick={() => dispatch({ type: 'OPEN_SETTINGS' })} title="Settings">
               ⚙ Settings
             </button>
             <button
@@ -349,16 +359,16 @@ export function RightSidebar() {
         </>
       )}
 
-      {showShutdown && (
+      {showShutdown && createPortal(
         <div className="modal-overlay" onClick={() => setShowShutdown(false)}>
           <div className="modal-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
             <div className="modal-header">
-              <span className="modal-title">Kill All Sessions</span>
+              <span className="modal-title">Log out and TERMINATE THE SERVER?</span>
               <button className="modal-close" onClick={() => setShowShutdown(false)}>×</button>
             </div>
             <div className="modal-body">
               <p style={{ marginBottom: 8 }}>
-                This will terminate <strong>{instances.length} session{instances.length !== 1 ? 's' : ''}</strong> across all projects.
+                This will kill all sessions and shut down the OrcStrator server process. You will need to restart the server manually.
               </p>
               {activeAgents > 0 && (
                 <p style={{ color: 'var(--warning)', fontSize: 13, margin: 0 }}>
@@ -368,10 +378,15 @@ export function RightSidebar() {
             </div>
             <div className="modal-footer">
               <button className="btn" onClick={() => setShowShutdown(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={handleShutdownConfirm}>Kill All</button>
+              <button className="btn btn-danger" onClick={handleShutdownConfirm}>Terminate Server</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {overdriveGate.showLockedModal && overdriveGate.gate && (
+        <FeatureLockedModal gate={overdriveGate.gate} onClose={overdriveGate.dismissModal} />
       )}
     </aside>
   )
