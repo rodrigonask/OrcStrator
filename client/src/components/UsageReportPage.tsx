@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { api } from '../api'
+import { useAppDispatch } from '../context/AppDispatchContext'
 import type {
   UsageTrendDay,
   UsageByColumn,
@@ -9,6 +10,19 @@ import type {
 } from '@shared/types'
 
 type TimeRange = 7 | 14 | 30
+
+interface SessionLogRow {
+  session_id: string
+  instance_id: string | null
+  instance_name: string | null
+  role: string
+  task_title: string | null
+  project_name: string | null
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  created_at: number
+}
 
 interface WeekdayData {
   weekday: number
@@ -43,11 +57,6 @@ interface ProjectUsage {
   session_count: number
 }
 
-interface SavingsData {
-  overdrivePct: number
-  savedUsd: number
-}
-
 export function UsageReportPage() {
   const [days, setDays] = useState<TimeRange>(14)
   const [trend, setTrend] = useState<UsageTrendDay[]>([])
@@ -58,11 +67,21 @@ export function UsageReportPage() {
   const [stats, setStats] = useState<UsageStats | null>(null)
   const [priorStats, setPriorStats] = useState<UsageStats | null>(null)
   const [byProject, setByProject] = useState<ProjectUsage[]>([])
-  const [savings, setSavings] = useState<SavingsData | null>(null)
   const [weekdays, setWeekdays] = useState<WeekdayData[]>([])
+  const [sessionLog, setSessionLog] = useState<SessionLogRow[]>([])
+  const [logSortCol, setLogSortCol] = useState<string>('created_at')
+  const [logSortAsc, setLogSortAsc] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState<string | null>(null)
+  const dispatch = useAppDispatch()
 
-  useEffect(() => {
+  const handleInstanceClick = useCallback((instanceId: string) => {
+    dispatch({ type: 'SELECT_INSTANCE', payload: instanceId })
+    dispatch({ type: 'SET_VIEW', payload: 'chat' })
+  }, [dispatch])
+
+  const fetchData = () => {
     setLoading(true)
     Promise.all([
       api.getUsageTrend(days),
@@ -73,8 +92,8 @@ export function UsageReportPage() {
       api.getUsageStats(days),
       api.getUsageStats(days * 2),
       api.getUsageByProject(days),
-      api.getSavings(days),
-    ]).then(([t, c, f, a, e, s, s2, p, sv]) => {
+      api.getUsageLog(200, days),
+    ]).then(([t, c, f, a, e, s, s2, p, log]) => {
       setTrend(t)
       setByColumn(c)
       setForecast(f)
@@ -83,11 +102,29 @@ export function UsageReportPage() {
       setStats(s)
       setPriorStats(s2)
       setByProject(p as unknown as ProjectUsage[])
-      setSavings(sv as unknown as SavingsData)
       setWeekdays((s as UsageStats).byWeekday as unknown as WeekdayData[] ?? [])
+      setSessionLog(log as unknown as SessionLogRow[])
     }).catch(err => console.error('Usage fetch error:', err))
       .finally(() => setLoading(false))
-  }, [days])
+  }
+
+  useEffect(() => { fetchData() }, [days])
+
+  const handleSyncUntracked = async () => {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch('/api/usage/sync-untracked', { method: 'POST' })
+      const data = await res.json() as { imported: number; scanned: number; errors: number }
+      setSyncResult(`Imported ${data.imported} of ${data.scanned} sessions${data.errors ? ` (${data.errors} errors)` : ''}`)
+      if (data.imported > 0) fetchData()
+    } catch (err) {
+      setSyncResult('Sync failed')
+      console.error('Sync error:', err)
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   if (loading) {
     return <div className="usage-page"><div className="usage-loading font-mono">Loading analytics...</div></div>
@@ -109,24 +146,35 @@ export function UsageReportPage() {
     <div className="usage-page">
       <div className="usage-header">
         <h2 className="font-pixel" style={{ fontSize: 14, margin: 0 }}>Usage Analytics</h2>
-        <div className="usage-range-selector">
-          {([7, 14, 30] as TimeRange[]).map(d => (
-            <button
-              key={d}
-              className={`usage-range-btn font-mono${days === d ? ' active' : ''}`}
-              onClick={() => setDays(d)}
-            >{d}d</button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            className="usage-range-btn font-mono"
+            onClick={handleSyncUntracked}
+            disabled={syncing}
+            title="Import token usage from direct Claude CLI sessions"
+          >
+            {syncing ? 'Syncing...' : 'Sync Untracked'}
+          </button>
+          {syncResult && <span className="font-mono" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{syncResult}</span>}
+          <div className="usage-range-selector">
+            {([7, 14, 30] as TimeRange[]).map(d => (
+              <button
+                key={d}
+                className={`usage-range-btn font-mono${days === d ? ' active' : ''}`}
+                onClick={() => setDays(d)}
+              >{d}d</button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* KPI Cards */}
       <div className="usage-kpi-row">
         <KpiCard label="Total Cost" value={`$${totalCost.toFixed(2)}`} sub={`${days}d`} delta={spendDelta} />
+        <KpiCard label="Tokens Used" value={fmtTokens(totalInput + totalOutput)} sub={`${fmtTokens(totalInput)} in / ${fmtTokens(totalOutput)} out`} />
         <KpiCard label="Burn Rate" value={`$${(totalCost / Math.max(1, days)).toFixed(2)}/d`} sub={forecast ? `~$${forecast.projectedMonthly.toFixed(0)}/mo` : ''} />
         <KpiCard label="Cache Grade" value={cacheGradeLetter(cacheHit)} sub={`${(cacheHit * 100).toFixed(0)}% hit`} accent={cacheHit >= 0.6} />
         <KpiCard label="Tasks/Dollar" value={totalCost > 0 ? (totalSessions / totalCost).toFixed(1) : '0'} sub={`${totalSessions} tasks`} />
-        <KpiCard label="Token Yield" value={totalInput > 0 ? (totalOutput / totalInput).toFixed(2) : '0'} sub="out/in ratio" />
       </div>
 
       {/* Forecast Card */}
@@ -161,6 +209,14 @@ export function UsageReportPage() {
         </div>
       </div>
 
+      {/* Weekday Breakdown */}
+      {weekdays.length > 0 && (
+        <div className="usage-section">
+          <h3 className="usage-section-title font-pixel">Cost by Weekday</h3>
+          <WeekdayBars weekdays={weekdays} />
+        </div>
+      )}
+
       {/* Pipeline Heatmap */}
       <div className="usage-section">
         <h3 className="usage-section-title font-pixel">Pipeline Cost Heatmap</h3>
@@ -189,6 +245,23 @@ export function UsageReportPage() {
         </div>
       )}
 
+      {/* Session Log */}
+      {sessionLog.length > 0 && (
+        <div className="usage-section">
+          <h3 className="usage-section-title font-pixel">Session Log</h3>
+          <SessionLogTable
+            rows={sessionLog}
+            sortCol={logSortCol}
+            sortAsc={logSortAsc}
+            onSort={(col) => {
+              if (logSortCol === col) setLogSortAsc(a => !a)
+              else { setLogSortCol(col); setLogSortAsc(true) }
+            }}
+            onInstanceClick={handleInstanceClick}
+          />
+        </div>
+      )}
+
       {/* Recommendations */}
       <RecommendationsCard
         cacheHit={cacheHit}
@@ -197,7 +270,6 @@ export function UsageReportPage() {
         efficiency={efficiency}
         trend={trend}
         roles={stats?.byRole ?? []}
-        overdrivePct={savings?.overdrivePct ?? 100}
         weekdays={weekdays}
       />
     </div>
@@ -322,7 +394,7 @@ function ProjectBars({ projects, totalCost }: { projects: ProjectUsage[]; totalC
 function PipelineHeatmap({ columns }: { columns: UsageByColumn[] }) {
   if (columns.length === 0) return <div className="usage-empty font-mono">No pipeline data</div>
   const maxCost = Math.max(1, ...columns.map(c => c.costUsd))
-  const columnOrder = ['spec', 'build', 'qa', 'ship', 'other']
+  const columnOrder = ['ready', 'in_progress', 'in_review', 'other']
   const sorted = [...columns].sort((a, b) => {
     const ai = columnOrder.indexOf(a.column)
     const bi = columnOrder.indexOf(b.column)
@@ -417,22 +489,16 @@ function AnomalyList({ anomalies }: { anomalies: UsageAnomaly[] }) {
   )
 }
 
-function RecommendationsCard({ cacheHit, anomalyCount, forecast, efficiency, trend, roles, overdrivePct, weekdays }: {
+function RecommendationsCard({ cacheHit, anomalyCount, forecast, efficiency, trend, roles, weekdays }: {
   cacheHit: number
   anomalyCount: number
   forecast: UsageForecast | null
   efficiency: UsageEfficiencyDay[]
   trend: UsageTrendDay[]
   roles: UsageStats['byRole']
-  overdrivePct: number
   weekdays: WeekdayData[]
 }) {
   const recs: Array<{ text: string; severity: 'warn' | 'info' }> = []
-
-  // Overdrive nudge
-  if (overdrivePct < 50) {
-    recs.push({ severity: 'warn', text: `Only ${overdrivePct}% of sessions use Overdrive cache. Run tasks consecutively within 1h to cut input costs by up to 85%.` })
-  }
 
   // Role imbalance: builder avg > 3x planner avg
   const builderRole = roles.find(r => r.role === 'builder')
@@ -484,6 +550,88 @@ function RecommendationsCard({ cacheHit, anomalyCount, forecast, efficiency, tre
           <div key={i} className={`usage-rec-item usage-rec-${r.severity} font-mono`}>{r.text}</div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function WeekdayBars({ weekdays }: { weekdays: WeekdayData[] }) {
+  const maxCost = Math.max(1, ...weekdays.map(w => w.total_cost_usd))
+  const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+  const sorted = [...weekdays].sort((a, b) => dayOrder.indexOf(a.label) - dayOrder.indexOf(b.label))
+
+  return (
+    <div className="usage-project-bars">
+      {sorted.map(w => (
+        <div key={w.label} className="usage-project-row">
+          <span className="usage-project-name font-mono" style={{ width: 36, minWidth: 36 }}>{w.label}</span>
+          <div className="usage-project-bar-track">
+            <div className="usage-project-bar-fill" style={{ width: `${(w.total_cost_usd / maxCost) * 100}%` }} />
+          </div>
+          <span className="usage-project-cost font-mono">
+            ${w.total_cost_usd.toFixed(2)}
+            <span className="usage-pct"> ({w.session_count}s)</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function SessionLogTable({ rows, sortCol, sortAsc, onSort, onInstanceClick }: {
+  rows: SessionLogRow[]
+  sortCol: string
+  sortAsc: boolean
+  onSort: (col: string) => void
+  onInstanceClick?: (id: string) => void
+}) {
+  const sorted = useMemo(() => {
+    if (!sortCol) return rows
+    return [...rows].sort((a, b) => {
+      const av = (a as Record<string, unknown>)[sortCol] ?? 0
+      const bv = (b as Record<string, unknown>)[sortCol] ?? 0
+      if (typeof av === 'number' && typeof bv === 'number') return sortAsc ? av - bv : bv - av
+      return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
+    })
+  }, [rows, sortCol, sortAsc])
+
+  const sortIcon = (col: string) => sortCol === col ? (sortAsc ? ' \u25B2' : ' \u25BC') : ''
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="usage-table">
+        <thead>
+          <tr>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('created_at')}>Date{sortIcon('created_at')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('session_id')}>Session{sortIcon('session_id')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('task_title')}>Task{sortIcon('task_title')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('project_name')}>Project{sortIcon('project_name')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('role')}>Role{sortIcon('role')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('input_tokens')}>Input{sortIcon('input_tokens')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('output_tokens')}>Output{sortIcon('output_tokens')}</th>
+            <th className="font-mono" style={{ cursor: 'pointer' }} onClick={() => onSort('cost_usd')}>Cost{sortIcon('cost_usd')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.length === 0 ? (
+            <tr><td colSpan={8} className="font-mono" style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 16 }}>No usage data</td></tr>
+          ) : sorted.map((row, i) => (
+            <tr key={i}>
+              <td className="font-mono">{new Date(row.created_at).toLocaleDateString()}</td>
+              <td className="font-mono">{row.session_id ? row.session_id.slice(0, 8) : '\u2014'}</td>
+              <td className="font-mono">{row.task_title || '\u2014'}</td>
+              <td className="font-mono">{row.project_name || '\u2014'}</td>
+              <td className="font-mono" style={{ textTransform: 'capitalize' }}>
+              {row.instance_id ? (
+                <span style={{ cursor: 'pointer', color: 'var(--accent)', textDecoration: 'underline' }} onClick={() => onInstanceClick?.(row.instance_id!)}>{row.instance_name || row.role || '\u2014'}</span>
+              ) : (row.role || '\u2014')}
+            </td>
+              <td className="font-mono">{(row.input_tokens ?? 0).toLocaleString()}</td>
+              <td className="font-mono">{(row.output_tokens ?? 0).toLocaleString()}</td>
+              <td className="font-mono">${(row.cost_usd ?? 0).toFixed(4)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
