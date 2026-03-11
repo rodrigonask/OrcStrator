@@ -31,6 +31,12 @@ export const api = {
     wsClient.on('instance:levelup', cb),
   onInstanceOverdrive: (cb: (payload: any) => void) =>
     wsClient.on('instance:overdrive', cb),
+  onProfileLevelUp: (cb: (payload: any) => void) =>
+    wsClient.on('profile:level-up', cb),
+  onOrchestratorLog: (cb: (payload: any) => void) =>
+    wsClient.on('orchestrator:log', cb),
+  onEvent: (event: string, cb: (payload: any) => void) =>
+    wsClient.on(event, cb),
 
   // Connection management
   connect: () => wsClient.connect(),

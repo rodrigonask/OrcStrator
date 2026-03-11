@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import crypto from 'crypto'
-import type { ChatMessage, MessageContentBlock } from '@nasklaude/shared'
+import type { ChatMessage, MessageContentBlock } from '@orcstrator/shared'
 
 export default async function historyRoutes(app: FastifyInstance): Promise<void> {
   // Get paginated message history for an instance

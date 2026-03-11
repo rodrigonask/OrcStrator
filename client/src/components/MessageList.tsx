@@ -5,41 +5,40 @@ import { useMessages } from '../context/MessagesContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
+import { useVerbosity } from '../hooks/useVerbosity'
 import { MessageBubble } from './MessageBubble'
 import { ActivityBubble } from './ActivityBubble'
 import { ToolCallBlock } from './ToolCallBlock'
-import { formatToolLabel, summarizeToolCalls } from '../utils/toolFormat'
+import { ThinkingIndicator } from './ThinkingIndicator'
+import { formatToolLabel, formatToolCall } from '../utils/toolFormat'
 
-function hasVisibleContent(msg: ChatMessage): boolean {
+type ToolCallEntry = { type: 'tool-call'; toolId: string; toolName: string; input: string }
+
+function hasTextContent(msg: ChatMessage): boolean {
   return msg.content.some(b => {
-    if (b.type === 'tool-result') return false
-    if (b.type === 'text' && !b.text?.trim()) return false
-    return true
+    if (b.type === 'text' && b.text?.trim()) return true
+    if (b.type === 'image') return true
+    if (b.type === 'orc-brief') return true
+    if (b.type === 'error') return true
+    return false
   })
 }
 
-const TERSE_CHAR_THRESHOLD = 60
-
-function isTerseAgentMsg(msg: ChatMessage): boolean {
-  if (msg.role !== 'assistant') return false
-  const toolCalls = msg.content.filter(b => b.type === 'tool-call')
-  if (toolCalls.length === 0) return false
-  const totalText = msg.content
-    .filter(b => b.type === 'text')
-    .map(b => (b as { type: 'text'; text: string }).text.trim())
-    .join('')
-  return totalText.length <= TERSE_CHAR_THRESHOLD
+function extractToolCalls(msg: ChatMessage): ToolCallEntry[] {
+  return msg.content.filter(b => b.type === 'tool-call') as ToolCallEntry[]
 }
 
-type MsgGroup =
-  | { kind: 'single'; msg: ChatMessage }
-  | { kind: 'tools'; msgs: ChatMessage[]; tersePhrases: string[] }
+type DisplayItem =
+  | { kind: 'message'; msg: ChatMessage }
+  | { kind: 'tools'; calls: ToolCallEntry[]; key: string }
+  | { kind: 'session-summary'; toolCount: number; key: string }
 
 export function MessageList() {
   const { selectedInstanceId: instanceId } = useUI()
   const { messages: allMessages, hasMore: allHasMore, streamingContent, streamingToolCalls } = useMessages()
   const { instances } = useInstances()
   const { loadOlderMessages } = useAppDispatch()
+  const verbosity = useVerbosity(instanceId)
   const messages: ChatMessage[] = instanceId ? (allMessages[instanceId] || []) : []
   const hasMore = instanceId ? (allHasMore[instanceId] ?? false) : false
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -60,7 +59,6 @@ export function MessageList() {
   const liveText = instanceId ? (streamingContent?.[instanceId] || '') : ''
   const liveToolCalls = instanceId ? (streamingToolCalls?.[instanceId] || []) : []
 
-  // Show live assistant turn bubble when: agent is running, streaming text, or live tool calls exist
   const lastMessage = messages[messages.length - 1]
   const showLiveTurn = isAgentRunning || !!liveText || liveToolCalls.length > 0 || lastMessage?.role === 'user'
 
@@ -77,35 +75,68 @@ export function MessageList() {
     return map
   }, [messages])
 
-  const visibleMessages = useMemo(() => messages.filter(hasVisibleContent), [messages])
+  // Build display items: text messages, aggregated tool groups, and per-session summaries
+  const items = useMemo(() => {
+    const result: DisplayItem[] = []
+    let pendingTools: ToolCallEntry[] = []
+    let pendingKey = ''
+    let sessionToolCount = 0
+    let hasSession = messages.length > 0
 
-  const groups = useMemo<MsgGroup[]>(() => {
-    const result: MsgGroup[] = []
-    let toolBatch: ChatMessage[] = []
-    let tersePhrases: string[] = []
-    for (const msg of visibleMessages) {
-      if (isTerseAgentMsg(msg)) {
-        toolBatch.push(msg)
-        const phrase = msg.content
-          .filter(b => b.type === 'text')
-          .map(b => (b as { type: 'text'; text: string }).text.trim())
-          .join(' ')
-          .trim()
-        if (phrase) tersePhrases.push(phrase)
-      } else {
-        if (toolBatch.length > 0) {
-          result.push({ kind: 'tools', msgs: toolBatch, tersePhrases })
-          toolBatch = []
-          tersePhrases = []
+    const flushTools = () => {
+      if (pendingTools.length > 0) {
+        // Level 1: strip all tools after execution
+        if (verbosity >= 2) {
+          result.push({ kind: 'tools', calls: pendingTools, key: pendingKey + '-tools' })
         }
-        result.push({ kind: 'single', msg })
+        pendingTools = []
+        pendingKey = ''
       }
     }
-    if (toolBatch.length > 0) result.push({ kind: 'tools', msgs: toolBatch, tersePhrases })
-    return result
-  }, [visibleMessages])
 
-  if (visibleMessages.length === 0) {
+    const endSession = (summaryKey: string) => {
+      if (hasSession && sessionToolCount > 0) {
+        // Level 1: no summary. Level 2: summary line. Level 3+: session summary
+        if (verbosity >= 2) {
+          result.push({ kind: 'session-summary', toolCount: sessionToolCount, key: summaryKey })
+        }
+      }
+    }
+
+    for (const msg of messages) {
+      const tools = extractToolCalls(msg)
+      const isOrcBrief = msg.content[0]?.type === 'orc-brief'
+
+      if (isOrcBrief) {
+        // End previous session
+        flushTools()
+        endSession(msg.id + '-session-end')
+        // Start new session
+        sessionToolCount = 0
+        hasSession = true
+        result.push({ kind: 'message', msg })
+      } else {
+        sessionToolCount += tools.length
+        pendingTools.push(...tools)
+        if (!pendingKey && tools.length > 0) pendingKey = msg.id
+
+        if (hasTextContent(msg)) {
+          flushTools()
+          result.push({ kind: 'message', msg })
+        }
+      }
+    }
+
+    // Flush trailing tools + close final session (only if agent is done)
+    flushTools()
+    if (!isAgentRunning) {
+      endSession('final-session-end')
+    }
+
+    return result
+  }, [messages, isAgentRunning, verbosity])
+
+  if (messages.length === 0) {
     return (
       <div className="message-list" ref={scrollRef}>
         <div className="message-list-empty">No messages yet. Send a message to start.</div>
@@ -126,31 +157,68 @@ export function MessageList() {
           </button>
         </div>
       )}
-      {groups.map((group, i) =>
-        group.kind === 'single'
-          ? <MessageBubble key={group.msg.id} message={group.msg} toolResults={toolResults} />
-          : <CondensedToolChip key={group.msgs[0].id + '-group-' + i} msgs={group.msgs} toolResults={toolResults} tersePhrases={group.tersePhrases} />
-      )}
+      {items.map(item => {
+        if (item.kind === 'message') return <MessageBubble key={item.msg.id} message={item.msg} toolResults={toolResults} verbosity={verbosity} />
+        if (item.kind === 'tools') {
+          // Level 2: collapsed summary only (no individual tool groups)
+          if (verbosity === 2) {
+            return <SessionSummary key={item.key} toolCount={item.calls.length} />
+          }
+          return <ToolCallGroup key={item.key} calls={item.calls} toolResults={toolResults} verbosity={verbosity} />
+        }
+        return <SessionSummary key={item.key} toolCount={item.toolCount} />
+      })}
       {showLiveTurn && (
         <div className="message-bubble assistant">
-          {liveToolCalls.length > 0 && (() => {
-            const activeTool = [...liveToolCalls].reverse().find(tc => tc.isRunning)
-            const lastTool = liveToolCalls[liveToolCalls.length - 1]
-            const activityLabel = activeTool
-              ? formatToolLabel(activeTool.toolName, activeTool.input || '{}')
-              : lastTool
-                ? formatToolLabel(lastTool.toolName, lastTool.input || '{}')
-                : 'Working...'
-            return (
-              <ActivityBubble
-                toolCalls={liveToolCalls}
-                isRunning={isAgentRunning}
-                activityLabel={activityLabel}
-              />
-            )
-          })()}
-          {liveText && (
-            <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{liveText}</div>
+          {/* Levels 1-2: ThinkingIndicator, Levels 3+: existing ActivityBubble + streaming */}
+          {verbosity <= 2 ? (
+            <ThinkingIndicator
+              toolCalls={liveToolCalls}
+              isRunning={isAgentRunning}
+              liveText={liveText}
+              verbosity={verbosity}
+            />
+          ) : (
+            <>
+              {liveToolCalls.length > 0 && (() => {
+                const activeTool = [...liveToolCalls].reverse().find(tc => tc.isRunning)
+                const lastTool = liveToolCalls[liveToolCalls.length - 1]
+                const activityLabel = activeTool
+                  ? formatToolLabel(activeTool.toolName, activeTool.input || '{}')
+                  : lastTool
+                    ? formatToolLabel(lastTool.toolName, lastTool.input || '{}')
+                    : 'Working...'
+                return (
+                  <>
+                    <ActivityBubble
+                      toolCalls={liveToolCalls}
+                      isRunning={isAgentRunning}
+                      activityLabel={activityLabel}
+                    />
+                    {/* Levels 4-5: show live tool blocks inline */}
+                    {verbosity >= 4 && (
+                      <div className="live-tool-blocks">
+                        {liveToolCalls.map(tc => (
+                          <ToolCallBlock
+                            key={tc.toolId}
+                            toolName={tc.toolName}
+                            input={tc.input || '{}'}
+                            output={tc.output}
+                            isError={tc.isError}
+                            isRunning={tc.isRunning}
+                            defaultExpanded={true}
+                            verbosity={verbosity}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )
+              })()}
+              {liveText && (
+                <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{liveText}</div>
+              )}
+            </>
           )}
           {!isAgentRunning && !liveText && liveToolCalls.length === 0 && (
             <div className="wave-indicator">
@@ -163,30 +231,42 @@ export function MessageList() {
   )
 }
 
-interface CondensedToolChipProps {
-  msgs: ChatMessage[]
-  toolResults: Map<string, { output: string; isError?: boolean }>
-  tersePhrases?: string[]
+function SessionSummary({ toolCount }: { toolCount: number }) {
+  return (
+    <div className="chat-history-summary">
+      <span className="chat-history-summary-icon">{'\uD83D\uDCDC'}</span>
+      <span className="chat-history-summary-text">Used {toolCount} tool{toolCount !== 1 ? 's' : ''}</span>
+      <span className="chat-history-summary-count">{toolCount} action{toolCount !== 1 ? 's' : ''}</span>
+    </div>
+  )
 }
 
-function CondensedToolChip({ msgs, toolResults, tersePhrases }: CondensedToolChipProps) {
-  const [expanded, setExpanded] = useState(false)
-  const allToolCalls = msgs.flatMap(m =>
-    m.content.filter(b => b.type === 'tool-call') as Array<{ type: 'tool-call'; toolId: string; toolName: string; input: string }>
-  )
-  const toolLabel = summarizeToolCalls(allToolCalls)
-  const phrasePrefix = tersePhrases && tersePhrases.length > 0 ? tersePhrases[0] : ''
-  const label = phrasePrefix ? `${phrasePrefix} · ${toolLabel}` : toolLabel
+interface ToolCallGroupProps {
+  calls: ToolCallEntry[]
+  toolResults: Map<string, { output: string; isError?: boolean }>
+  verbosity: 1 | 2 | 3 | 4 | 5
+}
+
+function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
+  // Levels 4-5: expanded by default
+  const [expanded, setExpanded] = useState(verbosity >= 4)
 
   return (
-    <div className="condensed-tool-chip">
-      <button className="condensed-tool-chip-toggle" onClick={() => setExpanded(e => !e)}>
-        <span className="condensed-tool-chip-icon">{expanded ? '▾' : '▸'}</span>
-        {label}
-      </button>
+    <div className="tool-call-group">
+      <div className="tool-call-group-header" onClick={() => setExpanded(e => !e)}>
+        <span className={`tool-call-group-chevron ${expanded ? 'expanded' : ''}`}>›</span>
+        <span className="tool-call-group-labels">
+          {calls.map((tc, i) => (
+            <span key={tc.toolId} className="tool-call-group-label">
+              {i > 0 && <span className="tool-call-group-sep">·</span>}
+              {formatToolCall(tc.toolName, tc.input)}
+            </span>
+          ))}
+        </span>
+      </div>
       {expanded && (
-        <div className="condensed-tool-chip-body">
-          {allToolCalls.map(tc => {
+        <div className="tool-call-group-body">
+          {calls.map(tc => {
             const result = toolResults.get(tc.toolId)
             return (
               <ToolCallBlock
@@ -195,7 +275,9 @@ function CondensedToolChip({ msgs, toolResults, tersePhrases }: CondensedToolChi
                 input={tc.input}
                 output={result?.output}
                 isError={result?.isError}
-                isRunning={false}
+                isRunning={!result}
+                defaultExpanded={verbosity >= 4}
+                verbosity={verbosity}
               />
             )
           })}

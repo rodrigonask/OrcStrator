@@ -19,16 +19,15 @@ interface PipelineContextValue {
   refresh: () => Promise<void>
 }
 
-const COLUMNS: PipelineColumn[] = ['backlog', 'scheduled', 'spec', 'build', 'qa', 'ship', 'done']
+const COLUMNS: PipelineColumn[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done']
 
-const emptyByColumn: Record<PipelineColumn, PipelineTask[]> = {
+const emptyByColumn: Record<string, PipelineTask[]> = {
   backlog: [],
-  scheduled: [],
-  spec: [],
-  build: [],
-  qa: [],
-  ship: [],
+  ready: [],
+  in_progress: [],
+  in_review: [],
   done: [],
+  scheduled: [],
 }
 
 const PipelineContext = createContext<PipelineContextValue | null>(null)
@@ -95,7 +94,7 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
         }
         return acc
       },
-      { backlog: [], scheduled: [], spec: [], build: [], qa: [], ship: [], done: [] }
+      { backlog: [], ready: [], in_progress: [], in_review: [], done: [], scheduled: [] } as Record<PipelineColumn, PipelineTask[]>
     )
     // Most recently completed first; fall back to updatedAt for tasks missing completedAt
     groups.done.sort((a, b) => (b.completedAt ?? b.updatedAt) - (a.completedAt ?? a.updatedAt))

@@ -1,9 +1,8 @@
 import { memo, useMemo, useState } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { ChatMessage, MessageContentBlock } from '@shared/types'
+import type { ChatMessage, MessageContentBlock, VerbosityLevel } from '@shared/types'
 import { ToolCallBlock } from './ToolCallBlock'
-import { summarizeToolCalls } from '../utils/toolFormat'
 import { getOrcQuip } from '../utils/orcQuips'
 import { useAppDispatch } from '../context/AppDispatchContext'
 
@@ -13,6 +12,7 @@ marked.setOptions({ breaks: true })
 interface MessageBubbleProps {
   message: ChatMessage
   toolResults: Map<string, { output: string; isError?: boolean }>
+  verbosity?: VerbosityLevel
 }
 
 function formatTimestamp(ts: number): string {
@@ -63,7 +63,7 @@ function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, create
   return (
     <div className="orc-brief-bubble" style={{ boxShadow: '0 0 12px 2px rgba(168, 85, 247, 0.4), 0 0 4px 1px rgba(168, 85, 247, 0.2)' }}>
       <div className="orc-brief-header">
-        <span className="orc-brief-icon">⚡</span>
+        <span className="orc-brief-icon">{'\uD83D\uDC79'}</span>
         <span className="orc-brief-quip" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
           {parts.map((part, i) => (
             <span key={i}>
@@ -96,18 +96,8 @@ function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, create
   )
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, toolResults }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, toolResults, verbosity = 3 }: MessageBubbleProps) {
   const { role, content, createdAt } = message
-  const [toolsExpanded, setToolsExpanded] = useState(false)
-
-  const toolCallBlocks = useMemo(
-    () => content.filter(b => b.type === 'tool-call'),
-    [content]
-  )
-  const summary = useMemo(
-    () => summarizeToolCalls(toolCallBlocks.map(b => ({ toolName: (b as { type: 'tool-call'; toolName: string }).toolName }))),
-    [toolCallBlocks]
-  )
 
   const orcBriefBlock = content[0]?.type === 'orc-brief'
     ? content[0] as { type: 'orc-brief'; taskTitle: string; taskId: string; instanceName: string; projectId?: string }
@@ -128,52 +118,18 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults 
     )
   }
 
-  const nonToolContent = content.filter(b => b.type !== 'tool-call' && b.type !== 'tool-result')
-  const hasSummary = role === 'assistant' && toolCallBlocks.length > 0
-
-  const TERSE_CHAR_THRESHOLD = 60
-  const totalNonToolText = nonToolContent
-    .filter(b => b.type === 'text')
-    .map(b => (b as { type: 'text'; text: string }).text.trim())
-    .join('')
-  const isToolOnly = role === 'assistant' &&
-    toolCallBlocks.length > 0 &&
-    totalNonToolText.length <= TERSE_CHAR_THRESHOLD &&
-    nonToolContent.every(b => b.type !== 'image')
-  const chipLabel = totalNonToolText ? `${totalNonToolText} · ${summary}` : summary
-
-  if (isToolOnly) {
-    return (
-      <div className="tool-chip" onClick={() => setToolsExpanded(e => !e)}>
-        <span className="tool-chip-icon">🔧</span>
-        <span className="tool-chip-text" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>{chipLabel}</span>
-        <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
-        {toolsExpanded && (
-          <div className="tool-chip-expanded" onClick={e => e.stopPropagation()}>
-            {toolCallBlocks.map((block, i) => (
-              <ContentBlock key={i} block={block} toolResults={toolResults} defaultExpanded={false} />
-            ))}
-          </div>
-        )}
-      </div>
-    )
-  }
+  const nonToolContent = content.filter(b => {
+    if (b.type === 'tool-call' || b.type === 'tool-result') return false
+    // Level 1: hide cost blocks
+    if (b.type === 'cost' && verbosity <= 1) return false
+    return true
+  })
 
   return (
     <div className={`message-bubble ${role}`}>
-      {role === 'system' && <div className="message-role-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>System</div>}
+      {role === 'system' && <div className="message-role-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>The Orc</div>}
       {nonToolContent.map((block, i) => (
-        <ContentBlock key={i} block={block} toolResults={toolResults} />
-      ))}
-      {hasSummary && (
-        <div className="tool-summary" onClick={() => setToolsExpanded(e => !e)}>
-          <span className="tool-summary-icon">🔧</span>
-          <span className="tool-summary-text" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>{summary}</span>
-          <span className={`tool-call-chevron ${toolsExpanded ? 'expanded' : ''}`}>›</span>
-        </div>
-      )}
-      {hasSummary && toolsExpanded && toolCallBlocks.map((block, i) => (
-        <ContentBlock key={`tc-${i}`} block={block} toolResults={toolResults} defaultExpanded={false} />
+        <ContentBlock key={i} block={block} toolResults={toolResults} verbosity={verbosity} />
       ))}
       {createdAt && (
         <div className="message-timestamp" style={{ fontFamily: 'var(--font-mono)' }}>{formatTimestamp(createdAt)}</div>
@@ -186,14 +142,17 @@ function ContentBlock({
   block,
   toolResults,
   defaultExpanded = false,
+  verbosity = 3,
 }: {
   block: MessageContentBlock
   toolResults: Map<string, { output: string; isError?: boolean }>
   defaultExpanded?: boolean
+  verbosity?: VerbosityLevel
 }) {
   if (block.type === 'text') {
     if (!block.text.trim()) return null
-    return <TextContent text={block.text} />
+    const collapseAt = verbosity >= 5 ? Infinity : verbosity >= 4 ? 1200 : 600
+    return <TextContent text={block.text} collapseChars={collapseAt} />
   }
 
   if (block.type === 'image') {
@@ -218,6 +177,7 @@ function ContentBlock({
         isError={result?.isError}
         isRunning={!result}
         defaultExpanded={defaultExpanded}
+        verbosity={verbosity}
       />
     )
   }
@@ -249,12 +209,10 @@ function ContentBlock({
   return null
 }
 
-const COLLAPSE_CHARS = 600
-
-function TextContent({ text }: { text: string }) {
+function TextContent({ text, collapseChars = 600 }: { text: string; collapseChars?: number }) {
   const [expanded, setExpanded] = useState(false)
-  const isTall = text.length > COLLAPSE_CHARS
-  const displayText = isTall && !expanded ? text.slice(0, COLLAPSE_CHARS) : text
+  const isTall = collapseChars < Infinity && text.length > collapseChars
+  const displayText = isTall && !expanded ? text.slice(0, collapseChars) : text
 
   const html = useMemo(() => {
     const raw = marked.parse(displayText) as string

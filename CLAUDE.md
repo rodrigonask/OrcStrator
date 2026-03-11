@@ -1,6 +1,6 @@
-## NasKlaude — Multi-Instance Claude Orchestration Platform
+## OrcStrator — Multi-Instance Claude Orchestration Platform
 
-Electron desktop app that manages multiple Claude Code CLI instances with an RPG-themed UI and autonomous pipeline orchestration.
+Desktop app that manages multiple Claude Code CLI instances with an RPG-themed UI and autonomous pipeline orchestration.
 
 ### Stack
 - **Server:** Node.js + Fastify + better-sqlite3 + WebSocket (port 3333)
@@ -28,15 +28,15 @@ npm run kill      # Kill ports 3333 + 5173
 ```
 
 ### Key Architecture
-- **Orchestrator** (`server/src/services/orchestrator.ts`): Event-driven task assignment. Finds idle managed agents, locks pipeline tasks, builds minimal prompts, spawns CLI processes.
+- **The Orc** (`server/src/services/orchestrator.ts`): Event-driven task assignment. Finds idle managed agents, locks pipeline tasks, builds minimal prompts, spawns CLI processes.
 - **Claude Process** (`server/src/services/claude-process.ts`): Spawns `claude -p` with stream-json I/O. Handles stdout parsing, token tracking, session management.
-- **Pipeline**: Tasks flow through columns: `backlog → spec → build → qa → staging → ship → done`
+- **Pipeline**: Tasks flow through columns: `backlog → scheduled → spec → build → qa → ship → done`
 - **Master Prompts** (`server/agents/`): Role-specific agent instructions (~30 lines each). Loaded by orchestrator, NOT by Claude Code's subagent system.
 - **MCP Configs** (`server/agents/mcp-*.json`): Per-role MCP scoping. Pipeline agents use `--strict-mcp-config` to avoid loading global MCP servers.
 - **Token Monitoring**: `token_usage` table tracks prompt_chars, input_tokens, output_tokens per task.
 
 ### Database
-SQLite at `data/nasklaude.db`. Migrations in `server/src/db.ts` (sequential, numbered).
+SQLite at `~/.orcstrator/orcstrator.db`. Migrations in `server/src/db.ts` (sequential, numbered).
 Key tables: `folders`, `instances`, `messages`, `pipeline_tasks`, `task_comments`, `agents`, `skills`, `token_usage`.
 
 ### Rules

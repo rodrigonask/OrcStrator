@@ -24,6 +24,21 @@ function setSchemaVersion(version: number): void {
   db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(version, Date.now())
 }
 
+function isDuplicateColumnError(err: unknown): boolean {
+  return err instanceof Error && (
+    err.message.includes('duplicate column') ||
+    err.message.includes('already exists')
+  )
+}
+
+function safeAddColumn(table: string, columnDef: string): void {
+  try {
+    db.prepare(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`).run()
+  } catch (err) {
+    if (!isDuplicateColumnError(err)) throw err
+  }
+}
+
 function migration001(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -200,11 +215,7 @@ function migration002(): void {
   ]
 
   for (const [table, col] of columns) {
-    try {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
-    } catch {
-      // column already exists — ignore
-    }
+    safeAddColumn(table, col)
   }
 
   const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
@@ -215,11 +226,7 @@ function migration002(): void {
 }
 
 function migration004(): void {
-  try {
-    db.prepare("ALTER TABLE pipeline_tasks ADD COLUMN attachments TEXT DEFAULT '[]'").run()
-  } catch {
-    // column already exists
-  }
+  safeAddColumn('pipeline_tasks', "attachments TEXT DEFAULT '[]'")
   setSchemaVersion(4)
 }
 
@@ -237,11 +244,7 @@ function migration006(): void {
 }
 
 function migration007(): void {
-  try {
-    db.prepare('ALTER TABLE folders ADD COLUMN stealth_mode INTEGER DEFAULT 0').run()
-  } catch {
-    // column already exists
-  }
+  safeAddColumn('folders', 'stealth_mode INTEGER DEFAULT 0')
   setSchemaVersion(7)
 }
 
@@ -291,11 +294,7 @@ function migration012(): void {
     ['instances', 'last_task_at INTEGER'],
   ]
   for (const [table, col] of columns) {
-    try {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
-    } catch {
-      // column already exists
-    }
+    safeAddColumn(table, col)
   }
   setSchemaVersion(12)
 }
@@ -307,11 +306,7 @@ function migration013(): void {
     ['token_usage', 'is_overdrive_session INTEGER DEFAULT 0'],
   ]
   for (const [table, col] of columns) {
-    try {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
-    } catch {
-      // column already exists
-    }
+    safeAddColumn(table, col)
   }
   setSchemaVersion(13)
 }
@@ -324,11 +319,7 @@ function migration014(): void {
     ['pipeline_tasks', 'skill TEXT DEFAULT NULL'],
   ]
   for (const [table, col] of columns) {
-    try {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
-    } catch {
-      // column already exists
-    }
+    safeAddColumn(table, col)
   }
 
   // Migrate staging tasks → backlog with stuck label
@@ -361,21 +352,13 @@ function migration015(): void {
     ['pipeline_tasks', 'total_cost_usd REAL DEFAULT 0'],
   ]
   for (const [table, col] of columns) {
-    try {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
-    } catch {
-      // column already exists
-    }
+    safeAddColumn(table, col)
   }
   setSchemaVersion(15)
 }
 
 function migration016(): void {
-  try {
-    db.prepare('ALTER TABLE instances ADD COLUMN process_pid INTEGER DEFAULT NULL').run()
-  } catch {
-    // column already exists
-  }
+  safeAddColumn('instances', 'process_pid INTEGER DEFAULT NULL')
   setSchemaVersion(16)
 }
 
@@ -385,84 +368,158 @@ function migration017(): void {
     ['agents', "source TEXT DEFAULT 'user'"],
   ]
   for (const [table, col] of columns) {
-    try {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
-    } catch {
-      // column already exists
-    }
+    safeAddColumn(table, col)
   }
   setSchemaVersion(17)
 }
 
+function migration018(): void {
+  safeAddColumn('pipeline_tasks', 'last_assigned_at INTEGER')
+  setSchemaVersion(18)
+}
+
+function migration019(): void {
+  // a) Create pipeline_blueprints table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_blueprints (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      steps TEXT NOT NULL DEFAULT '[]',
+      is_default INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `)
+
+  // b) Add role to agents table
+  safeAddColumn('agents', 'role TEXT DEFAULT NULL')
+
+  // c) Add pipeline columns to pipeline_tasks
+  const columns: Array<[string, string]> = [
+    ['pipeline_tasks', 'pipeline_id TEXT DEFAULT NULL'],
+    ['pipeline_tasks', 'current_step INTEGER DEFAULT 1'],
+    ['pipeline_tasks', 'total_steps INTEGER DEFAULT 1'],
+    ['pipeline_tasks', 'current_step_role TEXT DEFAULT NULL'],
+    ['pipeline_tasks', 'step_instructions TEXT DEFAULT NULL'],
+  ]
+  for (const [table, col] of columns) {
+    safeAddColumn(table, col)
+  }
+
+  // d) Seed default blueprints
+  const now = Date.now()
+  const defaultBpId = '00000000-0000-0000-0000-000000000001'
+  const devBpId = '00000000-0000-0000-0000-000000000002'
+
+  db.prepare(`INSERT OR IGNORE INTO pipeline_blueprints (id, name, steps, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(defaultBpId, 'Default', JSON.stringify([{ role: 'builder' }]), 1, now, now)
+
+  db.prepare(`INSERT OR IGNORE INTO pipeline_blueprints (id, name, steps, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(devBpId, 'Dev Pipeline', JSON.stringify([
+      { role: 'planner' },
+      { role: 'builder' },
+      { role: 'tester' },
+      { role: 'promoter' },
+    ]), 0, now, now)
+
+  // e) Migrate existing tasks to new column names
+  const migrations: Array<{ oldCol: string; newCol: string; pipelineId: string | null; step: number; stepRole: string | null; totalSteps: number }> = [
+    { oldCol: 'spec', newCol: 'in_progress', pipelineId: devBpId, step: 1, stepRole: 'planner', totalSteps: 4 },
+    { oldCol: 'build', newCol: 'in_progress', pipelineId: devBpId, step: 2, stepRole: 'builder', totalSteps: 4 },
+    { oldCol: 'qa', newCol: 'in_progress', pipelineId: devBpId, step: 3, stepRole: 'tester', totalSteps: 4 },
+    { oldCol: 'ship', newCol: 'in_progress', pipelineId: devBpId, step: 4, stepRole: 'promoter', totalSteps: 4 },
+  ]
+
+  for (const m of migrations) {
+    const count = db.prepare(
+      `UPDATE pipeline_tasks SET "column" = ?, pipeline_id = ?, current_step = ?, current_step_role = ?, total_steps = ? WHERE "column" = ?`
+    ).run(m.newCol, m.pipelineId, m.step, m.stepRole, m.totalSteps, m.oldCol).changes
+    if (count > 0) {
+      console.log(`[migration019] Migrated ${count} tasks from '${m.oldCol}' → '${m.newCol}' (step ${m.step}/${m.totalSteps})`)
+    }
+  }
+
+  // Migrate done tasks that have no pipeline_id: assume Dev Pipeline for tasks that went through the old system
+  const doneMigrated = db.prepare(
+    `UPDATE pipeline_tasks SET pipeline_id = ?, total_steps = 4 WHERE "column" = 'done' AND pipeline_id IS NULL`
+  ).run(devBpId).changes
+  if (doneMigrated > 0) {
+    console.log(`[migration019] Assigned Dev Pipeline to ${doneMigrated} done tasks`)
+  }
+
+  // f) Update columnLabels setting
+  db.prepare("UPDATE settings SET value = ? WHERE key = 'columnLabels'").run(
+    JSON.stringify({ backlog: 'Backlog', ready: 'Ready', in_progress: 'In Progress', in_review: 'In Review', done: 'Done', scheduled: 'Scheduled' })
+  )
+
+  setSchemaVersion(19)
+}
+
+function migration020(): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_pt_locked_by ON pipeline_tasks(locked_by);
+    CREATE INDEX IF NOT EXISTS idx_pt_step_role ON pipeline_tasks(current_step_role);
+    CREATE INDEX IF NOT EXISTS idx_pt_group_id ON pipeline_tasks(group_id);
+    CREATE INDEX IF NOT EXISTS idx_pt_column ON pipeline_tasks("column");
+    CREATE INDEX IF NOT EXISTS idx_pt_project_col_prio ON pipeline_tasks(project_id, "column", priority, created_at);
+    CREATE INDEX IF NOT EXISTS idx_tu_instance_created ON token_usage(instance_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tu_task_id ON token_usage(task_id);
+    CREATE INDEX IF NOT EXISTS idx_inst_state ON instances(state);
+    CREATE INDEX IF NOT EXISTS idx_folders_orch ON folders(orchestrator_active);
+  `)
+  setSchemaVersion(20)
+}
+
+function migration021(): void {
+  // v3 Architecture: SQLite as single source of truth for process state
+  // Replaces 6 in-memory Maps in orchestrator/process-registry
+  const columns: Array<[string, string]> = [
+    // instances: process lifecycle state machine (idle → reserved → spawning → running → exiting → idle)
+    ['instances', "process_state TEXT DEFAULT 'idle'"],
+    // Timestamp of last reservation (used for send cooldown)
+    ['instances', 'reserved_at INTEGER DEFAULT NULL'],
+    // JSON array of assigned task IDs (replaces instanceTaskIds Map)
+    ['instances', 'assigned_task_ids TEXT DEFAULT NULL'],
+    // Whether this instance is running a scheduler task
+    ['instances', 'is_scheduler_run INTEGER DEFAULT 0'],
+    // JSON scheduler run context (replaces schedulerRunContexts Map)
+    ['instances', 'scheduler_context TEXT DEFAULT NULL'],
+    // Optimistic concurrency counter for instances
+    ['instances', 'version INTEGER DEFAULT 1'],
+    // Optimistic concurrency counter for pipeline_tasks
+    ['pipeline_tasks', 'version INTEGER DEFAULT 1'],
+    // Lock version: increments on every lock/unlock to prevent stale unlocks
+    ['pipeline_tasks', 'lock_version INTEGER DEFAULT 0'],
+  ]
+  for (const [table, col] of columns) {
+    safeAddColumn(table, col)
+  }
+
+  // Data migration: map existing state values to process_state
+  db.prepare("UPDATE instances SET process_state = state WHERE process_state = 'idle'").run()
+
+  // Indexes for efficient state queries
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_inst_process_state ON instances(process_state);
+    CREATE INDEX IF NOT EXISTS idx_inst_folder_state ON instances(folder_id, process_state);
+    CREATE INDEX IF NOT EXISTS idx_tasks_last_assigned ON pipeline_tasks(last_assigned_at);
+  `)
+
+  setSchemaVersion(21)
+}
+
+const migrations = [
+  migration001, migration002, migration003, migration004, migration005,
+  migration006, migration007, migration008, migration009, migration010,
+  migration011, migration012, migration013, migration014, migration015,
+  migration016, migration017, migration018, migration019, migration020,
+  migration021,
+]
+
 function runMigrations(): void {
   const currentVersion = getSchemaVersion()
-
-  if (currentVersion < 1) {
-    migration001()
-  }
-
-  if (currentVersion < 2) {
-    migration002()
-  }
-
-  if (currentVersion < 3) {
-    migration003()
-  }
-
-  if (currentVersion < 4) {
-    migration004()
-  }
-
-  if (currentVersion < 5) {
-    migration005()
-  }
-
-  if (currentVersion < 6) {
-    migration006()
-  }
-
-  if (currentVersion < 7) {
-    migration007()
-  }
-
-  if (currentVersion < 8) {
-    migration008()
-  }
-
-  if (currentVersion < 9) {
-    migration009()
-  }
-
-  if (currentVersion < 10) {
-    migration010()
-  }
-
-  if (currentVersion < 11) {
-    migration011()
-  }
-
-  if (currentVersion < 12) {
-    migration012()
-  }
-
-  if (currentVersion < 13) {
-    migration013()
-  }
-
-  if (currentVersion < 14) {
-    migration014()
-  }
-
-  if (currentVersion < 15) {
-    migration015()
-  }
-
-  if (currentVersion < 16) {
-    migration016()
-  }
-
-  if (currentVersion < 17) {
-    migration017()
+  for (let i = currentVersion; i < migrations.length; i++) {
+    migrations[i]()
   }
 }
 

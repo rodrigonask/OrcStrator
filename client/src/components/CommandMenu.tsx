@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { useFeatureGate } from '../hooks/useFeatureGate'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { api } from '../api'
 
 interface Command {
@@ -13,6 +15,8 @@ interface Command {
 export function CommandMenu() {
   const { folders, instances } = useInstances()
   const { dispatch } = useAppDispatch()
+  const pipelineGate = useFeatureGate('pipeline')
+  const multiProjectGate = useFeatureGate('multi-project')
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
@@ -35,7 +39,7 @@ export function CommandMenu() {
     {
       name: '/pipeline',
       description: 'Switch to the pipeline board view',
-      action: () => dispatch({ type: 'SET_VIEW', payload: 'pipeline' }),
+      action: () => { if (pipelineGate.check()) dispatch({ type: 'SET_VIEW', payload: 'pipeline' }) },
     },
     {
       name: '/monitor',
@@ -69,8 +73,8 @@ export function CommandMenu() {
     },
     {
       name: '/add-folder',
-      description: 'Add a new project folder',
-      action: () => dispatch({ type: 'OPEN_FOLDER_BROWSER' }),
+      description: 'Add a new project',
+      action: () => { if (multiProjectGate.check()) dispatch({ type: 'OPEN_FOLDER_BROWSER' }) },
     },
   ], [folders, instances, dispatch])
 
@@ -130,46 +134,64 @@ export function CommandMenu() {
     }
   }, [filtered, activeIndex])
 
-  if (!open) return null
+  if (!open) return (
+    <>
+      {pipelineGate.showLockedModal && pipelineGate.gate && (
+        <FeatureLockedModal gate={pipelineGate.gate} onClose={pipelineGate.dismissModal} />
+      )}
+      {multiProjectGate.showLockedModal && multiProjectGate.gate && (
+        <FeatureLockedModal gate={multiProjectGate.gate} onClose={multiProjectGate.dismissModal} />
+      )}
+    </>
+  )
 
   return (
-    <div className="command-menu-overlay" onClick={() => setOpen(false)}>
-      <div className="command-menu" onClick={e => e.stopPropagation()}>
-        <input
-          ref={inputRef}
-          className="command-menu-input"
-          placeholder="Type a command..."
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-        <div className="command-menu-list">
-          {filtered.map((cmd, i) => (
-            <div
-              key={cmd.name}
-              className={`command-menu-item ${i === activeIndex ? 'active' : ''}`}
-              onClick={() => {
-                cmd.action()
-                setOpen(false)
-              }}
-              onMouseEnter={() => setActiveIndex(i)}
-            >
-              <div>
-                <div className="command-menu-item-name" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>{cmd.name}</div>
-                <div className="command-menu-item-desc" style={{ fontFamily: 'var(--font-mono)' }}>{cmd.description}</div>
+    <>
+      <div className="command-menu-overlay" onClick={() => setOpen(false)}>
+        <div className="command-menu" onClick={e => e.stopPropagation()}>
+          <input
+            ref={inputRef}
+            className="command-menu-input"
+            placeholder="Type a command..."
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+          <div className="command-menu-list">
+            {filtered.map((cmd, i) => (
+              <div
+                key={cmd.name}
+                className={`command-menu-item ${i === activeIndex ? 'active' : ''}`}
+                onClick={() => {
+                  cmd.action()
+                  setOpen(false)
+                }}
+                onMouseEnter={() => setActiveIndex(i)}
+              >
+                <div>
+                  <div className="command-menu-item-name" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>{cmd.name}</div>
+                  <div className="command-menu-item-desc" style={{ fontFamily: 'var(--font-mono)' }}>{cmd.description}</div>
+                </div>
+                {cmd.shortcut && (
+                  <span className="command-menu-item-shortcut" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>{cmd.shortcut}</span>
+                )}
               </div>
-              {cmd.shortcut && (
-                <span className="command-menu-item-shortcut" style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>{cmd.shortcut}</span>
-              )}
-            </div>
-          ))}
-          {filtered.length === 0 && (
-            <div className="command-menu-item" style={{ cursor: 'default', opacity: 0.5 }}>
-              <div className="command-menu-item-desc">No matching commands</div>
-            </div>
-          )}
+            ))}
+            {filtered.length === 0 && (
+              <div className="command-menu-item" style={{ cursor: 'default', opacity: 0.5 }}>
+                <div className="command-menu-item-desc">No matching commands</div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+
+      {pipelineGate.showLockedModal && pipelineGate.gate && (
+        <FeatureLockedModal gate={pipelineGate.gate} onClose={pipelineGate.dismissModal} />
+      )}
+      {multiProjectGate.showLockedModal && multiProjectGate.gate && (
+        <FeatureLockedModal gate={multiProjectGate.gate} onClose={multiProjectGate.dismissModal} />
+      )}
+    </>
   )
 }

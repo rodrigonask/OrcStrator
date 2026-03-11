@@ -58,6 +58,8 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       dependsOn: body.dependsOn as string[] | undefined,
       createdBy: body.createdBy as string | undefined,
       skill: body.skill as string | undefined,
+      pipelineId: body.pipelineId as string | undefined,
+      stepInstructions: body.stepInstructions as Record<string, string> | undefined,
     })
     reply.code(201)
     return task
@@ -96,10 +98,19 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
   })
 
   // Move task
-  app.post('/pipelines/:projectId/tasks/:taskId/move', async (request) => {
+  app.post('/pipelines/:projectId/tasks/:taskId/move', async (request, reply) => {
     const { taskId } = request.params as { projectId: string; taskId: string }
     const { column, agent } = request.body as { column: PipelineColumn; agent?: string }
-    return taskManager.moveTask(taskId, column, agent)
+    try {
+      // Human callers: pass agent='human' to allow force-moving locked tasks
+      return taskManager.moveTask(taskId, column, agent || 'human')
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode === 409) {
+        reply.code(409)
+        return { error: (err as Error).message }
+      }
+      throw err
+    }
   })
 
   // Claim task
@@ -172,6 +183,13 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     ).run(id, taskId, author, body.body.trim(), now)
     reply.code(201)
     return { id, taskId, author, body: body.body.trim(), createdAt: now } as TaskComment
+  })
+
+  // Reset task pipeline (back to step 1, optionally with a new blueprint)
+  app.post('/pipelines/:projectId/tasks/:taskId/reset-pipeline', async (request) => {
+    const { taskId } = request.params as { projectId: string; taskId: string }
+    const body = request.body as { pipelineId?: string; column?: 'backlog' | 'ready' } | null
+    return taskManager.resetTaskPipeline(taskId, body?.pipelineId, body?.column || 'ready')
   })
 
   // Get next task

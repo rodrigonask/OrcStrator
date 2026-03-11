@@ -17,6 +17,10 @@ import { LevelUpFeaturePopup } from './components/tour/LevelUpFeaturePopup'
 import { GameScreen } from './components/game'
 import { AgentsPage } from './components/AgentsPage'
 import { UsageReportPage } from './components/UsageReportPage'
+import { SessionsPage } from './components/SessionsPage'
+import { VFXOverlay } from './components/VFXOverlay'
+import { ConfirmProvider } from './components/ConfirmModal'
+import { resolveAnimTier } from './hooks/useVFX'
 import { api } from './api'
 
 function AppContent() {
@@ -41,10 +45,17 @@ function AppContent() {
     ? (osPrefersDark ? 'dark' : 'light')
     : settings.theme
 
+  const animTier = resolveAnimTier(settings)
+
   // Sync theme to <html> so portals outside .app inherit theme variables
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', resolvedTheme)
   }, [resolvedTheme])
+
+  // Sync animation tier to root elements for CSS gating
+  useEffect(() => {
+    document.documentElement.setAttribute('data-anim-tier', String(animTier))
+  }, [animTier])
 
   // Listen for level-up events from WebSocket
   useEffect(() => {
@@ -86,7 +97,7 @@ function AppContent() {
   }, [selectedInstanceId, instances, folders, messages])
 
   return (
-    <div className="app" data-theme={resolvedTheme} style={scaleStyle}>
+    <div className="app" data-theme={resolvedTheme} data-anim-tier={animTier} style={scaleStyle}>
       <Sidebar />
       <main className="main-content" data-tour-id="tour-chat">
         {showSettings ? (
@@ -97,6 +108,7 @@ function AppContent() {
             {view === 'pipeline' && <PipelineBoard />}
             {view === 'agents' && <AgentsPage />}
             {view === 'usage' && <UsageReportPage />}
+            {view === 'sessions' && <SessionsPage />}
 {!selectedInstanceId && view === 'chat' && <GameScreen />}
           </>
         )}
@@ -107,6 +119,7 @@ function AppContent() {
       {levelUpPopup !== null && (
         <LevelUpFeaturePopup level={levelUpPopup} onClose={() => setLevelUpPopup(null)} />
       )}
+      <VFXOverlay />
     </div>
   )
 }
@@ -116,7 +129,9 @@ export default function App() {
     <AppProvider>
       <GameProvider>
         <PipelineProvider>
-          <AppContent />
+          <ConfirmProvider>
+            <AppContent />
+          </ConfirmProvider>
         </PipelineProvider>
       </GameProvider>
     </AppProvider>

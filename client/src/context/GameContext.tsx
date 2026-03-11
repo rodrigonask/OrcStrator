@@ -46,6 +46,14 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // Listen for tour:updated WebSocket events (e.g. God Mode toggle from Settings)
+  useEffect(() => {
+    const unsub = api.onEvent('tour:updated', (payload: TourState) => {
+      setTour(payload)
+    })
+    return unsub
+  }, [])
+
   const currentLevel = profile
     ? [...LEVELS].reverse().find((l) => profile.totalXp >= l.xpRequired) || LEVELS[0]
     : null

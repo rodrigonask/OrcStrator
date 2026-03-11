@@ -1,4 +1,4 @@
-import type { ClaudeStreamEvent } from '@nasklaude/shared'
+import type { ClaudeStreamEvent } from '@orcstrator/shared'
 
 export type ParseResult = ClaudeStreamEvent | ClaudeStreamEvent[] | null
 

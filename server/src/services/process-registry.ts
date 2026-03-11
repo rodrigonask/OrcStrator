@@ -3,7 +3,7 @@ import { execSync } from 'child_process'
 import treeKill from 'tree-kill'
 import { db } from '../db.js'
 
-const MAX_CONCURRENT_PROCESSES = parseInt(process.env.ORCSTRATOR_MAX_PROCESSES || '8', 10)
+let MAX_CONCURRENT_PROCESSES = parseInt(process.env.ORCSTRATOR_MAX_PROCESSES || '8', 10)
 
 type ProcessState = 'spawning' | 'running' | 'killing'
 
@@ -56,21 +56,17 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
 }
 
 class ProcessRegistry {
+  // In-memory registry: ChildProcess handles can't be stored in DB
   private registry = new Map<string, TrackedProcess>()
-  private folderLocks = new Map<string, Promise<void>>()
-  private adoptedPids = new Map<string, number>()  // instanceId → pid (from previous server run)
-  private reservations = new Set<string>()  // instanceIds with reserved spawn slots
 
   registerProcess(instanceId: string, child: ChildProcess): void {
-    // If somehow already tracked (shouldn't happen), clean up first
     const existing = this.registry.get(instanceId)
     if (existing) {
       console.warn(`[process-registry] registerProcess: instance ${instanceId} already tracked (PID ${existing.pid}), replacing`)
       if (existing.timeoutTimer) clearTimeout(existing.timeoutTimer)
     }
 
-    this.reservations.delete(instanceId) // reservation fulfilled
-    console.log(`[process-registry] REGISTER instance ${instanceId} PID ${child.pid} | active=${this.registry.size + 1} adopted=${this.adoptedPids.size}`)
+    console.log(`[process-registry] REGISTER instance ${instanceId} PID ${child.pid} | tracked=${this.registry.size + 1}`)
     this.registry.set(instanceId, {
       instanceId,
       child,
@@ -84,7 +80,7 @@ class ProcessRegistry {
   unregisterProcess(instanceId: string): void {
     const tracked = this.registry.get(instanceId)
     if (tracked) {
-      console.log(`[process-registry] UNREGISTER instance ${instanceId} PID ${tracked.pid} | active=${this.registry.size - 1} adopted=${this.adoptedPids.size}`)
+      console.log(`[process-registry] UNREGISTER instance ${instanceId} PID ${tracked.pid} | tracked=${this.registry.size - 1}`)
       if (tracked.timeoutTimer) clearTimeout(tracked.timeoutTimer)
     } else {
       console.warn(`[process-registry] unregisterProcess: instance ${instanceId} not tracked`)
@@ -145,64 +141,31 @@ class ProcessRegistry {
     await Promise.all(ids.map(id => this.killProcess(id)))
   }
 
-  adoptProcess(instanceId: string, pid: number): void {
-    console.log(`[process-registry] ADOPT instance ${instanceId} PID ${pid} | active=${this.registry.size} adopted=${this.adoptedPids.size + 1}`)
-    this.adoptedPids.set(instanceId, pid)
+  /** Check if an instance has an active ChildProcess handle in the in-memory registry */
+  isTracked(instanceId: string): boolean {
+    return this.registry.has(instanceId)
   }
 
-  isAdopted(instanceId: string): boolean {
-    return this.adoptedPids.has(instanceId)
-  }
-
-  sweepAdopted(): string[] {
-    if (this.adoptedPids.size === 0) return []
-    const dead: string[] = []
-    for (const [instanceId, pid] of this.adoptedPids) {
-      const alive = isProcessAlive(pid)
-      if (!alive) {
-        console.log(`[process-registry] ADOPTED DEAD: instance ${instanceId} PID ${pid} no longer alive`)
-        this.adoptedPids.delete(instanceId)
-        dead.push(instanceId)
-      }
-    }
-    if (this.adoptedPids.size > 0) {
-      console.log(`[process-registry] sweepAdopted: ${this.adoptedPids.size} still alive, ${dead.length} dead`)
-    }
-    return dead
-  }
-
-  isRunning(instanceId: string): boolean {
-    return this.registry.has(instanceId) || this.adoptedPids.has(instanceId)
-  }
-
+  /** Count of active processes (from DB — single source of truth) */
   getActiveCount(): number {
-    return this.registry.size + this.adoptedPids.size + this.reservations.size
+    try {
+      const row = db.prepare(
+        "SELECT COUNT(*) as count FROM instances WHERE process_state IN ('reserved', 'spawning', 'running')"
+      ).get() as { count: number }
+      return row.count
+    } catch {
+      return this.registry.size // fallback
+    }
   }
 
+  /** Check if we can spawn another process (DB-based count) */
   canSpawn(): boolean {
-    const total = this.registry.size + this.adoptedPids.size + this.reservations.size
+    const total = this.getActiveCount()
     const can = total < MAX_CONCURRENT_PROCESSES
     if (!can) {
-      console.warn(`[process-registry] canSpawn=false: ${total}/${MAX_CONCURRENT_PROCESSES} (registry=${this.registry.size} adopted=${this.adoptedPids.size} reserved=${this.reservations.size})`)
+      console.warn(`[process-registry] canSpawn=false: ${total}/${MAX_CONCURRENT_PROCESSES}`)
     }
     return can
-  }
-
-  reserveSlot(instanceId: string): boolean {
-    const total = this.registry.size + this.adoptedPids.size + this.reservations.size
-    if (total >= MAX_CONCURRENT_PROCESSES) {
-      console.warn(`[process-registry] reserveSlot DENIED for ${instanceId}: ${total}/${MAX_CONCURRENT_PROCESSES}`)
-      return false
-    }
-    this.reservations.add(instanceId)
-    console.log(`[process-registry] reserveSlot OK for ${instanceId} | reserved=${this.reservations.size}`)
-    return true
-  }
-
-  releaseSlot(instanceId: string): void {
-    if (this.reservations.delete(instanceId)) {
-      console.log(`[process-registry] releaseSlot for ${instanceId} | reserved=${this.reservations.size}`)
-    }
   }
 
   /**
@@ -219,38 +182,6 @@ class ProcessRegistry {
     }))
   }
 
-  /**
-   * Find instances marked 'running' in DB but with no tracked process — zombies.
-   */
-  detectZombies(): string[] {
-    try {
-      const running = db.prepare("SELECT id FROM instances WHERE state = 'running'").all() as { id: string }[]
-      return running.filter(r => !this.registry.has(r.id) && !this.adoptedPids.has(r.id)).map(r => r.id)
-    } catch {
-      return []
-    }
-  }
-
-  /**
-   * Promise-chain mutex per folder. Prevents concurrent assignWork calls for the same folder.
-   */
-  async acquireFolderLock(folderId: string): Promise<() => void> {
-    const existing = this.folderLocks.get(folderId) ?? Promise.resolve()
-    let release!: () => void
-    const next = new Promise<void>(resolve => { release = resolve })
-    // Timeout guard to prevent deadlock (60s)
-    const timedNext = Promise.race([
-      next,
-      new Promise<void>(resolve => setTimeout(() => {
-        console.error(`[process-registry] Folder lock timeout for ${folderId}`)
-        resolve()
-      }, 60_000))
-    ])
-    this.folderLocks.set(folderId, timedNext)
-    await existing
-    return release
-  }
-
   private cleanup(instanceId: string): void {
     const tracked = this.registry.get(instanceId)
     if (tracked?.timeoutTimer) clearTimeout(tracked.timeoutTimer)
@@ -259,3 +190,12 @@ class ProcessRegistry {
 }
 
 export const processRegistry = new ProcessRegistry()
+
+export function setMaxConcurrentProcesses(n: number): void {
+  MAX_CONCURRENT_PROCESSES = Math.max(1, Math.min(n, 20))
+  console.log(`[process-registry] Max concurrent processes set to ${MAX_CONCURRENT_PROCESSES}`)
+}
+
+export function getMaxConcurrentProcesses(): number {
+  return MAX_CONCURRENT_PROCESSES
+}

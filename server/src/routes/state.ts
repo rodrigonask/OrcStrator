@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { getClientCount } from '../ws/handler.js'
-import { getActiveProcessCount } from '../services/claude-process.js'
-import type { FolderConfig, InstanceConfig, AppSettings } from '@nasklaude/shared'
+import { processRegistry, getMaxConcurrentProcesses } from '../services/process-registry.js'
+import type { FolderConfig, InstanceConfig, AppSettings, ProcessState } from '@orcstrator/shared'
 
 const startTime = Date.now()
 
@@ -43,6 +43,7 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       cwd: r.cwd as string,
       sessionId: r.session_id as string | undefined,
       state: (r.state as InstanceConfig['state']) || 'idle',
+      processState: (r.process_state as ProcessState) || 'idle',
       agentId: r.agent_id as string | undefined,
       idleRestartMinutes: r.idle_restart_minutes as number,
       sortOrder: r.sort_order as number,
@@ -57,8 +58,6 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       lastTaskAt: r.last_task_at as number | undefined,
       activeTaskId: lockedByInstance.get(r.id as string)?.taskId,
       activeTaskTitle: lockedByInstance.get(r.id as string)?.taskTitle,
-      // Context health: fresh (0-3 tasks), warm (4-10), heavy (11-20), stale (20+)
-      // Helps users know when a session might benefit from a fresh start
       contextHealth: computeContextHealth(r),
     }))
 
@@ -80,13 +79,52 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
     return {
       status: 'ok',
       uptime: Date.now() - startTime,
+      bootTime: startTime,
       clients: getClientCount(),
-      processes: getActiveProcessCount(),
+      processes: processRegistry.getActiveCount(),
+      maxProcesses: getMaxConcurrentProcesses(),
       totalInstances: instanceRows.length,
       runningInstances: instanceRows.filter(i => i.state === 'running').length,
       memoryMb: Math.round(memUsage.rss / 1024 / 1024),
       heapMb: Math.round(memUsage.heapUsed / 1024 / 1024),
     }
+  })
+
+  // Live process monitor — returns per-process data + recent token spend
+  app.get('/processes', async () => {
+    const tracked = processRegistry.getProcessInfo()
+    const now = Date.now()
+
+    const result = tracked.map(proc => {
+      // Get instance info
+      const inst = db.prepare('SELECT name, agent_role, session_id, process_pid FROM instances WHERE id = ?')
+        .get(proc.instanceId) as { name: string; agent_role: string | null; session_id: string | null; process_pid: number | null } | undefined
+
+      // Get locked task info
+      const task = db.prepare('SELECT id, title FROM pipeline_tasks WHERE locked_by = ? LIMIT 1')
+        .get(proc.instanceId) as { id: string; title: string } | undefined
+
+      // Get last token_usage row for this instance (current session cost)
+      const usage = db.prepare(
+        'SELECT cost_usd, input_tokens, output_tokens FROM token_usage WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(proc.instanceId) as { cost_usd: number; input_tokens: number; output_tokens: number } | undefined
+
+      return {
+        instanceId: proc.instanceId,
+        instanceName: inst?.name ?? '?',
+        agentRole: inst?.agent_role ?? null,
+        pid: proc.pid,
+        state: proc.state,
+        runningSec: proc.runningSec,
+        taskId: task?.id ?? null,
+        taskTitle: task?.title ?? null,
+        lastCostUsd: usage?.cost_usd ?? null,
+        lastInputTokens: usage?.input_tokens ?? null,
+        lastOutputTokens: usage?.output_tokens ?? null,
+      }
+    })
+
+    return { processes: result, timestamp: now }
   })
 
 }

@@ -82,6 +82,10 @@ export function broadcastTerminalLine(instanceId: string, payload: unknown): voi
 }
 
 export function broadcastEvent(message: { type: string; payload: unknown }): void {
+  // Log all non-stream events (skip high-frequency output batches)
+  if (message.type !== 'claude:output-batch') {
+    console.log(`[ws] broadcast ${message.type} → ${clients.size} clients | ${JSON.stringify(message.payload).slice(0, 200)}`)
+  }
   const data = JSON.stringify(message)
   for (const client of clients) {
     if (client.readyState === client.OPEN) {

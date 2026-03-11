@@ -99,7 +99,13 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
   // Delete folder
   app.delete('/folders/:id', async (request) => {
     const { id } = request.params as { id: string }
-    db.prepare('DELETE FROM folders WHERE id = ?').run(id)
+    const deleteTx = db.transaction(() => {
+      db.prepare('DELETE FROM task_comments WHERE task_id IN (SELECT id FROM pipeline_tasks WHERE project_id = ?)').run(id)
+      db.prepare('DELETE FROM pipeline_tasks WHERE project_id = ?').run(id)
+      db.prepare('DELETE FROM instances WHERE folder_id = ?').run(id)
+      db.prepare('DELETE FROM folders WHERE id = ?').run(id)
+    })
+    deleteTx()
     broadcastEvent({ type: 'folder:deleted', payload: { id } })
     return { ok: true }
   })
@@ -129,7 +135,7 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     db.prepare('UPDATE folders SET orchestrator_active = 0 WHERE id = ?').run(folderId)
 
     const idleAgents = instances.length
-    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','spec','build','qa','ship') AND locked_by IS NULL`)
+    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','ready','in_progress','in_review') AND locked_by IS NULL`)
       .get(folderId) as { count: number }
 
     broadcastEvent({ type: 'orchestrator:status', payload: { folderId, active: false, idleAgents, pendingTasks: pendingTasks.count } })
@@ -157,7 +163,7 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
       db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IN (${placeholders})`).run(...instanceIds)
     }
 
-    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','spec','build','qa','ship') AND locked_by IS NULL`)
+    const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('backlog','ready','in_progress','in_review') AND locked_by IS NULL`)
       .get(folderId) as { count: number }
     broadcastEvent({ type: 'orchestrator:status', payload: { folderId, active: false, idleAgents: instances.length, pendingTasks: pendingTasks.count } })
 
@@ -166,6 +172,59 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     }
 
     return { released: instances.length, instanceIds }
+  })
+
+  // Renew — kill all processes, clear sessions, release locked tasks, warm up fresh sessions
+  app.post('/folders/:id/renew', async (request) => {
+    const { id: folderId } = request.params as { id: string }
+    const body = request.body as { newNames?: string[] }
+    const instances = db.prepare('SELECT * FROM instances WHERE folder_id = ? ORDER BY sort_order ASC').all(folderId) as Record<string, unknown>[]
+
+    // 1. Kill all running processes
+    await Promise.all(instances.map(inst => processRegistry.killProcess(inst.id as string)))
+
+    const oldInstanceIds = instances.map(i => i.id as string)
+
+    // 2. Release any locked pipeline tasks
+    if (oldInstanceIds.length > 0) {
+      const ph = oldInstanceIds.map(() => '?').join(',')
+      db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IN (${ph})`).run(...oldInstanceIds)
+    }
+
+    // 3. Delete message history for old instances
+    if (oldInstanceIds.length > 0) {
+      const ph = oldInstanceIds.map(() => '?').join(',')
+      db.prepare(`DELETE FROM messages WHERE instance_id IN (${ph})`).run(...oldInstanceIds)
+    }
+
+    // 4. Delete old instances
+    db.prepare('DELETE FROM instances WHERE folder_id = ?').run(folderId)
+
+    // 5. Create new instances with same configs but fresh IDs, names, and no session
+    const now = Date.now()
+    const newInstances: Record<string, unknown>[] = []
+    for (let i = 0; i < instances.length; i++) {
+      const inst = instances[i]
+      const newId = crypto.randomUUID()
+      const newName = body.newNames?.[i] ?? (inst.name as string)
+      db.prepare(`
+        INSERT INTO instances (id, folder_id, name, cwd, session_id, state, process_state, agent_id, idle_restart_minutes, sort_order, created_at, agent_role, specialization, orchestrator_managed)
+        VALUES (?, ?, ?, ?, NULL, 'idle', 'idle', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        newId, folderId, newName, inst.cwd as string,
+        (inst.agent_id as string) ?? null,
+        (inst.idle_restart_minutes as number) ?? 0,
+        (inst.sort_order as number) ?? i,
+        now + i,
+        (inst.agent_role as string) ?? null,
+        (inst.specialization as string) ?? null,
+        inst.orchestrator_managed ? 1 : 0
+      )
+      const row = db.prepare('SELECT * FROM instances WHERE id = ?').get(newId) as Record<string, unknown>
+      newInstances.push(row)
+    }
+
+    return { renewed: instances.length, oldInstanceIds, newInstances }
   })
 
   // Global shutdown — kill every running session across all folders

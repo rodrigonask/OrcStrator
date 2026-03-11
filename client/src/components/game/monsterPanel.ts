@@ -19,12 +19,11 @@ function idHash(id: string): number {
 function getHp(task: PipelineTask): number {
   const h = idHash(task.id)
   switch (task.column) {
-    case 'spec':    return 100
-    case 'build':   return 50 + (h % 26)
-    case 'qa':      return 15 + (h % 35)
-    case 'ship':    return 1  + (h % 14)
-    case 'scheduled': return 25 + (h % 25)
-    default:        return 50
+    case 'ready':       return 100
+    case 'in_progress': return 50 + (h % 26)
+    case 'in_review':   return 15 + (h % 35)
+    case 'scheduled':   return 25 + (h % 25)
+    default:            return 50
   }
 }
 
@@ -107,9 +106,9 @@ export class MonsterPanel {
   }
 
   update(tasks: PipelineTask[]) {
-    const ACTIVE_COLS = new Set(['spec', 'build', 'qa', 'ship'])
-    const frontRow = tasks.filter(t => ACTIVE_COLS.has(t.column)).slice(0, 6)
-    const backRow  = tasks.filter(t => !ACTIVE_COLS.has(t.column) && t.column !== 'done' && t.column !== 'backlog' && t.column !== 'on_ice')
+    const ACTIVE_COLS = new Set(['in_progress'])
+    const frontRow = tasks.filter(t => t.column === 'in_progress').slice(0, 6)
+    const backRow  = tasks.filter(t => t.column === 'ready' || t.column === 'in_review')
 
     // Update zone counter badges — always visible, bright with count, dim without
     this.frontCountText.text       = frontRow.length > 0 ? `${frontRow.length} FIGHTING` : 'FIGHTING'

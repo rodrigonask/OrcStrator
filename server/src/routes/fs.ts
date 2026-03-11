@@ -15,6 +15,14 @@ function getAllowedRoots(): string[] {
     path.resolve(os.tmpdir()),
   ]
 
+  // On Windows, allow drive roots so the folder browser can navigate freely
+  if (process.platform === 'win32') {
+    const drive = os.homedir().slice(0, 3) // e.g. "C:\"
+    roots.push(path.resolve(drive))
+  } else {
+    roots.push('/')
+  }
+
   try {
     const folderRows = db.prepare('SELECT path FROM folders').all() as Array<{ path: string }>
     for (const r of folderRows) {

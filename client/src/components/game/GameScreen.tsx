@@ -9,7 +9,7 @@ import { GAME_W, GAME_H, IDLE_ZONE, ACTIVE_ZONE } from './constants'
 import type { GameDisplayMode } from './constants'
 import { buildIdlePanel, buildActivePanel } from './AgentPanel'
 import { MonsterPanel } from './monsterPanel'
-import { GameDashboard } from './GameDashboard'
+import { OrcDashboard } from '../pipeline/OrcDashboard'
 import { AttackAnimator, getCharacterCenter } from './attackAnimator'
 import { burst } from './particles'
 import { sounds } from '../../utils/sounds'
@@ -29,11 +29,8 @@ export function GameScreen() {
   const periodicTimersRef   = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   const [spritesReady, setSpritesReady] = useState(SpriteManager.isReady())
-  const [gameActive, setGameActive]     = useState<boolean>(() => {
-    try { return localStorage.getItem('nasklaude.gameActive') === 'true' } catch { return false }
-  })
   const [displayMode, setDisplayMode]   = useState<GameDisplayMode>(() => {
-    try { return (localStorage.getItem('nasklaude.displayMode') as GameDisplayMode) || 'both' } catch { return 'both' }
+    try { return (localStorage.getItem('orcstrator.displayMode') as GameDisplayMode) || 'both' } catch { return 'both' }
   })
   const displayModeRef = useRef(displayMode)
   useEffect(() => { displayModeRef.current = displayMode }, [displayMode])
@@ -73,7 +70,7 @@ export function GameScreen() {
   const dispatchRef  = useRef(dispatch)
   useEffect(() => { dispatchRef.current = dispatch }, [dispatch])
 
-  const { settings } = useUI()
+  const { settings, gameActive } = useUI()
   const settingsRef = useRef(settings)
   useEffect(() => { settingsRef.current = settings }, [settings])
 
@@ -257,11 +254,8 @@ export function GameScreen() {
         // Find the attacker: lockedBy if set, otherwise find a running agent with matching role
         let attackerId = task.lockedBy
         if (!attackerId) {
-          const colRole: Record<string, string> = { spec: 'planner', build: 'builder', qa: 'tester', ship: 'promoter' }
-          const role = colRole[task.column]
-          if (role) {
-            attackerId = instancesRef.current.find(i => i.state === 'running' && i.agentRole === role)?.id
-          }
+          const role = task.currentStepRole || 'builder'
+          attackerId = instancesRef.current.find(i => i.state === 'running' && i.agentRole === role)?.id
         }
         if (!attackerId) continue
 
@@ -311,14 +305,9 @@ export function GameScreen() {
     }
   }, [visibleInstances, spritesReady])
 
-  // Effect 4: Persist game active state
-  useEffect(() => {
-    try { localStorage.setItem('nasklaude.gameActive', String(gameActive)) } catch { /* ignore */ }
-  }, [gameActive])
-
   // Effect 5: Persist display mode
   useEffect(() => {
-    try { localStorage.setItem('nasklaude.displayMode', displayMode) } catch { /* ignore */ }
+    try { localStorage.setItem('orcstrator.displayMode', displayMode) } catch { /* ignore */ }
   }, [displayMode])
 
   // Effect 6: Apply display mode to all monsters when it changes
@@ -453,27 +442,22 @@ export function GameScreen() {
   }
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 500 }}>
-      <div ref={containerRef} style={{ width: '100%', height: '100%', visibility: gameActive ? 'visible' : 'hidden', position: 'absolute', inset: 0 }} />
-      {!gameActive && <GameDashboard instances={visibleInstances} tasks={visibleTasks} projectId={folders[0]?.id} />}
-      <div className="game-controls-bar">
-        <button
-          className={`game-ctrl-btn game-mode-toggle ${gameActive ? 'active' : ''}`}
-          onClick={() => setGameActive(v => !v)}
-          title="Toggle game view"
-        >
-          {gameActive ? '⚔ ON' : '⚔ OFF'}
-        </button>
-        <div className="game-ctrl-divider" />
-        <button
-          className="game-ctrl-btn active"
-          onClick={cycleMode}
-          disabled={!gameActive}
-          title="Cycle display mode"
-        >
-          {currentModeLabel}
-        </button>
-      </div>
+    <div style={{ position: 'relative', width: '100%', height: '100%', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      {/* PixiJS canvas — always absolute, hidden when game off */}
+      <div
+        ref={containerRef}
+        style={{
+          position: 'absolute', inset: 0,
+          visibility: gameActive ? 'visible' : 'hidden',
+          pointerEvents: gameActive ? 'auto' : 'none',
+        }}
+      />
+      {/* Pipeline kanban — absolute fill, hidden when game on */}
+      {!gameActive && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
+          <OrcDashboard />
+        </div>
+      )}
     </div>
   )
 }

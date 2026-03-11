@@ -1,7 +1,10 @@
-import { useState, useCallback, useRef } from 'react'
-import type { PipelineColumn, TaskAttachment } from '@shared/types'
-import { PIPELINE_COLUMNS } from '@shared/constants'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import type { PipelineColumn, PipelineBlueprint, TaskAttachment } from '@shared/types'
+import { DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { rest } from '../../api/rest'
+import { useAgentNames } from '../../hooks/useAgentNames'
+
+const ALLOWED_COLUMNS: PipelineColumn[] = ['backlog', 'ready', 'scheduled']
 
 interface CreateTaskModalProps {
   projectId: string
@@ -9,6 +12,7 @@ interface CreateTaskModalProps {
 }
 
 export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
+  const agentNames = useAgentNames()
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [column, setColumn] = useState<PipelineColumn>('backlog')
@@ -19,6 +23,22 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
   const [skill, setSkill] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Blueprint selection
+  const [blueprints, setBlueprints] = useState<PipelineBlueprint[]>([])
+  const [selectedBlueprintId, setSelectedBlueprintId] = useState<string>('')
+  const [stepInstructions, setStepInstructions] = useState<Record<string, string>>({})
+  const [showSteps, setShowSteps] = useState(false)
+
+  useEffect(() => {
+    rest.getBlueprints().then(bps => {
+      setBlueprints(bps)
+      const defaultBp = bps.find(b => b.isDefault)
+      if (defaultBp) setSelectedBlueprintId(defaultBp.id)
+    }).catch(console.error)
+  }, [])
+
+  const selectedBlueprint = blueprints.find(b => b.id === selectedBlueprintId)
 
   const addLabel = useCallback(() => {
     const trimmed = labelInput.trim()
@@ -90,6 +110,7 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
   const handleSave = useCallback(async () => {
     if (!title.trim()) return
     try {
+      const hasInstructions = Object.values(stepInstructions).some(v => v.trim())
       await rest.createTask(projectId, {
         title: title.trim(),
         description,
@@ -98,12 +119,14 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
         labels,
         attachments,
         skill: skill.trim() || undefined,
-      })
+        pipelineId: selectedBlueprintId || undefined,
+        stepInstructions: hasInstructions ? stepInstructions : undefined,
+      } as any)
     } catch (err) {
       console.error('Failed to create task:', err)
     }
     onClose()
-  }, [projectId, title, description, column, priority, labels, attachments, skill, onClose])
+  }, [projectId, title, description, column, priority, labels, attachments, skill, selectedBlueprintId, stepInstructions, onClose])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -186,8 +209,26 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
             />
           </div>
 
-          {/* Column + Priority row */}
+          {/* Pipeline + Column + Priority row */}
           <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Pipeline</label>
+              <select
+                className="form-select"
+                value={selectedBlueprintId}
+                onChange={e => {
+                  setSelectedBlueprintId(e.target.value)
+                  setStepInstructions({})
+                }}
+              >
+                <option value="">None</option>
+                {blueprints.map(bp => (
+                  <option key={bp.id} value={bp.id}>
+                    {bp.name}{bp.isDefault ? ' (default)' : ''} — {bp.steps.length} step{bp.steps.length !== 1 ? 's' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="form-group">
               <label className="form-label">Column</label>
               <select
@@ -195,9 +236,9 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
                 value={column}
                 onChange={e => setColumn(e.target.value as PipelineColumn)}
               >
-                {PIPELINE_COLUMNS.map(col => (
+                {ALLOWED_COLUMNS.map(col => (
                   <option key={col} value={col}>
-                    {col.charAt(0).toUpperCase() + col.slice(1)}
+                    {DEFAULT_COLUMN_LABELS[col] || col}
                   </option>
                 ))}
               </select>
@@ -216,6 +257,40 @@ export function CreateTaskModal({ projectId, onClose }: CreateTaskModalProps) {
               </select>
             </div>
           </div>
+
+          {/* Step details (expandable, only when blueprint has >1 step) */}
+          {selectedBlueprint && selectedBlueprint.steps.length > 1 && (
+            <div className="form-group">
+              <button
+                className="btn btn-sm"
+                style={{ fontSize: 11, fontFamily: 'var(--font-mono)', opacity: 0.8 }}
+                onClick={() => setShowSteps(!showSteps)}
+              >
+                {showSteps ? '▼' : '▶'} Steps ({selectedBlueprint.steps.length})
+              </button>
+              {showSteps && (
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {selectedBlueprint.steps.map((step, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 24, color: 'var(--text-secondary)' }}>
+                        {idx + 1}.
+                      </span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 64, color: `var(--role-${step.role})` }}>
+                        {agentNames[step.role] || step.role}
+                      </span>
+                      <input
+                        className="form-input"
+                        style={{ flex: 1, fontSize: 11 }}
+                        placeholder={step.instruction || 'optional instruction'}
+                        value={stepInstructions[String(idx + 1)] || ''}
+                        onChange={e => setStepInstructions(prev => ({ ...prev, [String(idx + 1)]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Skill (only for scheduled column) */}
           {column === 'scheduled' && (

@@ -32,7 +32,7 @@ function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
 
 export function Sidebar() {
   const { folders } = useInstances()
-  const { editingFolderId, showFolderBrowser, settings, view } = useUI()
+  const { editingFolderId, showFolderBrowser, settings, view, activePipelineId, showSettings } = useUI()
   const { dispatch } = useAppDispatch()
   const multiProjectGate = useFeatureGate('multi-project')
   const createProjectGate = useFeatureGate('create-project')
@@ -96,6 +96,19 @@ export function Sidebar() {
 
         <div className="sidebar-nav-links" style={{ padding: '4px 8px', borderTop: '1px solid var(--border)' }}>
           <button
+            className={`sidebar-nav-btn${view === 'pipeline' ? ' active' : ''}`}
+            onClick={() => {
+              const pipelineId = activePipelineId || folders[0]?.id || null
+              if (pipelineId) {
+                dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: pipelineId })
+              }
+              dispatch({ type: 'SELECT_INSTANCE', payload: null })
+              dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
+            }}
+          >
+            <span className="font-mono" style={{ fontSize: '11px' }}>Pipeline</span>
+          </button>
+          <button
             className={`sidebar-nav-btn${view === 'agents' ? ' active' : ''}`}
             onClick={() => {
               dispatch({ type: 'SELECT_INSTANCE', payload: null })
@@ -105,6 +118,15 @@ export function Sidebar() {
             <span className="font-mono" style={{ fontSize: '11px' }}>Agents</span>
           </button>
           <button
+            className={`sidebar-nav-btn${view === 'sessions' ? ' active' : ''}`}
+            onClick={() => {
+              dispatch({ type: 'SELECT_INSTANCE', payload: null })
+              dispatch({ type: 'SET_VIEW', payload: 'sessions' })
+            }}
+          >
+            <span className="font-mono" style={{ fontSize: '11px' }}>Sessions</span>
+          </button>
+          <button
             className={`sidebar-nav-btn${view === 'usage' ? ' active' : ''}`}
             onClick={() => {
               dispatch({ type: 'SELECT_INSTANCE', payload: null })
@@ -112,6 +134,12 @@ export function Sidebar() {
             }}
           >
             <span className="font-mono" style={{ fontSize: '11px' }}>Usage</span>
+          </button>
+          <button
+            className={`sidebar-nav-btn${showSettings ? ' active' : ''}`}
+            onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
+          >
+            <span className="font-mono" style={{ fontSize: '11px' }}>Settings</span>
           </button>
         </div>
 

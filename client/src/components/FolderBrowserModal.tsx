@@ -65,7 +65,7 @@ function RootScopedBrowser({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Add Project Folder</span>
+          <span className="modal-title">Add Project</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body folder-browser">
@@ -160,7 +160,7 @@ function FullBrowser({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Select Folder</span>
+          <span className="modal-title">Select Project</span>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body folder-browser">
@@ -235,7 +235,7 @@ function FullBrowser({
         </div>
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSelect}>Select This Folder</button>
+          <button className="btn btn-primary" onClick={handleSelect}>Select This Project</button>
         </div>
       </div>
     </div>

@@ -10,13 +10,14 @@ import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { InstanceItem } from './InstanceItem'
+import { useConfirm } from './ConfirmModal'
 import { LaunchTeamModal } from './LaunchTeamModal'
 import { CreateTaskModal } from './pipeline/CreateTaskModal'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { useFeatureGate } from '../hooks/useFeatureGate'
 import { randomName } from '../utils/naming'
 
-function SortableInstanceItem({ instance, folderOrchestratorActive }: { instance: InstanceConfig; folderOrchestratorActive: boolean }) {
+function SortableInstanceItem({ instance, folderOrchestratorActive, extraClass }: { instance: InstanceConfig; folderOrchestratorActive: boolean; extraClass?: string }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: instance.id })
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -25,7 +26,7 @@ function SortableInstanceItem({ instance, folderOrchestratorActive }: { instance
   }
   return (
     <div ref={setNodeRef} style={style}>
-      <InstanceItem instance={instance} folderOrchestratorActive={folderOrchestratorActive} dragHandleProps={{ ...attributes, ...listeners }} />
+      <InstanceItem instance={instance} folderOrchestratorActive={folderOrchestratorActive} dragHandleProps={{ ...attributes, ...listeners }} extraClass={extraClass} />
     </div>
   )
 }
@@ -47,7 +48,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [orchStatus, setOrchStatus] = useState<{ idleAgents: number; pendingTasks: number } | null>(null)
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
+  const [dyingIds, setDyingIds] = useState<Set<string>>(new Set())
 
+  const { alert, confirm } = useConfirm()
   const pipelineGate = useFeatureGate('pipeline')
   const orcGate = useFeatureGate('the-orc')
   const teamsGate = useFeatureGate('agent-teams')
@@ -72,7 +75,8 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
 
   const toggleExpanded = useCallback(() => {
     dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
-  }, [dispatch, folder.id])
+    api.updateFolder(folder.id, { expanded: !folder.expanded }).catch(console.error)
+  }, [dispatch, folder.id, folder.expanded])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -100,6 +104,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
       dispatch({ type: 'SELECT_INSTANCE', payload: instance.id })
       if (!folder.expanded) {
         dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
+        api.updateFolder(folder.id, { expanded: true }).catch(console.error)
       }
     } catch (err) {
       console.error('Failed to create instance:', err)
@@ -141,14 +146,25 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
   const handleConfirmActivate = useCallback(async () => {
     setConfirmOrchestrate(false)
     try {
+      // Check restart cooldown before activating
+      const restartStatus = await api.getRestartStatus()
+      if (restartStatus.cooldownActive) {
+        const secs = Math.ceil(restartStatus.cooldownRemaining / 1000)
+        await alert(`Server recently restarted. Please wait ${secs}s before reactivating.`)
+        return
+      }
       await api.activateOrchestrator(folder.id)
       dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: { orchestratorActive: true } } })
       const status = await api.getOrchestratorStatus(folder.id)
       setOrchStatus({ idleAgents: status.idleAgents, pendingTasks: status.pendingTasks })
-    } catch (err) {
-      console.error('Failed to activate orchestrator:', err)
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes('429')) {
+        await alert('Restart cooldown active — wait before reactivating the orchestrator.')
+      } else {
+        console.error('Failed to activate orchestrator:', err)
+      }
     }
-  }, [folder.id, dispatch])
+  }, [folder.id, dispatch, alert])
 
   const handlePauseAll = useCallback(async () => {
     closeContextMenu()
@@ -174,6 +190,53 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
       console.error('Failed to release all:', err)
     }
   }, [folder.id, dispatch])
+
+  const handleRenew = useCallback(async () => {
+    closeContextMenu()
+    const ok = await confirm(`Renew all ${instances.length} instance${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will close all sessions and create fresh ones.`)
+    if (!ok) return
+    try {
+      const newNames = instances.map(() => randomName(settings.namingTheme || 'fruits'))
+      const result = await api.renewFolder(folder.id, { newNames })
+
+      // 1. Play the death animation on all old instances
+      setDyingIds(new Set(result.oldInstanceIds))
+
+      // 2. After anim-remove finishes (1.2s), remove them all
+      await new Promise(r => setTimeout(r, 1300))
+      setDyingIds(new Set())
+      for (const id of result.oldInstanceIds) {
+        dispatch({ type: 'REMOVE_INSTANCE', payload: id })
+      }
+
+      // 3. Brief pause, then add new instances one by one (each triggers anim-spawn)
+      await new Promise(r => setTimeout(r, 200))
+      for (const inst of result.newInstances) {
+        dispatch({ type: 'ADD_INSTANCE', payload: {
+          id: inst.id as string,
+          folderId: inst.folder_id as string,
+          name: inst.name as string,
+          cwd: inst.cwd as string,
+          sessionId: undefined,
+          state: 'idle',
+          agentId: inst.agent_id as string | undefined,
+          idleRestartMinutes: inst.idle_restart_minutes as number,
+          sortOrder: inst.sort_order as number,
+          createdAt: inst.created_at as number,
+          agentRole: inst.agent_role as InstanceConfig['agentRole'],
+          specialization: inst.specialization as string | undefined,
+          orchestratorManaged: Boolean(inst.orchestrator_managed),
+          xpTotal: 0,
+          level: 1,
+          overdriveTasks: 0,
+        } })
+        await new Promise(r => setTimeout(r, 300))
+      }
+    } catch (err) {
+      console.error('Failed to renew folder:', err)
+      setDyingIds(new Set())
+    }
+  }, [folder.id, folder.displayName, folder.name, instances, settings.namingTheme, dispatch, closeContextMenu, confirm])
 
   const hasRunning = instances.some(i => i.state === 'running')
   const statusClass = folder.status === 'paused' ? 'paused'
@@ -290,6 +353,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
                   key={inst.id}
                   instance={inst}
                   folderOrchestratorActive={isOrchestratorActive}
+                  extraClass={dyingIds.has(inst.id) ? 'anim-remove' : undefined}
                 />
               ))}
             </SortableContext>
@@ -323,7 +387,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
               Add Instance
             </button>
             <button className="context-menu-item" onClick={() => { if (pipelineGate.check()) handlePipeline(); else closeContextMenu() }}>
-              Pipeline Board
+              Pipeline Project
             </button>
             <button className="context-menu-item" onClick={() => { if (teamsGate.check()) { setShowLaunchTeam(true); closeContextMenu() } else { closeContextMenu() } }}>
               Launch a Team
@@ -334,6 +398,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             </button>
             <button className="context-menu-item" onClick={() => { setShowReleaseConfirm(true); closeContextMenu() }}>
               Release All...
+            </button>
+            <button className="context-menu-item" onClick={handleRenew}>
+              Renew All
             </button>
             <div className="context-menu-separator" />
             <button className="context-menu-item danger" onClick={handleRemove}>

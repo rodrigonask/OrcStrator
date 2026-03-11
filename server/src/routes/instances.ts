@@ -102,7 +102,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     }
 
     // Guard: reject if already running to prevent duplicate spawns from rapid clicks
-    if (processRegistry.isRunning(id)) {
+    if (processRegistry.isTracked(id)) {
       throw { statusCode: 409, message: 'Instance already running' }
     }
 
@@ -169,9 +169,9 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const { id } = request.params as { id: string }
     const row = db.prepare('SELECT id FROM instances WHERE id = ?').get(id) as { id: string } | undefined
     if (!row) { reply.code(404); return { error: 'Not found' } }
-    const wasRunning = processRegistry.isRunning(id)
+    const wasRunning = processRegistry.isTracked(id)
     await processRegistry.killProcess(id)
-    db.prepare("UPDATE instances SET state = 'idle', process_pid = NULL WHERE id = ?").run(id)
+    db.prepare("UPDATE instances SET state = 'idle', process_state = 'idle', process_pid = NULL, assigned_task_ids = NULL, version = version + 1 WHERE id = ?").run(id)
     broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'idle' } })
     return { killed: wasRunning }
   })
@@ -180,7 +180,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   app.post('/instances/:id/pause', async (request) => {
     const { id } = request.params as { id: string }
     await processRegistry.killProcess(id)
-    db.prepare("UPDATE instances SET state = 'paused', process_pid = NULL WHERE id = ?").run(id)
+    db.prepare("UPDATE instances SET state = 'paused', process_state = 'idle', process_pid = NULL, assigned_task_ids = NULL, version = version + 1 WHERE id = ?").run(id)
     broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'paused' } })
     return { ok: true }
   })

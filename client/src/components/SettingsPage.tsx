@@ -5,8 +5,9 @@ import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
 import { api } from '../api'
 import { rest } from '../api/rest'
-import { ALLOWED_FLAG_PREFIXES, AVAILABLE_TOOLS, DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS } from '@shared/constants'
-import type { McpServerInfo, AgentModel, AgentRole, PermissionMode } from '@shared/types'
+import { useConfirm } from './ConfirmModal'
+import { ALLOWED_FLAG_PREFIXES, AVAILABLE_TOOLS, DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS, DEFAULT_AGENT_NAMES, ANIMATION_TIERS, SOUND_TIERS, VERBOSITY_TIERS } from '@shared/constants'
+import type { McpServerInfo, AgentModel, AgentRole, PermissionMode, VerbosityLevel } from '@shared/types'
 import type { NamingTheme } from '../utils/naming'
 
 const ROLES: AgentRole[] = ['planner', 'builder', 'tester', 'promoter']
@@ -16,7 +17,7 @@ const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
   { value: 'sonnet', label: 'Sonnet (balanced)' },
   { value: 'opus', label: 'Opus (strongest)' },
 ]
-const TABS = ['General', 'Agents', 'Advanced', 'Usage Log'] as const
+const TABS = ['General', 'Agents', 'Advanced'] as const
 type Tab = typeof TABS[number]
 
 export function SettingsPage() {
@@ -24,6 +25,7 @@ export function SettingsPage() {
   const { dispatch } = useAppDispatch()
   const { fontSize, setFontSize } = useFontSize()
   const { tour } = useGame()
+  const { alert } = useConfirm()
   const isGodMode = !tour?.guidedMode || tour.guidedMode === 'god'
 
   const [tab, setTab] = useState<Tab>('General')
@@ -34,11 +36,10 @@ export function SettingsPage() {
   const [rootFolder, setRootFolder] = useState(settings.rootFolder)
   const [usagePoll, setUsagePoll] = useState(settings.usagePollMinutes)
   const [theme, setTheme] = useState(settings.theme)
-  const defaultNames = { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
-  const [agentNames, setAgentNames] = useState(settings.orchestratorAgentNames || defaultNames)
+  const [agentNames, setAgentNames] = useState(settings.orchestratorAgentNames || DEFAULT_AGENT_NAMES)
   const [allowSpawn, setAllowSpawn] = useState(settings.orchestratorAllowSpawn || false)
-  const [animationsEnabled, setAnimationsEnabled] = useState(settings.animationsEnabled !== false)
-  const [soundsEnabled, setSoundsEnabled] = useState(settings.soundsEnabled !== false)
+  const [animationTier, setAnimationTier] = useState<number>(settings.animationTier ?? (settings.animationsEnabled === false ? 0 : 2))
+  const [soundTier, setSoundTier] = useState<number>(settings.soundTier ?? (settings.soundsEnabled === false ? 0 : 2))
   const [namingTheme, setNamingTheme] = useState<NamingTheme>(settings.namingTheme || 'fruits')
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpLoaded, setMcpLoaded] = useState(false)
@@ -64,40 +65,8 @@ export function SettingsPage() {
   const [disableCache, setDisableCache] = useState(settings.disableCache ?? false)
   const [maxTokens, setMaxTokens] = useState(settings.maxTokens ?? 0)
   const [maxConcurrent, setMaxConcurrent] = useState(settings.maxConcurrentProcesses ?? 8)
+  const [verbosity, setVerbosity] = useState<number>(settings.verbosity ?? 3)
   const [saved, setSaved] = useState(false)
-  const [usageDays, setUsageDays] = useState<number>(7)
-  const [usageLog, setUsageLog] = useState<Array<{ session_id: string; role: string; task_title: string | null; project_name: string | null; cost_usd: number; input_tokens: number; output_tokens: number; created_at: number }>>([])
-  const [usageByProject, setUsageByProject] = useState<Array<{ project_name: string; total_cost_usd: number; session_count: number }>>([])
-  const [usageStats, setUsageStats] = useState<{
-    summary: { total_cost_usd: number; total_sessions: number; avg_cost_per_session: number; cache_hit_ratio: number; total_input_tokens: number; total_output_tokens: number };
-    byRole: Array<{ role: string; session_count: number; total_cost_usd: number; avg_cost_usd: number; cache_hit_ratio: number }>;
-    byWeekday: Array<{ weekday: number; label: string; session_count: number; total_cost_usd: number }>;
-    byDay: Array<{ day: string; session_count: number; total_cost_usd: number }>;
-  } | null>(null)
-  const [sortCol, setSortCol] = useState<string>('')
-  const [sortAsc, setSortAsc] = useState(true)
-
-  const handleSort = useCallback((col: string) => {
-    if (sortCol === col) setSortAsc(a => !a)
-    else { setSortCol(col); setSortAsc(true) }
-  }, [sortCol])
-
-  const sortRows = useCallback(<T extends Record<string, unknown>>(rows: T[], col: string): T[] => {
-    if (!col) return rows
-    return [...rows].sort((a, b) => {
-      const av = a[col] ?? 0, bv = b[col] ?? 0
-      if (typeof av === 'number' && typeof bv === 'number') return sortAsc ? av - bv : bv - av
-      return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
-    })
-  }, [sortAsc])
-
-  useEffect(() => {
-    if (tab === 'Usage Log') {
-      rest.getUsageLog(500, usageDays).then(setUsageLog).catch(() => {})
-      rest.getUsageByProject(usageDays).then(setUsageByProject).catch(() => {})
-      rest.getUsageStats(usageDays).then(setUsageStats).catch(() => {})
-    }
-  }, [tab, usageDays])
 
   useEffect(() => {
     rest.getMcpAvailable().then(r => {
@@ -106,19 +75,19 @@ export function SettingsPage() {
     }).catch(() => setMcpLoaded(true))
   }, [])
 
-  const addFlag = useCallback(() => {
+  const addFlag = useCallback(async () => {
     const trimmed = newFlag.trim()
     if (!trimmed) return
     const isValid = ALLOWED_FLAG_PREFIXES.some(p => trimmed.startsWith(p))
     if (!isValid) {
-      alert('Flag not in allowed list: ' + ALLOWED_FLAG_PREFIXES.join(', '))
+      await alert('Flag not in allowed list: ' + ALLOWED_FLAG_PREFIXES.join(', '))
       return
     }
     if (!flags.includes(trimmed)) {
       setFlags(f => [...f, trimmed])
     }
     setNewFlag('')
-  }, [newFlag, flags])
+  }, [newFlag, flags, alert])
 
   const removeFlag = useCallback((flag: string) => {
     setFlags(f => f.filter(fl => fl !== flag))
@@ -168,15 +137,18 @@ export function SettingsPage() {
       disableCache,
       maxTokens: maxTokens > 0 ? maxTokens : undefined,
       maxConcurrentProcesses: maxConcurrent,
-      animationsEnabled,
-      soundsEnabled,
+      animationTier: animationTier as 0 | 1 | 2 | 3 | 4,
+      soundTier: soundTier as 0 | 1 | 2 | 3 | 4,
+      animationsEnabled: animationTier > 0,
+      soundsEnabled: soundTier > 0,
       namingTheme,
+      verbosity: verbosity as VerbosityLevel,
     }
     dispatch({ type: 'UPDATE_SETTINGS', payload })
     api.updateSettings(payload)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationsEnabled, soundsEnabled, namingTheme])
+  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingTheme, verbosity])
 
   const handleBack = useCallback(() => {
     dispatch({ type: 'CLOSE_SETTINGS' })
@@ -309,16 +281,58 @@ export function SettingsPage() {
               </div>
 
               <div className="settings-col">
-                {/* Animations & Sounds */}
+                {/* Animation & Sound Tiers */}
                 <div className="settings-card">
-                  {sectionTitle('Animations & Sounds')}
-                  <div className="settings-toggle">
-                    <span className="settings-toggle-label">Instance card animations</span>
-                    <div className={`toggle-switch ${animationsEnabled ? 'active' : ''}`} onClick={() => setAnimationsEnabled(v => !v)} />
+                  {sectionTitle('Animation Tier')}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 18 }}>{ANIMATION_TIERS[animationTier]?.icon}</span>
+                    <input
+                      type="range" min={0} max={4} step={1}
+                      value={animationTier}
+                      onChange={e => setAnimationTier(Number(e.target.value))}
+                      className="form-input"
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 100 }}>
+                      {ANIMATION_TIERS[animationTier]?.name}
+                    </span>
                   </div>
-                  <div className="settings-toggle" style={{ marginTop: 8 }}>
-                    <span className="settings-toggle-label">Sound effects</span>
-                    <div className={`toggle-switch ${soundsEnabled ? 'active' : ''}`} onClick={() => setSoundsEnabled(v => !v)} />
+                </div>
+                <div className="settings-card">
+                  {sectionTitle('Sound Tier')}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 18 }}>{SOUND_TIERS[soundTier]?.icon}</span>
+                    <input
+                      type="range" min={0} max={4} step={1}
+                      value={soundTier}
+                      onChange={e => setSoundTier(Number(e.target.value))}
+                      className="form-input"
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 100 }}>
+                      {SOUND_TIERS[soundTier]?.name}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Chat Verbosity */}
+                <div className="settings-card">
+                  {sectionTitle('Chat Verbosity')}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 18 }}>{VERBOSITY_TIERS[verbosity - 1]?.icon}</span>
+                    <input
+                      type="range" min={1} max={5} step={1}
+                      value={verbosity}
+                      onChange={e => setVerbosity(Number(e.target.value))}
+                      className="form-input"
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 120 }}>
+                      {VERBOSITY_TIERS[verbosity - 1]?.name}
+                      <span style={{ color: 'var(--text-tertiary)', fontSize: 9, display: 'block' }}>
+                        {VERBOSITY_TIERS[verbosity - 1]?.description}
+                      </span>
+                    </span>
                   </div>
                 </div>
 
@@ -441,213 +455,6 @@ export function SettingsPage() {
                     </span>
                     <div className={`toggle-switch ${allowSpawn ? 'active' : ''}`} style={{ pointerEvents: 'none', opacity: 0.4 }} />
                   </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* === USAGE LOG TAB === */}
-          {tab === 'Usage Log' && (
-            <div className="usage-log-tab">
-              {/* Date range tabs */}
-              <div className="usage-range-tabs">
-                {([
-                  { label: '7d', value: 7 },
-                  { label: '14d', value: 14 },
-                  { label: '30d', value: 30 },
-                  { label: 'Last Month', value: -1 },
-                ] as const).map(opt => (
-                  <button
-                    key={opt.label}
-                    className={`usage-range-btn ${usageDays === opt.value ? 'active' : ''}`}
-                    onClick={() => {
-                      if (opt.value === -1) {
-                        const now = new Date()
-                        const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-                        const diff = Math.ceil((now.getTime() - firstOfMonth.getTime()) / 86_400_000) + new Date(now.getFullYear(), now.getMonth() - 1, 0).getDate()
-                        setUsageDays(-1)
-                        // For last month, use 60 days to cover full previous month
-                        rest.getUsageLog(500, 60).then(setUsageLog).catch(() => {})
-                        rest.getUsageByProject(60).then(setUsageByProject).catch(() => {})
-                        rest.getUsageStats(60).then(setUsageStats).catch(() => {})
-                      } else {
-                        setUsageDays(opt.value)
-                      }
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Summary cards */}
-              {usageStats && (
-                <div className="usage-summary-cards">
-                  <div className="usage-summary-card">
-                    <div className="usage-summary-label">Total Cost</div>
-                    <div className="usage-summary-value">${usageStats.summary.total_cost_usd.toFixed(2)}</div>
-                  </div>
-                  <div className="usage-summary-card">
-                    <div className="usage-summary-label">Sessions</div>
-                    <div className="usage-summary-value">{usageStats.summary.total_sessions.toLocaleString()}</div>
-                  </div>
-                  <div className="usage-summary-card">
-                    <div className="usage-summary-label">Avg / Session</div>
-                    <div className="usage-summary-value">${usageStats.summary.avg_cost_per_session.toFixed(4)}</div>
-                  </div>
-                  <div className="usage-summary-card">
-                    <div className="usage-summary-label">Cache Hit %</div>
-                    <div className="usage-summary-value">{(usageStats.summary.cache_hit_ratio * 100).toFixed(1)}%</div>
-                  </div>
-                </div>
-              )}
-
-              {/* Per-role table */}
-              {usageStats && usageStats.byRole.length > 0 && (
-                <div className="settings-card" style={{ marginTop: 16 }}>
-                  {sectionTitle('Cost by Role')}
-                  <div className="usage-log-table-wrap">
-                    <table className="usage-log-table usage-sortable">
-                      <thead>
-                        <tr>
-                          <th onClick={() => handleSort('role')} className="usage-sort-th">Role {sortCol === 'role' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('session_count')} className="usage-sort-th">Sessions {sortCol === 'session_count' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('total_cost_usd')} className="usage-sort-th">Cost {sortCol === 'total_cost_usd' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('avg_cost_usd')} className="usage-sort-th">Avg {sortCol === 'avg_cost_usd' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('cache_hit_ratio')} className="usage-sort-th">Cache Hit % {sortCol === 'cache_hit_ratio' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortRows(usageStats.byRole, sortCol).map((r, i) => (
-                          <tr key={i}>
-                            <td style={{ textTransform: 'capitalize' }}>{r.role}</td>
-                            <td className="usage-log-mono">{r.session_count}</td>
-                            <td className="usage-log-mono">${r.total_cost_usd.toFixed(4)}</td>
-                            <td className="usage-log-mono">${r.avg_cost_usd.toFixed(4)}</td>
-                            <td className="usage-log-mono">{(r.cache_hit_ratio * 100).toFixed(1)}%</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Per-project table */}
-              {usageByProject.length > 0 && (
-                <div className="settings-card" style={{ marginTop: 16 }}>
-                  {sectionTitle('Cost by Project')}
-                  <div className="usage-log-table-wrap">
-                    <table className="usage-log-table usage-sortable">
-                      <thead>
-                        <tr>
-                          <th onClick={() => handleSort('project_name')} className="usage-sort-th">Project {sortCol === 'project_name' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('total_cost_usd')} className="usage-sort-th">Total Cost {sortCol === 'total_cost_usd' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('session_count')} className="usage-sort-th">Sessions {sortCol === 'session_count' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortRows(usageByProject, sortCol).map((row, i) => (
-                          <tr key={i}>
-                            <td>{row.project_name}</td>
-                            <td className="usage-log-mono">${(row.total_cost_usd ?? 0).toFixed(4)}</td>
-                            <td className="usage-log-mono">{row.session_count}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Per-weekday table */}
-              {usageStats && usageStats.byWeekday.length > 0 && (
-                <div className="settings-card" style={{ marginTop: 16 }}>
-                  {sectionTitle('Cost by Weekday')}
-                  <div className="usage-log-table-wrap">
-                    <table className="usage-log-table usage-sortable">
-                      <thead>
-                        <tr>
-                          <th onClick={() => handleSort('label')} className="usage-sort-th">Day {sortCol === 'label' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('session_count')} className="usage-sort-th">Sessions {sortCol === 'session_count' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('total_cost_usd')} className="usage-sort-th">Cost {sortCol === 'total_cost_usd' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortRows(usageStats.byWeekday, sortCol).map((r, i) => (
-                          <tr key={i}>
-                            <td>{r.label}</td>
-                            <td className="usage-log-mono">{r.session_count}</td>
-                            <td className="usage-log-mono">${r.total_cost_usd.toFixed(4)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Per-day table */}
-              {usageStats && usageStats.byDay.length > 0 && (
-                <div className="settings-card" style={{ marginTop: 16 }}>
-                  {sectionTitle('Cost by Day')}
-                  <div className="usage-log-table-wrap">
-                    <table className="usage-log-table usage-sortable">
-                      <thead>
-                        <tr>
-                          <th onClick={() => handleSort('day')} className="usage-sort-th">Date {sortCol === 'day' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('session_count')} className="usage-sort-th">Sessions {sortCol === 'session_count' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                          <th onClick={() => handleSort('total_cost_usd')} className="usage-sort-th">Cost {sortCol === 'total_cost_usd' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortRows(usageStats.byDay, sortCol).map((r, i) => (
-                          <tr key={i}>
-                            <td className="usage-log-mono">{r.day}</td>
-                            <td className="usage-log-mono">{r.session_count}</td>
-                            <td className="usage-log-mono">${r.total_cost_usd.toFixed(4)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Raw log table */}
-              <div className="settings-card" style={{ marginTop: 16 }}>
-                {sectionTitle('Session Log')}
-                <div className="usage-log-table-wrap">
-                  <table className="usage-log-table usage-sortable">
-                    <thead>
-                      <tr>
-                        <th onClick={() => handleSort('created_at')} className="usage-sort-th">Date {sortCol === 'created_at' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('session_id')} className="usage-sort-th">Session {sortCol === 'session_id' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('task_title')} className="usage-sort-th">Task {sortCol === 'task_title' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('project_name')} className="usage-sort-th">Project {sortCol === 'project_name' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('role')} className="usage-sort-th">Role {sortCol === 'role' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('input_tokens')} className="usage-sort-th">Input {sortCol === 'input_tokens' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('output_tokens')} className="usage-sort-th">Output {sortCol === 'output_tokens' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                        <th onClick={() => handleSort('cost_usd')} className="usage-sort-th">Cost {sortCol === 'cost_usd' ? (sortAsc ? '\u25B2' : '\u25BC') : ''}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {usageLog.length === 0 ? (
-                        <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 16 }}>No usage data yet</td></tr>
-                      ) : sortRows(usageLog, sortCol).map((row, i) => (
-                        <tr key={i}>
-                          <td className="usage-log-mono">{new Date(row.created_at).toLocaleDateString()}</td>
-                          <td className="usage-log-mono">{row.session_id ? row.session_id.slice(0, 8) : '\u2014'}</td>
-                          <td>{row.task_title || '\u2014'}</td>
-                          <td>{row.project_name || '\u2014'}</td>
-                          <td style={{ textTransform: 'capitalize' }}>{row.role || '\u2014'}</td>
-                          <td className="usage-log-mono">{(row.input_tokens ?? 0).toLocaleString()}</td>
-                          <td className="usage-log-mono">{(row.output_tokens ?? 0).toLocaleString()}</td>
-                          <td className="usage-log-mono">${(row.cost_usd ?? 0).toFixed(4)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 </div>
               </div>
             </div>

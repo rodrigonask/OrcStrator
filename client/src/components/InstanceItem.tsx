@@ -1,26 +1,54 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import type { InstanceConfig, ChatMessage, SkillConfig } from '@shared/types'
-import { OVERDRIVE_LEVELS } from '@shared/constants'
-import { useUI, ROLE_TO_COLUMN } from '../context/UIContext'
+import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { usePipeline } from '../context/PipelineContext'
 import { useFeatureGate } from '../hooks/useFeatureGate'
+import { useAgentNames } from '../hooks/useAgentNames'
+import { useOverdriveLevel } from '../hooks/useOverdriveLevel'
 import { api } from '../api'
 import { sounds } from '../utils/sounds'
+import { vfxBus } from '../systems/vfx-bus'
+import { resolveAnimTier, resolveSoundTier } from '../hooks/useVFX'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
 
 interface InstanceItemProps {
   instance: InstanceConfig
   folderOrchestratorActive?: boolean
   dragHandleProps?: Record<string, unknown>
+  extraClass?: string
 }
 
 const AGENT_ROLES = ['planner', 'builder', 'tester', 'promoter'] as const
 
+/** Megaman-style chiptune ascending arpeggio jingle using Web Audio API */
+function playMegamanJingle() {
+  try {
+    const ctx = new AudioContext()
+    const notes = [330, 440, 554, 659, 880, 1047] // E4→C6 ascending
+    const noteGap = 0.08
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'square'
+      osc.frequency.value = freq
+      const start = ctx.currentTime + i * noteGap
+      const dur = 0.08 + i * 0.024 // last notes ring slightly longer
+      gain.gain.setValueAtTime(0.12, start)
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(start)
+      osc.stop(start + dur)
+    })
+  } catch {
+    // AudioContext unavailable — silently ignore
+  }
+}
 
-export function InstanceItem({ instance, folderOrchestratorActive, dragHandleProps }: InstanceItemProps) {
+
+export function InstanceItem({ instance, folderOrchestratorActive, dragHandleProps, extraClass }: InstanceItemProps) {
   const { selectedInstanceId, view, settings } = useUI()
   const { messages: allMessages, unreadCounts } = useMessages()
   const { dispatch, selectInstance, deleteInstance } = useAppDispatch()
@@ -35,8 +63,10 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   const [dragTargetHighlight, setDragTargetHighlight] = useState(false)
   const pipeline = usePipeline()
 
-  const animEnabled = settings.animationsEnabled !== false
-  const soundEnabled = settings.soundsEnabled !== false
+  const animTier = resolveAnimTier(settings)
+  const soundTier = resolveSoundTier(settings)
+  const animEnabled = animTier >= 1
+  const soundEnabled = soundTier >= 2
 
   const [animClass, setAnimClass] = useState<string | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
@@ -52,16 +82,9 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     ? Math.floor((Date.now() - instance.taskStartedAt) / 60_000)
     : 0
 
-  // Overdrive badge computation
-  const odTasks = instance.overdriveTasks ?? 0
-  let overdriveLevel = 0
-  for (const od of OVERDRIVE_LEVELS) {
-    if (odTasks >= od.minTasks) overdriveLevel = od.level
-    else break
-  }
-  const overdrive = OVERDRIVE_LEVELS[overdriveLevel]
-  const minsLeft = Math.max(0, 60 - Math.floor((Date.now() - (instance.lastTaskAt ?? 0)) / 60_000))
-  const isExpiringSoon = overdriveLevel > 0 && minsLeft < 10
+  const { overdriveLevel, overdrive, minsLeft, isExpiringSoon } = useOverdriveLevel(
+    instance.overdriveTasks ?? 0, instance.lastTaskAt ?? 0
+  )
 
   const prevStateRef = useRef<string | null>(null)
   const prevMsgCountRef = useRef(messages.length)
@@ -77,6 +100,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   // Spawn animation on mount
   useEffect(() => {
     triggerAnim('anim-spawn', 4200)
+    vfxBus.fire('instance:spawn', { text: instance.name })
     if (soundEnabled) sounds.spawn()
     prevStateRef.current = instance.state
     prevMsgCountRef.current = messages.length
@@ -92,9 +116,11 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
     if (instance.state === 'running') {
       triggerAnim('anim-activate', 6500)
+      vfxBus.fire('instance:activate')
       if (soundEnabled) sounds.activate()
     } else if (prev === 'running') {
       triggerAnim('anim-sleep', 5500)
+      vfxBus.fire('instance:sleep')
       if (soundEnabled) sounds.sleep()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -111,16 +137,38 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length])
 
-  // Overdrive level-up animation
+  // Overdrive level-up animation — triggers screen-wide star-power effect
   const prevOdLevelRef = useRef(overdriveLevel)
+  const starTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const prev = prevOdLevelRef.current
     prevOdLevelRef.current = overdriveLevel
     if (overdriveLevel > prev && prev >= 0) {
       triggerAnim('od-levelup-anim', 600)
+      playMegamanJingle()
+      // Screen-wide "Mario star" celebration — gated by animation tier
+      if (animTier >= 2) {
+        const duration = animTier === 2 ? 6_000 : animTier === 3 ? 10_000 : 15_000
+        if (starTimerRef.current) clearTimeout(starTimerRef.current)
+        document.body.classList.add('star-power')
+        starTimerRef.current = setTimeout(() => {
+          document.body.classList.remove('star-power')
+          starTimerRef.current = null
+        }, duration)
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overdriveLevel])
+
+  // Cleanup star-power on unmount
+  useEffect(() => {
+    return () => {
+      if (starTimerRef.current) {
+        clearTimeout(starTimerRef.current)
+        document.body.classList.remove('star-power')
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (contextMenu) {
@@ -128,7 +176,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     }
   }, [contextMenu])
 
-  const agentNames = settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const agentNames = useAgentNames()
 
   const isOrchestratorLocked = instance.orchestratorManaged && folderOrchestratorActive
 
@@ -170,10 +218,11 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   const handleDelete = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
+    vfxBus.fire('instance:remove')
     if (animEnabled) {
       setIsRemoving(true)
       if (soundEnabled) sounds.remove()
-      setTimeout(() => deleteInstance(instance.id), 3600)
+      setTimeout(() => deleteInstance(instance.id), 1200) // 1.2s, down from 3.6s
     } else {
       deleteInstance(instance.id)
     }
@@ -202,10 +251,8 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   const handleTaskDragOver = useCallback((e: React.DragEvent) => {
     if (!instance.agentRole) return
-    const expectedColumn = ROLE_TO_COLUMN[instance.agentRole]
-    if (!expectedColumn) return
-    // Check if the dragged task's column matches this instance's role
-    if (e.dataTransfer.types.includes(`application/x-task-column-${expectedColumn}`)) {
+    // Check if the dragged task's currentStepRole matches this instance's agentRole
+    if (e.dataTransfer.types.includes(`application/x-task-role-${instance.agentRole}`)) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       setDragTargetHighlight(true)
@@ -233,7 +280,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
 
   return (
     <div
-      className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${activeAnimClass}`}
+      className={`instance-item ${isSelected ? 'selected' : ''} ${instance.orchestratorManaged ? 'orchestrator-managed' : ''} state-${instance.state} ${extraClass || activeAnimClass}`}
       style={{
         ...(instance.state === 'running' && instance.agentRole ? { boxShadow: `0 0 8px 2px color-mix(in srgb, var(--role-${instance.agentRole}) 40%, transparent)` } : {}),
         ...(dragTargetHighlight && instance.agentRole ? { boxShadow: `0 0 12px 3px color-mix(in srgb, var(--role-${instance.agentRole}) 60%, transparent)`, outline: `2px dashed var(--role-${instance.agentRole})`, outlineOffset: '-2px', background: 'var(--bg-hover)' } : {}),
@@ -244,6 +291,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
         if (view === 'pipeline') dispatch({ type: 'SET_VIEW', payload: 'chat' })
       }}
       onContextMenu={handleContextMenu}
+      onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); window.open(window.location.href, '_blank') } }}
       onDragOver={handleTaskDragOver}
       onDragLeave={handleTaskDragLeave}
       onDrop={handleTaskDrop}
@@ -306,13 +354,6 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
         )}
       </div>
       {unread > 0 && <span className="instance-badge">{unread}</span>}
-      <button
-        className="instance-close-btn"
-        onClick={handleDelete}
-        title="Close session"
-      >
-        ×
-      </button>
 
       {contextMenu && createPortal(
         <>

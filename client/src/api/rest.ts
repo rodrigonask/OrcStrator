@@ -4,6 +4,8 @@ import type {
   InstanceConfig,
   ChatMessage,
   PipelineTask,
+  PipelineBlueprint,
+  BlueprintStep,
   TaskComment,
   AppSettings,
   UsageData,
@@ -21,6 +23,7 @@ import type {
   UsageForecast,
   UsageAnomaly,
   UsageEfficiencyDay,
+  SessionFile,
 } from '@shared/types'
 
 const BASE = import.meta.env.VITE_API_URL || ''
@@ -121,6 +124,8 @@ export const rest = {
     post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/block`, { reason }),
   unblockTask: (projectId: string, taskId: string) =>
     post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/unblock`),
+  resetTaskPipeline: (projectId: string, taskId: string, pipelineId?: string, column?: 'backlog' | 'ready') =>
+    post<PipelineTask>(`/api/pipelines/${projectId}/tasks/${taskId}/reset-pipeline`, { ...(pipelineId ? { pipelineId } : {}), ...(column ? { column } : {}) }),
   getNextTask: (projectId: string, column: PipelineColumn) =>
     get<PipelineTask | null>(`/api/pipelines/${projectId}/next?column=${column}`),
   getTaskComments: (projectId: string, taskId: string) =>
@@ -139,6 +144,14 @@ export const rest = {
       currentlyRunning: boolean
     }>>(`/api/pipelines/${projectId}/scheduled-upcoming?days=${days}`),
 
+  // Blueprints
+  getBlueprints: () => get<PipelineBlueprint[]>('/api/blueprints'),
+  createBlueprint: (data: { name: string; steps: BlueprintStep[]; isDefault?: boolean }) =>
+    post<PipelineBlueprint>('/api/blueprints', data),
+  updateBlueprint: (id: string, data: { name?: string; steps?: BlueprintStep[]; isDefault?: boolean }) =>
+    put<PipelineBlueprint>(`/api/blueprints/${id}`, data),
+  deleteBlueprint: (id: string) => del<{ ok: true }>(`/api/blueprints/${id}`),
+
   // Settings
   getSettings: () => get<AppSettings>('/api/settings'),
   updateSettings: (data: Partial<AppSettings>) => put<AppSettings>('/api/settings', data),
@@ -150,6 +163,7 @@ export const rest = {
   disconnectUsage: () => post<{ ok: true }>('/api/usage/disconnect'),
   refreshUsage: () => post<UsageData>('/api/usage/refresh'),
   getSavings: (days = 7) => get<SavingsSummary>(`/api/usage/savings?days=${days}`),
+  getMultiplier: () => get<{ multiplier: number; cacheRatio: number; totalInput: number; cacheRead: number }>('/api/usage/multiplier'),
 
   // Profile / Gamification
   getProfile: () => get<AccountProfile>('/api/profile'),
@@ -179,7 +193,8 @@ export const rest = {
   // Orchestrator
   activateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/activate`),
   deactivateOrchestrator: (folderId: string) => post<{ ok: true; active: boolean }>(`/api/orchestrator/${folderId}/deactivate`),
-  getRestartStatus: () => get<{ lastRestartAt: number; cooldownRemaining: number; cooldownActive: boolean }>('/api/orchestrator/restart-status'),
+  getRestartStatus: () => get<{ lastRestartAt: number; cooldownRemaining: number; cooldownActive: boolean; adoptedCount: number; deactivatedFolders: string[] }>('/api/orchestrator/restart-status'),
+  reactivateAll: () => post<{ ok: true; activated: number }>('/api/orchestrator/reactivate-all'),
   getOrchestratorStatus: (folderId: string) => get<{ folderId: string; active: boolean; idleAgents: number; runningAgents: number; pendingTasks: number }>(`/api/orchestrator/${folderId}/status`),
   getOrchestratorLogs: (params?: { type?: string; limit?: number }) =>
     get<{ logs: Array<{ id: number; type: string; timestamp: number; instanceId?: string; instanceName?: string; taskId?: string; taskTitle?: string; detail?: string }> }>(
@@ -187,6 +202,7 @@ export const rest = {
     ),
   pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
+  renewFolder: (folderId: string, body?: { newNames?: string[] }) => post<{ renewed: number; oldInstanceIds: string[]; newInstances: Record<string, unknown>[] }>(`/api/folders/${folderId}/renew`, body),
   shutdownAll: () => post<{ killed: number; instanceIds: string[] }>('/api/shutdown'),
   terminate: () => post<{ ok: true; killed: number; instanceIds: string[] }>('/api/terminate'),
   killInstance: (id: string) => post<{ killed: boolean }>(`/api/instances/${id}/kill`),
@@ -241,4 +257,11 @@ export const rest = {
     get<UsageAnomaly[]>(`/api/usage/anomalies?days=${days}`),
   getUsageEfficiency: (days = 14) =>
     get<UsageEfficiencyDay[]>(`/api/usage/efficiency?days=${days}`),
+
+  // Sessions
+  getSessions: () => get<{ sessions: SessionFile[] }>('/api/sessions'),
+  getSessionStats: (sessionId: string) =>
+    get<{ inputTokens: number; outputTokens: number; costUsd: number; lineCount: number }>(`/api/sessions/${sessionId}/stats`),
+  requestSessionSummary: (sessionId: string, instanceId: string) =>
+    post<{ ok: true; instanceId: string; sessionId: string }>(`/api/sessions/${sessionId}/request-summary`, { instanceId }),
 }

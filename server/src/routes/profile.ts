@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { XP_TABLE, LEVELS } from '@nasklaude/shared'
-import type { AccountProfile, TourState, XpEventType } from '@nasklaude/shared'
+import { XP_TABLE, LEVELS } from '@orcstrator/shared'
+import type { AccountProfile, TourState, XpEventType } from '@orcstrator/shared'
 
 export default async function profileRoutes(app: FastifyInstance): Promise<void> {
   // Get profile
@@ -105,6 +105,7 @@ export default async function profileRoutes(app: FastifyInstance): Promise<void>
     if (body.levelChallengesCompleted !== undefined) { sets.push('level_challenges_completed = ?'); params.push(JSON.stringify(body.levelChallengesCompleted)) }
     if (body.dismissedHints !== undefined) { sets.push('dismissed_hints = ?'); params.push(JSON.stringify(body.dismissedHints)) }
     if (body.onboardingComplete !== undefined) { sets.push('onboarding_complete = ?'); params.push(body.onboardingComplete ? 1 : 0) }
+    if (body.guidedMode !== undefined) { sets.push('guided_mode = ?'); params.push(body.guidedMode || null) }
 
     if (sets.length > 0) {
       params.push(1)
@@ -171,7 +172,8 @@ function rowToTourState(row: Record<string, unknown>): TourState {
     currentLevel: row.current_level as number,
     levelChallengesCompleted: safeJsonParse(row.level_challenges_completed as string, []),
     dismissedHints: safeJsonParse(row.dismissed_hints as string, []),
-    onboardingComplete: Boolean(row.onboarding_complete)
+    onboardingComplete: Boolean(row.onboarding_complete),
+    guidedMode: (row.guided_mode as 'guided' | 'god' | null) ?? undefined,
   }
 }
 

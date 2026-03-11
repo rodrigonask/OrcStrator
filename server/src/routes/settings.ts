@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { startPolling } from '../services/usage-monitor.js'
+import { setMaxConcurrentProcesses } from '../services/process-registry.js'
 
 export default async function settingsRoutes(app: FastifyInstance): Promise<void> {
   // Get all settings
@@ -46,6 +47,11 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     // If poll interval changed, restart polling with the new interval
     if ('usagePollMinutes' in body && typeof body.usagePollMinutes === 'number') {
       startPolling(body.usagePollMinutes)
+    }
+
+    // If max concurrent processes changed, update the registry limit
+    if ('maxConcurrentProcesses' in body && typeof body.maxConcurrentProcesses === 'number') {
+      setMaxConcurrentProcesses(body.maxConcurrentProcesses)
     }
 
     return settings

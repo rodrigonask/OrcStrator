@@ -2,12 +2,12 @@ import crypto from 'crypto'
 import os from 'os'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { OAUTH } from '@nasklaude/shared'
-import type { UsageData, UsageBucket } from '@nasklaude/shared'
+import { OAUTH } from '@orcstrator/shared'
+import type { UsageData, UsageBucket } from '@orcstrator/shared'
 
 // Machine-specific encryption key derived from hostname+username
 function getMachineKey(): Buffer {
-  const raw = `${os.hostname()}:${os.userInfo().username}:nasklaude-token-key`
+  const raw = `${os.hostname()}:${os.userInfo().username}:orcstrator-token-key`
   return crypto.createHash('sha256').update(raw).digest()
 }
 

@@ -61,6 +61,79 @@ export const sounds = {
     osc(ctx, 'sine', 300, 0.1, 50, 0.5, 0.15)
   },
 
+  taskComplete(): void {
+    const ctx = getCtx()
+    // Triumphant 4-note fanfare: C5-E5-G5-C6
+    const notes = [523, 659, 784, 1046]
+    notes.forEach((f, i) => {
+      const o = ctx.createOscillator()
+      const g = ctx.createGain()
+      o.connect(g)
+      g.connect(ctx.destination)
+      o.type = 'square'
+      o.frequency.value = f
+      const t = ctx.currentTime + i * 0.09
+      g.gain.setValueAtTime(0.18, t)
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+      o.start(t)
+      o.stop(t + 0.4)
+    })
+  },
+
+  errorBuzz(): void {
+    const ctx = getCtx()
+    // Low sawtooth + dissonant minor-second beating (80Hz + 85Hz)
+    osc(ctx, 'sawtooth', 80, 0, 80, 0.3, 0.15)
+    osc(ctx, 'sawtooth', 85, 0, 85, 0.3, 0.12)
+  },
+
+  taskCreated(): void {
+    const ctx = getCtx()
+    // Soft two-tone rising plonk
+    osc(ctx, 'sine', 440, 0, 660, 0.15, 0.08)
+  },
+
+  xpGained(): void {
+    const ctx = getCtx()
+    // Quick sparkle: 4 ascending tones
+    const notes = [880, 1100, 1320, 1760]
+    notes.forEach((f, i) => osc(ctx, 'sine', f, i * 0.04, f * 1.02, 0.12, 0.07))
+  },
+
+  messageSent(): void {
+    const ctx = getCtx()
+    // Brief soft swoosh
+    osc(ctx, 'sawtooth', 300, 0, 600, 0.12, 0.06)
+  },
+
+  messageReceived(): void {
+    const ctx = getCtx()
+    // Soft bell ping
+    const o = ctx.createOscillator()
+    const g = ctx.createGain()
+    o.connect(g)
+    g.connect(ctx.destination)
+    o.type = 'sine'
+    o.frequency.value = 880
+    g.gain.setValueAtTime(0.1, ctx.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
+    o.start()
+    o.stop(ctx.currentTime + 0.3)
+  },
+
+  commentPosted(): void {
+    const ctx = getCtx()
+    // Bubble pop
+    osc(ctx, 'sine', 600, 0, 900, 0.08, 0.08)
+  },
+
+  taskStuck(): void {
+    const ctx = getCtx()
+    // Warning dissonance: triangle 220Hz + 233Hz minor 2nd beating
+    osc(ctx, 'triangle', 220, 0, 220, 0.4, 0.12)
+    osc(ctx, 'triangle', 233, 0, 233, 0.4, 0.1)
+  },
+
   attack(role: string): void {
     const ctx = getCtx()
     switch (role) {

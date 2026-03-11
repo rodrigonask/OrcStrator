@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect } from 'react'
 import type { FolderConfig } from '@shared/types'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { useFeatureGate } from '../hooks/useFeatureGate'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { api } from '../api'
 
 interface ProjectEditModalProps {
@@ -32,6 +34,7 @@ const PROJECT_TYPES = [
 
 export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
   const { dispatch } = useAppDispatch()
+  const contextToolsGate = useFeatureGate('context-tools')
 
   const [displayName, setDisplayName] = useState(folder.displayName || folder.name)
   const [emoji, setEmoji] = useState(folder.emoji || '\uD83D\uDCC1')
@@ -104,7 +107,7 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
           </button>
           <button
             className={`modal-tab ${activeTab === 'claude-md' ? 'active' : ''}`}
-            onClick={() => setActiveTab('claude-md')}
+            onClick={() => { if (contextToolsGate.check()) setActiveTab('claude-md') }}
             style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}
           >
             CLAUDE.md
@@ -266,6 +269,10 @@ export function ProjectEditModal({ folder, onClose }: ProjectEditModalProps) {
           {activeTab === 'settings' && <button className="btn btn-primary" onClick={handleSave}>Save</button>}
         </div>
       </div>
+
+      {contextToolsGate.showLockedModal && contextToolsGate.gate && (
+        <FeatureLockedModal gate={contextToolsGate.gate} onClose={contextToolsGate.dismissModal} />
+      )}
     </div>
   )
 }

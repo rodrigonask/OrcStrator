@@ -1,14 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { PipelineTask, PipelineColumn, TaskComment } from '@shared/types'
+import type { PipelineTask, PipelineColumn, TaskComment, PipelineBlueprint } from '@shared/types'
 import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
 import { rest } from '../../api/rest'
 import { useUI } from '../../context/UIContext'
 import { useInstances } from '../../context/InstancesContext'
 import { useAppDispatch } from '../../context/AppDispatchContext'
+import { useAgentNames } from '../../hooks/useAgentNames'
 import { ScheduleEditor } from './ScheduleEditor'
+import { useConfirm } from '../ConfirmModal'
 
 marked.setOptions({ breaks: true })
 
@@ -16,7 +18,7 @@ function AgentLabel({ agentId }: { agentId?: string | null }) {
   const { instances } = useInstances()
   const { dispatch } = useAppDispatch()
   if (!agentId || agentId === 'system') return <span className="orc-label">The Orc</span>
-  if (agentId === 'human') return <strong>human</strong>
+  if (agentId === 'human') return <span className="human-label">The Human</span>
   const instance = instances.find(i => i.id === agentId)
   const label = instance ? instance.name : agentId.slice(0, 8) + '...'
   const handleClick = (e: React.MouseEvent) => {
@@ -59,8 +61,10 @@ const PRIORITY_LABELS: Record<number, string> = {
 
 export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const { updateTask, moveTask, claimTask, blockTask, unblockTask, deleteTask } = usePipeline()
+  const { confirm } = useConfirm()
   const { activePipelineId, settings } = useUI()
   const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
+  const agentNames = useAgentNames()
   const colLabel = (key: string | undefined) => key ? (columnLabels[key as PipelineColumn] ?? key) : ''
   const { folders } = useInstances()
   const [title, setTitle] = useState(task.title)
@@ -72,6 +76,9 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const [comments, setComments] = useState<TaskComment[]>([])
   const [commentBody, setCommentBody] = useState('')
   const [postingComment, setPostingComment] = useState(false)
+  const [blueprints, setBlueprints] = useState<PipelineBlueprint[]>([])
+  const [resettingPipeline, setResettingPipeline] = useState(false)
+  const [pendingReset, setPendingReset] = useState<{ blueprintId: string | undefined; column: 'backlog' | 'ready' } | null>(null)
   const commentsEndRef = useRef<HTMLDivElement>(null)
 
   const projectId = activePipelineId || folders[0]?.id || ''
@@ -88,6 +95,10 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     if (!projectId) return
     rest.getTaskComments(projectId, task.id).then(setComments).catch(() => {})
   }, [projectId, task.id])
+
+  useEffect(() => {
+    rest.getBlueprints().then(setBlueprints).catch(() => {})
+  }, [])
 
   useEffect(() => {
     commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -143,15 +154,15 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   }, [blockTask, unblockTask, task.id, task.labels])
 
   const handleDelete = useCallback(async () => {
-    if (confirm(`Delete task "${task.title}"?`)) {
-      try {
-        await deleteTask(task.id)
-      } catch (err) {
-        console.error('Failed to delete task:', err)
-      }
-      onClose()
+    const ok = await confirm(`Delete task "${task.title}"?`)
+    if (!ok) return
+    try {
+      await deleteTask(task.id)
+    } catch (err) {
+      console.error('Failed to delete task:', err)
     }
-  }, [deleteTask, task.id, task.title, onClose])
+    onClose()
+  }, [deleteTask, task.id, task.title, onClose, confirm])
 
   const addLabel = useCallback(() => {
     const trimmed = labelInput.trim()
@@ -178,6 +189,26 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
       setPostingComment(false)
     }
   }, [commentBody, projectId, task.id])
+
+  const handleInitReset = useCallback((newPipelineId?: string) => {
+    setPendingReset({ blueprintId: newPipelineId, column: 'ready' })
+  }, [])
+
+  const handleConfirmReset = useCallback(async () => {
+    if (!projectId || !pendingReset) return
+    setResettingPipeline(true)
+    try {
+      await rest.resetTaskPipeline(projectId, task.id, pendingReset.blueprintId, pendingReset.column)
+    } catch (err) {
+      console.error('Failed to reset pipeline:', err)
+    } finally {
+      setResettingPipeline(false)
+      setPendingReset(null)
+      onClose()
+    }
+  }, [projectId, task.id, pendingReset, onClose])
+
+  const currentBlueprint = blueprints.find(b => b.id === task.pipelineId)
 
   const isBlocked = labels.includes('blocked')
 
@@ -285,6 +316,105 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
             </div>
           </div>
 
+          {/* Pipeline */}
+          <div className="task-detail-section">
+            <div className="task-detail-section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Pipeline</span>
+              {task.pipelineId && (
+                <button
+                  className="btn btn-sm"
+                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={() => handleInitReset()}
+                  disabled={resettingPipeline || !!pendingReset}
+                >
+                  {resettingPipeline ? 'Resetting...' : 'Reset to Step 1'}
+                </button>
+              )}
+            </div>
+            {task.pipelineId ? (
+              <div className="task-detail-meta">
+                <span className="task-detail-meta-label">Blueprint</span>
+                <span className="task-detail-meta-value">{currentBlueprint?.name || task.pipelineId.slice(0, 8) + '...'}</span>
+
+                <span className="task-detail-meta-label">Progress</span>
+                <span className="task-detail-meta-value">
+                  Step {task.currentStep} / {task.totalSteps}
+                  {task.currentStepRole && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>({task.currentStepRole})</span>}
+                </span>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: '4px 0' }}>No blueprint assigned</div>
+            )}
+            {blueprints.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <select
+                  className="form-select"
+                  value=""
+                  onChange={e => {
+                    if (e.target.value) handleInitReset(e.target.value)
+                  }}
+                  style={{ maxWidth: 220, fontSize: 12, padding: '4px 8px' }}
+                  disabled={resettingPipeline || !!pendingReset}
+                >
+                  <option value="">{task.pipelineId ? 'Change blueprint...' : 'Assign blueprint...'}</option>
+                  {blueprints.filter(b => b.id !== task.pipelineId).map(bp => (
+                    <option key={bp.id} value={bp.id}>{bp.name} ({bp.steps.length} steps)</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {pendingReset && (
+              <div style={{
+                marginTop: 10,
+                padding: '10px 12px',
+                background: 'color-mix(in srgb, var(--accent) 8%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+                borderRadius: 6,
+                fontSize: 12,
+                fontFamily: 'var(--font-mono)',
+              }}>
+                <div style={{ marginBottom: 8, color: 'var(--text-secondary)' }}>
+                  This will reset the task to step 1{pendingReset.blueprintId ? ' with a new blueprint' : ''}.
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Move to:</span>
+                  <button
+                    className={`btn btn-sm ${pendingReset.column === 'backlog' ? 'btn-primary' : ''}`}
+                    style={{ fontSize: 11, padding: '2px 10px' }}
+                    onClick={() => setPendingReset(p => p ? { ...p, column: 'backlog' } : p)}
+                  >
+                    Backlog
+                  </button>
+                  <button
+                    className={`btn btn-sm ${pendingReset.column === 'ready' ? 'btn-primary' : ''}`}
+                    style={{ fontSize: 11, padding: '2px 10px' }}
+                    onClick={() => setPendingReset(p => p ? { ...p, column: 'ready' } : p)}
+                  >
+                    Ready
+                  </button>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    style={{ fontSize: 11, padding: '3px 12px' }}
+                    onClick={handleConfirmReset}
+                    disabled={resettingPipeline}
+                  >
+                    {resettingPipeline ? 'Resetting...' : 'Confirm'}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    style={{ fontSize: 11, padding: '3px 12px' }}
+                    onClick={() => setPendingReset(null)}
+                    disabled={resettingPipeline}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Labels */}
           <div className="task-detail-section">
             <div className="task-detail-section-label">Labels</div>
@@ -341,7 +471,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
               {comments.map(c => (
                 <div key={c.id} className={`task-comment ${c.author === 'human' ? 'task-comment-human' : 'task-comment-agent'}`}>
                   <div className="task-comment-header">
-                    <span className={`task-comment-author ${c.author === 'human' ? '' : `role-${c.author}`}`}>{c.author}</span>
+                    <span className={`task-comment-author ${c.author === 'human' ? 'human-label' : `role-${c.author}`}`}>{c.author === 'human' ? 'The Human' : c.author}</span>
                     <span className="task-comment-time">{formatTime(c.createdAt)}</span>
                   </div>
                   <div
@@ -428,10 +558,9 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
             style={{ maxWidth: 130, fontSize: 12, padding: '4px 8px' }}
           >
             <option value="">Claim as...</option>
-            <option value="planner">Planner</option>
-            <option value="builder">Builder</option>
-            <option value="tester">Tester</option>
-            <option value="promoter">Promoter</option>
+            {['planner', 'builder', 'tester', 'promoter'].map(r => (
+              <option key={r} value={r}>{agentNames[r] || r}</option>
+            ))}
           </select>
 
           <button

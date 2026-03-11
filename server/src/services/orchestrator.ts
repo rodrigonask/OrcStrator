@@ -3,133 +3,26 @@ import { sendMessage, type ProcessExitTokens } from './claude-process.js'
 import { processRegistry } from './process-registry.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { updateOverdriveOnComplete, resetOverdriveIfExpired } from './overdrive.js'
-import { markScheduleRunning, appendExecution, updateScheduleAfterRun } from './task-manager.js'
-import type { PipelineTask, ScheduleExecution } from '@orcstrator/shared'
+import { markScheduleRunning, appendExecution, updateScheduleAfterRun, safeJsonParse } from './task-manager.js'
+import { emitOrcLog, getRoleModels, getRoleTools, getPermissionFlag, serverStartTime } from './orchestrator-utils.js'
+import { getMcpConfigPath, AGENTS_DIR } from './mcp-config.js'
+import type { PipelineTask, ScheduleExecution, OrcLogEntry } from '@orcstrator/shared'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { fileURLToPath } from 'url'
 import crypto from 'crypto'
 
-const LOCK_TIMEOUT_MS = 20 * 60 * 1000 // 20 minutes (was 10)
-const SEND_COOLDOWN_MS = 10 * 1000     // 10-second hard cooldown per instance
-const ARCHIVE_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
+// Re-export for consumers that import from orchestrator.ts
+export { getOrcLogs, serverStartTime } from './orchestrator-utils.js'
 
-export const serverStartTime = Date.now()
-const SAFETY_POLL_MS = 60 * 1000        // 60 seconds
-const LOCK_SWEEP_MS = 2 * 60 * 1000    // 2 minutes
-const ARCHIVE_SWEEP_MS = 6 * 60 * 60 * 1000 // 6 hours
+const LOCK_TIMEOUT_MS = 20 * 60 * 1000
+const SEND_COOLDOWN_MS = 10 * 1000
+const MIN_REASSIGN_INTERVAL_MS = 90 * 1000
+const ARCHIVE_AGE_MS = 14 * 24 * 60 * 60 * 1000
 const MAX_RETRIES = 3
+const TICK_INTERVAL_MS = 10_000
 
-// Master prompts live in OrcStrator's source, not in Claude Code's config directory
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const MASTER_PROMPTS_DIR = path.resolve(__dirname, '../../agents')
-
-import { DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS } from '@orcstrator/shared'
-
-// Model tiering: read from settings, fallback to defaults
-function getRoleModels(): Record<string, string> {
-  try {
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorModels'").get() as { value: string } | undefined
-    if (row) {
-      const models = JSON.parse(row.value) as Record<string, string>
-      // Merge with defaults, filtering out 'default' (use role's default)
-      const result = { ...DEFAULT_ROLE_MODELS }
-      for (const [role, model] of Object.entries(models)) {
-        if (model && model !== 'default') result[role] = model
-      }
-      return result
-    }
-  } catch { /* use defaults */ }
-  return DEFAULT_ROLE_MODELS
-}
-
-// MCP scoping: per-role defaults (used when settings not yet configured)
-const AGENTS_DIR = path.resolve(__dirname, '../../agents')
-const ROLE_MCP_DEFAULTS: Record<string, string[]> = {
-  planner: [],
-  builder: [],
-  tester: ['playwriter'],
-  promoter: [],
-}
-
-// Tool scoping: read from settings, fallback to defaults
-function getRoleTools(): Record<string, string> {
-  try {
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorTools'").get() as { value: string } | undefined
-    if (row) {
-      const tools = JSON.parse(row.value) as Record<string, string[]>
-      const result: Record<string, string> = {}
-      for (const [role, toolList] of Object.entries(tools)) {
-        if (toolList.length > 0) result[role] = toolList.join(',')
-      }
-      return result
-    }
-  } catch { /* use defaults */ }
-  const result: Record<string, string> = {}
-  for (const [role, tools] of Object.entries(DEFAULT_ROLE_TOOLS)) {
-    result[role] = tools.join(',')
-  }
-  return result
-}
-
-// Permission mode: read from settings
-function getPermissionFlag(): string {
-  try {
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'permissionMode'").get() as { value: string } | undefined
-    if (row) {
-      const mode = JSON.parse(row.value) as string
-      if (mode === 'bypass') return '--dangerously-skip-permissions'
-      if (mode === 'plan') return '--permission-mode=plan'
-      if (mode === 'default') return '--permission-mode=default'
-    }
-  } catch { /* fallback */ }
-  return '--dangerously-skip-permissions'
-}
-
-// Build a temp MCP config file containing only the named servers from ~/.claude.json
-function buildMcpConfigFile(serverNames: string[]): string | null {
-  const claudeJsonPath = path.join(os.homedir(), '.claude.json')
-  if (!fs.existsSync(claudeJsonPath)) return null
-  let config: Record<string, unknown>
-  try { config = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8')) } catch { return null }
-
-  const all: Record<string, unknown> = { ...((config.mcpServers as Record<string, unknown>) ?? {}) }
-  for (const proj of Object.values((config.projects as Record<string, unknown>) ?? {})) {
-    Object.assign(all, (((proj as Record<string, unknown>).mcpServers as Record<string, unknown>) ?? {}))
-  }
-
-  const selected: Record<string, unknown> = {}
-  for (const name of serverNames) {
-    if (all[name]) selected[name] = all[name]
-  }
-  if (Object.keys(selected).length === 0) return null
-
-  const tmpPath = path.join(os.tmpdir(), `orcstrator-mcp-${crypto.randomUUID()}.json`)
-  fs.writeFileSync(tmpPath, JSON.stringify({ mcpServers: selected }), 'utf-8')
-  return tmpPath
-}
-
-// Resolve MCP config path for a role: settings → defaults → temp file → tester fallback
-function getMcpConfigPath(role: string): string {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorMcpServers'").get() as { value: string } | undefined
-  const roleMap: Record<string, string[]> = row
-    ? JSON.parse(row.value) as Record<string, string[]>
-    : ROLE_MCP_DEFAULTS
-  const servers = roleMap[role] ?? ROLE_MCP_DEFAULTS[role] ?? []
-
-  if (servers.length === 0) return 'none'
-
-  const tmpPath = buildMcpConfigFile(servers)
-  if (tmpPath) return tmpPath
-
-  // Fallback for tester: use bundled mcp-tester.json if ~/.claude.json doesn't have the servers
-  if (role === 'tester') {
-    const mcpTesterPath = path.join(AGENTS_DIR, 'mcp-tester.json')
-    if (fs.existsSync(mcpTesterPath)) return mcpTesterPath
-  }
-  return 'none'
-}
+const MASTER_PROMPTS_DIR = AGENTS_DIR
 
 export interface ResumeSnapshot {
   instanceId: string
@@ -138,80 +31,136 @@ export interface ResumeSnapshot {
   lockedTaskIds: string[]
 }
 
-const ROLE_COLUMNS: Record<string, string[]> = {
-  planner: ['spec'],
-  builder: ['build'],
-  tester: ['qa'],
-  promoter: ['ship'],
-  // scheduler role does not use ROLE_COLUMNS — tasks are dispatched by SchedulerService
+// ── Process State Helpers ──
+
+/** Map process_state to the backward-compatible 'state' column value */
+function stateFromProcessState(ps: string): string {
+  if (ps === 'idle' || ps === 'reserved') return 'idle'
+  return 'running' // spawning, running, exiting → UI sees 'running'
 }
 
-// Track scheduler instances separately so they're exempt from the 20-min kill timeout
-const activeSchedulerInstances = new Set<string>()
+/** Attempt a version-checked process_state transition. Returns false if rejected. */
+function transitionProcessState(instanceId: string, from: string, to: string, extra?: Record<string, unknown>): boolean {
+  const sets = ['process_state = ?', 'state = ?', 'version = version + 1']
+  const params: unknown[] = [to, stateFromProcessState(to)]
 
-interface SchedulerRunContext {
-  taskId: string
-  runId: string
-  startedAt: number
+  if (extra) {
+    for (const [col, val] of Object.entries(extra)) {
+      sets.push(`${col} = ?`)
+      params.push(val)
+    }
+  }
+
+  params.push(instanceId, from)
+  const r = db.prepare(
+    `UPDATE instances SET ${sets.join(', ')} WHERE id = ? AND process_state = ?`
+  ).run(...params)
+
+  if (r.changes === 0) {
+    console.warn(`[orchestrator] State transition REJECTED: ${instanceId} ${from} → ${to}`)
+    return false
+  }
+  return true
 }
+
+// ── Orchestrator Service ──
 
 class OrchestratorService {
-  private safetyPollTimer: ReturnType<typeof setInterval> | null = null
-  private lockSweepTimer: ReturnType<typeof setInterval> | null = null
-  private archiveSweepTimer: ReturnType<typeof setInterval> | null = null
-  private zombieSweepTimer: ReturnType<typeof setInterval> | null = null
-  private safetySweepRunning = false
-  private startupLocked = true  // blocks assignWork until startup audit finishes
-  private folderTriggerTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  private lastSendTime = new Map<string, number>()  // instanceId → timestamp of last sendMessage
-  private schedulerRunContexts = new Map<string, SchedulerRunContext>() // instanceId → run context
-  private instanceTaskIds = new Map<string, string[]>() // instanceId → task IDs assigned (survives moveTask clearing locked_by)
+  private tickTimer: ReturnType<typeof setInterval> | null = null
+  private tickCounter = 0
+  private tickRunning = false
+  private startupLocked = true
+  private pendingFolders = new Set<string>()
 
   start(): void {
-    if (this.safetyPollTimer) return
-    this.safetyPollTimer = setInterval(() => this.safetySweep(), SAFETY_POLL_MS)
-    this.lockSweepTimer = setInterval(() => this.timeoutSweep(), LOCK_SWEEP_MS)
-    this.archiveSweepTimer = setInterval(() => this.archiveSweep(), ARCHIVE_SWEEP_MS)
-    this.zombieSweepTimer = setInterval(() => this.zombieSweep(), 30_000)
-    // Run archive once at startup after a short delay
+    if (this.tickTimer) return
+    this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS)
+    // Run archive once after short delay
     setTimeout(() => this.archiveSweep(), 10_000)
-    console.log('[orchestrator] Started — event-driven + 60s safety poll + 2min lock sweep + 30s zombie sweep + 6h archive sweep')
+    console.log('[orchestrator] Started — unified tick (10s)')
   }
 
   stop(): void {
-    if (this.safetyPollTimer) clearInterval(this.safetyPollTimer)
-    if (this.lockSweepTimer) clearInterval(this.lockSweepTimer)
-    if (this.archiveSweepTimer) clearInterval(this.archiveSweepTimer)
-    if (this.zombieSweepTimer) clearInterval(this.zombieSweepTimer)
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer)
+      this.tickTimer = null
+    }
   }
 
-  // Primary trigger: called directly from claude-process.ts on process exit
+  // ── Unified Tick Loop ──
+
+  private async tick(): Promise<void> {
+    if (this.tickRunning) return
+    this.tickRunning = true
+    this.tickCounter++
+    try {
+      // Phase 1: Zombie + adopted process detection (every tick = 10s)
+      this.zombieAndAdoptedSweep()
+
+      // Phase 2: Lock timeout sweep (every 12th tick ~2min)
+      if (this.tickCounter % 12 === 0) this.timeoutSweep()
+
+      // Phase 3: Assignment sweep (every 6th tick ~60s + pending folders)
+      if (this.tickCounter % 6 === 0 || this.pendingFolders.size > 0) {
+        await this.assignmentSweep()
+      }
+
+      // Phase 4: Archive sweep (every 2160th tick ~6h)
+      if (this.tickCounter % 2160 === 0) this.archiveSweep()
+    } finally {
+      this.tickRunning = false
+    }
+  }
+
+  // ── Trigger: Immediate assignment for a folder ──
+
+  triggerFolder(folderId: string): void {
+    this.pendingFolders.add(folderId)
+    if (!this.tickRunning) {
+      this.tickRunning = true
+      this.assignmentSweep().finally(() => { this.tickRunning = false })
+    }
+  }
+
+  // ── Primary: Process Exit Handler ──
+
   onProcessExit(instanceId: string, tokens?: ProcessExitTokens): void {
     console.log(`[orchestrator] onProcessExit: instance ${instanceId} | tokens=${tokens ? `in=${tokens.inputTokens} out=${tokens.outputTokens} cost=$${tokens.costUsd}` : 'none'}`)
+    const exitInst = db.prepare('SELECT name, is_scheduler_run, scheduler_context, assigned_task_ids, folder_id, agent_role FROM instances WHERE id = ?')
+      .get(instanceId) as { name: string; is_scheduler_run: number; scheduler_context: string | null; assigned_task_ids: string | null; folder_id: string; agent_role: string | null } | undefined
+
     // Scheduler instance: handle via scheduler exit path
-    const schedulerCtx = this.schedulerRunContexts.get(instanceId)
-    if (schedulerCtx) {
-      this.schedulerRunContexts.delete(instanceId)
-      activeSchedulerInstances.delete(instanceId)
-      this.onSchedulerExit(instanceId, schedulerCtx.taskId, schedulerCtx.runId, schedulerCtx.startedAt)
+    if (exitInst?.is_scheduler_run) {
+      const ctx = exitInst.scheduler_context ? safeJsonParse<{ taskId: string; runId: string; startedAt: number } | null>(exitInst.scheduler_context, null) : null
+      if (ctx) {
+        this.onSchedulerExit(instanceId, ctx.taskId, ctx.runId, ctx.startedAt)
+      }
+      // Reset scheduler state
+      db.prepare(
+        `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL,
+         assigned_task_ids = NULL, is_scheduler_run = 0, scheduler_context = NULL, version = version + 1
+         WHERE id = ?`
+      ).run(instanceId)
+      broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
       this.pruneMessages(instanceId)
       return
     }
 
-    // Auto-post the agent's last message as a comment and move the task to the next column
-    // MUST run before accumulateTaskTokens which deletes instanceTaskIds
-    this.autoCommentAndMove(instanceId)
+    // Read assigned task IDs from DB (not in-memory Map)
+    const taskIds: string[] = exitInst?.assigned_task_ids ? safeJsonParse(exitInst.assigned_task_ids, []) : []
 
-    // Accumulate tokens on the locked task + post spend comment
-    if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0)) {
-      this.accumulateTaskTokens(instanceId, tokens)
-    } else {
-      this.instanceTaskIds.delete(instanceId) // cleanup if no tokens reported
+    // Auto-post the agent's last message as a comment and move the task to the next column
+    // MUST run before accumulateTaskTokens
+    if (taskIds.length > 0 && exitInst?.agent_role) {
+      this.autoCommentAndMove(instanceId, taskIds, exitInst.agent_role)
     }
 
-    // Release all task locks held by this instance — if autoCommentAndMove succeeded,
-    // moveTask() already cleared the lock; this catches tasks where auto-move failed
-    // (failed tests, context limit exits, crashes)
+    // Accumulate tokens on the locked task + post spend comment
+    if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0) && taskIds.length > 0) {
+      this.accumulateTaskTokens(instanceId, tokens, taskIds)
+    }
+
+    // Release all task locks held by this instance — catches tasks where auto-move failed
     try {
       const lockedTasks = db.prepare(
         'SELECT id, title, retry_count, labels, history, project_id FROM pipeline_tasks WHERE locked_by = ?'
@@ -220,24 +169,26 @@ class OrchestratorService {
       for (const task of lockedTasks) {
         const newRetry = ((task.retry_count) || 0) + 1
         const now = Date.now()
-        const history = JSON.parse(task.history || '[]')
+        const history = safeJsonParse<Record<string, unknown>[]>(task.history, [])
         history.push({ action: 'lock_released', timestamp: now, agent: instanceId, note: 'process exited without moving task' })
 
         if (newRetry >= MAX_RETRIES) {
-          // Max retries — move to backlog with stuck label
           let labels: string[]
           try { labels = JSON.parse(task.labels || '[]') } catch { labels = [] }
           if (!labels.includes('stuck')) labels.push('stuck')
-          history.push({ action: 'moved', timestamp: now, from: 'current', to: 'backlog', note: `${MAX_RETRIES} failures - stuck, needs human` })
+          history.push({ action: 'moved', timestamp: now, from: 'current', to: 'in_review', note: `${MAX_RETRIES} failures - stuck, needs human` })
           db.prepare(
-            `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, "column" = 'backlog', labels = ?, history = ?, updated_at = ? WHERE id = ?`
+            `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, "column" = 'in_review',
+             labels = ?, history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
           ).run(newRetry, JSON.stringify(labels), JSON.stringify(history), now, task.id)
-          console.warn(`[orchestrator] Task "${task.title}" failed ${newRetry}x — moved to backlog as stuck`)
+          console.warn(`[orchestrator] Task "${task.title}" failed ${newRetry}x — moved to in_review as stuck`)
+          emitOrcLog({ type: 'task_stuck', instanceId, instanceName: exitInst?.name, taskId: task.id, taskTitle: task.title, detail: `${newRetry} failures — moved to in_review` })
           broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: task.id, reason: 'max-retries-stuck' } })
           broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
         } else {
           db.prepare(
-            'UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?'
+            `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?,
+             history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
           ).run(newRetry, JSON.stringify(history), now, task.id)
           console.log(`[orchestrator] Released lock on "${task.title}" (retry ${newRetry}/${MAX_RETRIES})`)
         }
@@ -246,43 +197,360 @@ class OrchestratorService {
       console.error('[orchestrator] lock release error:', err)
     }
 
+    // Transition instance to idle (final state)
+    db.prepare(
+      `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL,
+       assigned_task_ids = NULL, is_scheduler_run = 0, scheduler_context = NULL, version = version + 1
+       WHERE id = ?`
+    ).run(instanceId)
+    broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+
+    // Trigger re-assignment
     try {
-      const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(instanceId) as Record<string, unknown> | undefined
-      if (!instance || !instance.agent_role) return
-
-      const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(instance.folder_id as string) as Record<string, unknown> | undefined
-      if (!folder || !folder.orchestrator_active) return
-
-      // Use debounced triggerFolder instead of direct assignWork to coalesce with concurrent triggers
-      this.triggerFolder(instance.folder_id as string)
-    } catch (err) {
-      console.error('[orchestrator] onProcessExit error:', err)
-    }
-    this.pruneMessages(instanceId)
-    updateOverdriveOnComplete(instanceId)
-    // Keep session_id so next task resumes the session (cache hits on pinned context)
-  }
-
-  private pruneOldMessages(instanceId: string): void {
-    const KEEP_LAST = 50
-    try {
-      const row = db.prepare('SELECT COUNT(*) as c FROM messages WHERE instance_id = ?').get(instanceId) as { c: number }
-      if (row.c > KEEP_LAST) {
-        const cutoffRow = db.prepare(
-          'SELECT created_at FROM messages WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET ?'
-        ).get(instanceId, KEEP_LAST - 1) as { created_at: number } | undefined
-        if (cutoffRow) {
-          const deleted = db.prepare('DELETE FROM messages WHERE instance_id = ? AND created_at < ?')
-            .run(instanceId, cutoffRow.created_at).changes
-          if (deleted > 0) {
-            console.log(`[orchestrator] Pruned ${deleted} old messages for ${instanceId}`)
-          }
+      if (exitInst?.agent_role) {
+        const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(exitInst.folder_id) as { orchestrator_active: number } | undefined
+        if (folder?.orchestrator_active) {
+          this.triggerFolder(exitInst.folder_id)
         }
       }
     } catch (err) {
-      console.error('[orchestrator] pruneOldMessages error:', err)
+      console.error('[orchestrator] onProcessExit trigger error:', err)
+    }
+
+    this.pruneMessages(instanceId)
+    updateOverdriveOnComplete(instanceId)
+    updateDevLock()
+  }
+
+  // ── Auto Comment & Move ──
+
+  private autoCommentAndMove(instanceId: string, taskIds: string[], role: string): void {
+    try {
+      if (role === 'scheduler') return
+
+      // Get last assistant text message
+      const lastMsg = db.prepare(
+        'SELECT content FROM messages WHERE instance_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(instanceId, 'assistant') as { content: string } | undefined
+
+      let commentText = ''
+      if (lastMsg?.content) {
+        try {
+          const blocks = JSON.parse(lastMsg.content) as Array<{ type: string; text?: string }>
+          commentText = blocks
+            .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
+            .map((b: { type: string; text?: string }) => b.text!)
+            .join('\n')
+            .trim()
+        } catch {
+          if (typeof lastMsg.content === 'string') {
+            commentText = lastMsg.content.trim()
+          }
+        }
+      }
+
+      const isFailure = commentText.includes('[ACTION NEEDED]')
+
+      for (const taskId of taskIds) {
+        const task = db.prepare('SELECT id, locked_by, "column" as col, history, project_id, pipeline_id, current_step, total_steps, current_step_role FROM pipeline_tasks WHERE id = ?')
+          .get(taskId) as { id: string; locked_by: string | null; col: string; history: string; project_id: string; pipeline_id: string | null; current_step: number; total_steps: number; current_step_role: string | null } | undefined
+        if (!task || task.locked_by !== instanceId) continue
+
+        const now = Date.now()
+
+        if (commentText) {
+          const commentId = crypto.randomUUID()
+          db.prepare(
+            'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
+          ).run(commentId, taskId, role, commentText, now)
+          console.log(`[orchestrator] Auto-posted comment for task ${taskId} by ${role}`)
+        }
+
+        let targetColumn: string
+        let newStep = task.current_step
+        let newStepRole: string | null = task.current_step_role
+        let completedAt: number | null = null
+
+        if (isFailure) {
+          targetColumn = 'in_review'
+          let labels: string[]
+          try {
+            const labelsRow = db.prepare('SELECT labels FROM pipeline_tasks WHERE id = ?').get(taskId) as { labels: string }
+            labels = JSON.parse(labelsRow.labels || '[]')
+          } catch { labels = [] }
+          if (!labels.includes('stuck')) labels.push('stuck')
+
+          const history = safeJsonParse<Record<string, unknown>[]>(task.history, [])
+          history.push({ action: 'moved', timestamp: now, agent: role, from: task.col, to: targetColumn, note: 'ACTION NEEDED — stuck' })
+          db.prepare(`
+            UPDATE pipeline_tasks SET "column" = ?, labels = ?, history = ?, updated_at = ?,
+              locked_by = NULL, locked_at = NULL, retry_count = 0,
+              lock_version = lock_version + 1, version = version + 1
+            WHERE id = ?
+          `).run(targetColumn, JSON.stringify(labels), JSON.stringify(history), now, taskId)
+        } else {
+          if (task.current_step >= task.total_steps) {
+            targetColumn = 'done'
+            completedAt = now
+          } else {
+            targetColumn = 'in_progress'
+            newStep = task.current_step + 1
+            if (task.pipeline_id) {
+              const bp = db.prepare('SELECT steps FROM pipeline_blueprints WHERE id = ?').get(task.pipeline_id) as { steps: string } | undefined
+              if (bp) {
+                const steps = JSON.parse(bp.steps) as Array<{ role: string }>
+                newStepRole = steps[newStep - 1]?.role || null
+              }
+            }
+          }
+
+          const history = safeJsonParse<Record<string, unknown>[]>(task.history, [])
+          history.push({ action: 'moved', timestamp: now, agent: role, from: task.col, to: targetColumn })
+          db.prepare(`
+            UPDATE pipeline_tasks SET "column" = ?, current_step = ?, current_step_role = ?, history = ?, updated_at = ?,
+              completed_at = COALESCE(?, completed_at), locked_by = NULL, locked_at = NULL, retry_count = 0,
+              lock_version = lock_version + 1, version = version + 1
+            WHERE id = ?
+          `).run(targetColumn, newStep, newStepRole, JSON.stringify(history), now, completedAt, taskId)
+        }
+
+        const logTarget = isFailure ? `${targetColumn} (stuck)` : targetColumn === 'done' ? 'done' : `${targetColumn} step ${newStep}/${task.total_steps}`
+        console.log(`[orchestrator] Auto-moved task ${taskId}: ${task.col} → ${logTarget} (${role})`)
+        emitOrcLog({ type: 'task_moved', instanceId, instanceName: undefined, taskId, detail: `${task.col} → ${logTarget} by ${role}` })
+        broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
+
+        setImmediate(() => {
+          this.triggerFolder(task.project_id)
+        })
+      }
+    } catch (err) {
+      console.error('[orchestrator] autoCommentAndMove error:', err)
     }
   }
+
+  private accumulateTaskTokens(instanceId: string, tokens: ProcessExitTokens, taskIds: string[]): void {
+    try {
+      const placeholders = taskIds.map(() => '?').join(',')
+      const tasks = db.prepare(
+        `SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE id IN (${placeholders})`
+      ).all(...taskIds) as Array<{ id: string; title: string; project_id: string; total_input_tokens: number; total_output_tokens: number; total_cost_usd: number }>
+
+      if (tasks.length === 0) return
+
+      const perTask = {
+        input: Math.round(tokens.inputTokens / tasks.length),
+        output: Math.round(tokens.outputTokens / tasks.length),
+        cost: +(tokens.costUsd / tasks.length).toFixed(6),
+      }
+
+      const instance = db.prepare('SELECT name, agent_role FROM instances WHERE id = ?').get(instanceId) as { name: string; agent_role: string } | undefined
+
+      for (const task of tasks) {
+        const newInput = (task.total_input_tokens || 0) + perTask.input
+        const newOutput = (task.total_output_tokens || 0) + perTask.output
+        const newCost = +((task.total_cost_usd || 0) + perTask.cost).toFixed(6)
+
+        db.prepare(
+          'UPDATE pipeline_tasks SET total_input_tokens = ?, total_output_tokens = ?, total_cost_usd = ? WHERE id = ?'
+        ).run(newInput, newOutput, newCost, task.id)
+
+        const cacheRead = Math.round((tokens.cacheReadTokens || 0) / tasks.length)
+        const cacheCreate = Math.round((tokens.cacheCreationTokens || 0) / tasks.length)
+        const cacheHitPct = perTask.input > 0 ? Math.round((cacheRead / perTask.input) * 100) : 0
+        const commentBody = `Token summary ${task.id}: cost=$${perTask.cost.toFixed(4)} cache_hit=${cacheHitPct}% (read=${cacheRead} create=${cacheCreate})`
+        const commentId = crypto.randomUUID()
+        db.prepare(
+          'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
+        ).run(commentId, task.id, instance?.agent_role || 'system', commentBody, Date.now())
+
+        console.log(`[orchestrator] Token accumulation: "${task.title}" → +${perTask.input}in/+${perTask.output}out (+$${perTask.cost.toFixed(4)}) | Total: $${newCost.toFixed(4)}`)
+      }
+    } catch (err) {
+      console.error('[orchestrator] accumulateTaskTokens error:', err)
+    }
+  }
+
+  // ── Assignment Sweep ──
+
+  private async assignmentSweep(): Promise<void> {
+    if (this.startupLocked) return
+
+    // Collect folders to check: pending triggers + all active folders on schedule
+    const folderIds = new Set<string>(this.pendingFolders)
+    this.pendingFolders.clear()
+
+    try {
+      const activeFolders = db.prepare('SELECT id FROM folders WHERE orchestrator_active = 1').all() as { id: string }[]
+      for (const f of activeFolders) folderIds.add(f.id)
+    } catch { /* ignore */ }
+
+    if (folderIds.size === 0) return
+
+    for (const folderId of folderIds) {
+      await this.assignWork(folderId)
+    }
+  }
+
+  // ── Zombie + Adopted Process Detection ──
+
+  private zombieAndAdoptedSweep(): void {
+    try {
+      // Find instances marked 'running' in DB with no tracked ChildProcess
+      const running = db.prepare(
+        "SELECT id, process_pid, name FROM instances WHERE process_state = 'running'"
+      ).all() as Array<{ id: string; process_pid: number | null; name: string }>
+
+      for (const inst of running) {
+        if (processRegistry.isTracked(inst.id)) continue // Has a live ChildProcess handle
+
+        // Not tracked: either adopted from previous run, or zombie
+        if (inst.process_pid && isProcessAliveCheck(inst.process_pid)) {
+          // Still alive — adopted process from previous server run, leave it
+          continue
+        }
+
+        // Dead: reset to idle, release locks
+        console.warn(`[orchestrator] ZOMBIE/ADOPTED DEAD: instance ${inst.id} (${inst.name}) — running in DB but no live process`)
+        emitOrcLog({ type: 'zombie_detected', instanceId: inst.id, instanceName: inst.name, detail: 'running in DB but no tracked/alive process' })
+
+        db.transaction(() => {
+          db.prepare(
+            `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL,
+             assigned_task_ids = NULL, is_scheduler_run = 0, scheduler_context = NULL, version = version + 1
+             WHERE id = ?`
+          ).run(inst.id)
+
+          const locked = db.prepare('SELECT id, history, project_id FROM pipeline_tasks WHERE locked_by = ?')
+            .all(inst.id) as Array<{ id: string; history: string; project_id: string }>
+          for (const task of locked) {
+            const history = safeJsonParse<Record<string, unknown>[]>(task.history, [])
+            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'zombie/adopted process — no live process' })
+            db.prepare(
+              'UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, lock_version = lock_version + 1, version = version + 1, history = ? WHERE id = ?'
+            ).run(JSON.stringify(history), task.id)
+            broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
+          }
+        })()
+
+        broadcastEvent({ type: 'instance:state', payload: { instanceId: inst.id, state: 'idle' } })
+      }
+    } catch (err) {
+      console.error('[orchestrator] zombieAndAdoptedSweep error:', err)
+    }
+  }
+
+  // ── Lock Timeout Sweep ──
+
+  private timeoutSweep(): void {
+    try {
+      const cutoff = Date.now() - LOCK_TIMEOUT_MS
+      const lockedTasks = db.prepare(`
+        SELECT pt.*, i.process_state as inst_process_state, i.agent_role as instance_role, i.is_scheduler_run
+        FROM pipeline_tasks pt
+        LEFT JOIN instances i ON pt.locked_by = i.id
+        WHERE pt.locked_by IS NOT NULL
+          AND pt.locked_at < ?
+          AND (i.process_state IS NULL OR i.process_state NOT IN ('running', 'spawning'))
+      `).all(cutoff) as Record<string, unknown>[]
+
+      if (lockedTasks.length === 0) return
+      console.log(`[orchestrator] timeout sweep — ${lockedTasks.length} expired lock(s)`)
+
+      const groupedTasks = new Map<string, Record<string, unknown>[]>()
+      for (const task of lockedTasks) {
+        const key = (task.group_id as string) || (task.id as string)
+        const group = groupedTasks.get(key) || []
+        group.push(task)
+        groupedTasks.set(key, group)
+      }
+
+      for (const [, tasks] of groupedTasks) {
+        const rep = tasks[0]
+
+        // Scheduler tasks are exempt from kill timeout
+        if ((rep.instance_role as string) === 'scheduler' || rep.is_scheduler_run) continue
+
+        // Task locked before this server boot — not agent's fault
+        const lockedBeforeStart = (rep.locked_at as number) < serverStartTime
+        if (lockedBeforeStart) {
+          for (const t of tasks) {
+            const history = safeJsonParse<Record<string, unknown>[]>(t.history as string, [])
+            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'server was offline — timeout not counted as agent failure' })
+            db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, lock_version = lock_version + 1, version = version + 1, history = ?, updated_at = ? WHERE id = ?`)
+              .run(JSON.stringify(history), Date.now(), t.id)
+          }
+          emitOrcLog({ type: 'lock_timeout', instanceId: rep.locked_by as string, taskId: rep.id as string, taskTitle: rep.title as string, detail: 'server was offline — lock released without penalty' })
+          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'server-restart' } })
+          if (rep.project_id) broadcastEvent({ type: 'pipeline:updated', payload: { projectId: rep.project_id } })
+          continue
+        }
+
+        const newRetryCount = ((rep.retry_count as number) || 0) + 1
+
+        if (newRetryCount >= MAX_RETRIES) {
+          for (const t of tasks) {
+            const history = safeJsonParse<Record<string, unknown>[]>(t.history as string, [])
+            history.push({ action: 'moved', timestamp: Date.now(), from: t.column, to: 'in_review', note: '3 failures — stuck, needs a human' })
+            let labels: string[]
+            try { labels = JSON.parse((t.labels as string) || '[]') } catch { labels = [] }
+            if (!labels.includes('stuck')) labels.push('stuck')
+            db.prepare(`UPDATE pipeline_tasks SET "column" = 'in_review', labels = ?, locked_by = NULL, locked_at = NULL, retry_count = ?, lock_version = lock_version + 1, version = version + 1, history = ?, updated_at = ? WHERE id = ?`)
+              .run(JSON.stringify(labels), newRetryCount, JSON.stringify(history), Date.now(), t.id)
+          }
+          emitOrcLog({ type: 'lock_timeout', instanceId: rep.locked_by as string, taskId: rep.id as string, taskTitle: rep.title as string, detail: `${newRetryCount} failures — moved to in_review as stuck` })
+          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'max-retries-stuck' } })
+        } else {
+          for (const t of tasks) {
+            const history = safeJsonParse<Record<string, unknown>[]>(t.history as string, [])
+            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'timeout after 20min — the agent ghosted us' })
+            db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, lock_version = lock_version + 1, version = version + 1, history = ?, updated_at = ? WHERE id = ?`)
+              .run(newRetryCount, JSON.stringify(history), Date.now(), t.id)
+          }
+          emitOrcLog({ type: 'lock_timeout', instanceId: rep.locked_by as string, taskId: rep.id as string, taskTitle: rep.title as string, detail: `timeout after 20min — retry ${newRetryCount}/${MAX_RETRIES}` })
+          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'timeout' } })
+        }
+
+        if (rep.project_id) {
+          broadcastEvent({ type: 'pipeline:updated', payload: { projectId: rep.project_id } })
+        }
+      }
+    } catch (err) {
+      console.error('[orchestrator] timeoutSweep error:', err)
+    }
+  }
+
+  // ── Archive Sweep ──
+
+  private archiveSweep(): void {
+    try {
+      const cutoff = Date.now() - ARCHIVE_AGE_MS
+      const archiveTx = db.transaction(() => {
+        const deletedComments = db.prepare(`
+          DELETE FROM task_comments WHERE task_id IN (
+            SELECT id FROM pipeline_tasks WHERE "column" = 'done' AND completed_at < ?
+          )
+        `).run(cutoff).changes
+        const deletedTasks = db.prepare(`
+          DELETE FROM pipeline_tasks WHERE "column" = 'done' AND completed_at < ?
+        `).run(cutoff).changes
+        const deletedUsage = db.prepare(`
+          DELETE FROM token_usage WHERE task_id IS NOT NULL AND task_id NOT IN (
+            SELECT id FROM pipeline_tasks
+          )
+        `).run().changes
+        return { deletedComments, deletedTasks, deletedUsage }
+      })
+      const { deletedComments, deletedTasks, deletedUsage } = archiveTx()
+      if (deletedComments || deletedTasks || deletedUsage) {
+        console.log(`[orchestrator] Archive sweep: ${deletedTasks} tasks, ${deletedComments} comments, ${deletedUsage} token_usage rows purged`)
+        try { db.pragma('incremental_vacuum') } catch { /* non-critical */ }
+      }
+    } catch (err) {
+      console.error('[orchestrator] archiveSweep error:', err)
+    }
+  }
+
+  // ── Message Pruning ──
 
   private pruneMessages(instanceId: string): void {
     try {
@@ -302,452 +570,139 @@ class OrchestratorService {
     }
   }
 
-  private autoCommentAndMove(instanceId: string): void {
-    try {
-      const instance = db.prepare('SELECT agent_role FROM instances WHERE id = ?')
-        .get(instanceId) as { agent_role: string } | undefined
-      if (!instance?.agent_role) return
-
-      const role = instance.agent_role
-      if (role === 'scheduler') return // scheduler tasks don't move
-
-      const taskIds = this.instanceTaskIds.get(instanceId)
-      if (!taskIds || taskIds.length === 0) return
-
-      // Get last assistant text message
-      const lastMsg = db.prepare(
-        'SELECT content FROM messages WHERE instance_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
-      ).get(instanceId, 'assistant') as { content: string } | undefined
-
-      let commentText = ''
-      if (lastMsg?.content) {
-        try {
-          const blocks = JSON.parse(lastMsg.content) as Array<{ type: string; text?: string }>
-          commentText = blocks
-            .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
-            .map((b: { type: string; text?: string }) => b.text!)
-            .join('\n')
-            .trim()
-        } catch { /* content may not be JSON array — use as-is if string */
-          if (typeof lastMsg.content === 'string') {
-            commentText = lastMsg.content.trim()
-          }
-        }
-      }
-
-      // Determine target column
-      const SUCCESS_TARGET: Record<string, string> = {
-        planner: 'build', builder: 'qa', tester: 'ship', promoter: 'done'
-      }
-      let targetColumn = SUCCESS_TARGET[role]
-      if (!targetColumn) return
-
-      // Tester failure detection
-      if (role === 'tester') {
-        const lower = commentText.toLowerCase()
-        if (lower.includes('fail') || lower.includes('moving back to build') || lower.includes('blocked') || lower.includes('error')) {
-          targetColumn = 'build'
-        }
-      }
-
-      for (const taskId of taskIds) {
-        // Only process tasks still locked by this instance
-        const task = db.prepare('SELECT id, locked_by, "column" as col, history, project_id FROM pipeline_tasks WHERE id = ?')
-          .get(taskId) as { id: string; locked_by: string | null; col: string; history: string; project_id: string } | undefined
-        if (!task || task.locked_by !== instanceId) continue
-
-        const now = Date.now()
-
-        // Post comment
-        if (commentText) {
-          const commentId = crypto.randomUUID()
-          db.prepare(
-            'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
-          ).run(commentId, taskId, role, commentText, now)
-          console.log(`[orchestrator] Auto-posted comment for task ${taskId} by ${role}`)
-        }
-
-        // Move task synchronously (direct DB — avoids async race with lock-release block)
-        const history = JSON.parse(task.history || '[]')
-        history.push({ action: 'moved', timestamp: now, agent: role, from: task.col, to: targetColumn })
-        const completedAt = targetColumn === 'done' ? now : null
-        db.prepare(`
-          UPDATE pipeline_tasks SET "column" = ?, history = ?, updated_at = ?, completed_at = COALESCE(?, completed_at),
-            locked_by = NULL, locked_at = NULL, retry_count = 0
-          WHERE id = ?
-        `).run(targetColumn, JSON.stringify(history), now, completedAt, taskId)
-
-        console.log(`[orchestrator] Auto-moved task ${taskId}: ${task.col} → ${targetColumn} (${role})`)
-        broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
-
-        // Trigger next agent assignment
-        setImmediate(() => {
-          this.triggerFolder(task.project_id)
-        })
-      }
-    } catch (err) {
-      console.error('[orchestrator] autoCommentAndMove error:', err)
-    }
-  }
-
-  private accumulateTaskTokens(instanceId: string, tokens: ProcessExitTokens): void {
-    try {
-      // Use tracked task IDs (survives moveTask clearing locked_by), fallback to DB query
-      const trackedIds = this.instanceTaskIds.get(instanceId)
-      let tasks: Array<{ id: string; title: string; project_id: string; total_input_tokens: number; total_output_tokens: number; total_cost_usd: number }>
-      if (trackedIds && trackedIds.length > 0) {
-        const placeholders = trackedIds.map(() => '?').join(',')
-        tasks = db.prepare(
-          `SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE id IN (${placeholders})`
-        ).all(...trackedIds) as typeof tasks
-        this.instanceTaskIds.delete(instanceId)
-      } else {
-        tasks = db.prepare(
-          'SELECT id, title, project_id, total_input_tokens, total_output_tokens, total_cost_usd FROM pipeline_tasks WHERE locked_by = ?'
-        ).all(instanceId) as typeof tasks
-      }
-
-      if (tasks.length === 0) return
-
-      // Split tokens evenly across bundle tasks (usually 1)
-      const perTask = {
-        input: Math.round(tokens.inputTokens / tasks.length),
-        output: Math.round(tokens.outputTokens / tasks.length),
-        cost: +(tokens.costUsd / tasks.length).toFixed(6),
-      }
-
-      const instance = db.prepare('SELECT name, agent_role FROM instances WHERE id = ?').get(instanceId) as { name: string; agent_role: string } | undefined
-
-      for (const task of tasks) {
-        const newInput = (task.total_input_tokens || 0) + perTask.input
-        const newOutput = (task.total_output_tokens || 0) + perTask.output
-        const newCost = +((task.total_cost_usd || 0) + perTask.cost).toFixed(6)
-
-        db.prepare(
-          'UPDATE pipeline_tasks SET total_input_tokens = ?, total_output_tokens = ?, total_cost_usd = ? WHERE id = ?'
-        ).run(newInput, newOutput, newCost, task.id)
-
-        // Post token spend comment with cache hit info
-        const cacheRead = Math.round((tokens.cacheReadTokens || 0) / tasks.length)
-        const cacheCreate = Math.round((tokens.cacheCreationTokens || 0) / tasks.length)
-        const cacheHitPct = perTask.input > 0 ? Math.round((cacheRead / perTask.input) * 100) : 0
-        const commentBody = `Token summary ${task.id}: cost=$${perTask.cost.toFixed(4)} cache_hit=${cacheHitPct}% (read=${cacheRead} create=${cacheCreate})`
-        const commentId = crypto.randomUUID()
-        db.prepare(
-          'INSERT INTO task_comments (id, task_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)'
-        ).run(commentId, task.id, instance?.agent_role || 'system', commentBody, Date.now())
-
-        console.log(`[orchestrator] Token accumulation: "${task.title}" → +${perTask.input}in/+${perTask.output}out (+$${perTask.cost.toFixed(4)}) | Total: $${newCost.toFixed(4)}`)
-      }
-    } catch (err) {
-      console.error('[orchestrator] accumulateTaskTokens error:', err)
-    }
-  }
-
-  // Fallback: runs every 60s (overlap-guarded)
-  private async safetySweep(): Promise<void> {
-    if (this.safetySweepRunning) {
-      console.log('[orchestrator] safetySweep: skipping — already running')
-      return
-    }
-    this.safetySweepRunning = true
-    try {
-      const folders = db.prepare('SELECT * FROM folders WHERE orchestrator_active = 1').all() as Record<string, unknown>[]
-      console.log(`[orchestrator] safetySweep: checking ${folders.length} active folders`)
-      for (const folder of folders) {
-        await this.assignWork(folder.id as string)
-      }
-    } catch (err) {
-      console.error('[orchestrator] safetySweep error:', err)
-    } finally {
-      this.safetySweepRunning = false
-    }
-  }
-
-  // Lock timeout sweep: runs every 2 minutes
-  private timeoutSweep(): void {
-    console.log('[orchestrator] timeoutSweep: running')
-    try {
-      const cutoff = Date.now() - LOCK_TIMEOUT_MS
-      const lockedTasks = db.prepare(`
-        SELECT pt.*, i.state as instance_state, i.agent_role as instance_role
-        FROM pipeline_tasks pt
-        LEFT JOIN instances i ON pt.locked_by = i.id
-        WHERE pt.locked_by IS NOT NULL
-          AND pt.locked_at < ?
-          AND (i.state IS NULL OR i.state != 'running')
-      `).all(cutoff) as Record<string, unknown>[]
-
-      if (lockedTasks.length === 0) {
-        console.log('[orchestrator] timeoutSweep: no expired locks')
-        return
-      }
-      console.log(`[orchestrator] timeoutSweep: found ${lockedTasks.length} expired locks`)
-
-      // Group by group_id so bundles are released atomically
-      const groupedTasks = new Map<string, Record<string, unknown>[]>()
-      for (const task of lockedTasks) {
-        const key = (task.group_id as string) || (task.id as string)
-        const group = groupedTasks.get(key) || []
-        group.push(task)
-        groupedTasks.set(key, group)
-      }
-
-      for (const [, tasks] of groupedTasks) {
-        const rep = tasks[0]
-
-        // Scheduler tasks are exempt from the 20-min kill timeout — they may run for long periods
-        if ((rep.instance_role as string) === 'scheduler' || activeSchedulerInstances.has(rep.locked_by as string)) {
-          continue
-        }
-
-        // Task was locked before this server boot — the server was offline, not the agent's fault
-        const lockedBeforeStart = (rep.locked_at as number) < serverStartTime
-        if (lockedBeforeStart) {
-          for (const t of tasks) {
-            const history = JSON.parse((t.history as string) || '[]')
-            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'server was offline — timeout not counted as agent failure' })
-            db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, history = ?, updated_at = ? WHERE id = ?`)
-              .run(JSON.stringify(history), Date.now(), t.id)
-          }
-          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'server-restart' } })
-          if (rep.project_id) broadcastEvent({ type: 'pipeline:updated', payload: { projectId: rep.project_id } })
-          continue
-        }
-
-        const newRetryCount = ((rep.retry_count as number) || 0) + 1
-
-        if (newRetryCount >= MAX_RETRIES) {
-          for (const t of tasks) {
-            const history = JSON.parse((t.history as string) || '[]')
-            history.push({ action: 'moved', timestamp: Date.now(), from: t.column, to: 'backlog', note: '3 failures — stuck, needs a human' })
-            // Add 'stuck' label
-            let labels: string[]
-            try { labels = JSON.parse((t.labels as string) || '[]') } catch { labels = [] }
-            if (!labels.includes('stuck')) labels.push('stuck')
-            db.prepare(`UPDATE pipeline_tasks SET "column" = 'backlog', labels = ?, locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?`)
-              .run(JSON.stringify(labels), newRetryCount, JSON.stringify(history), Date.now(), t.id)
-          }
-          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'max-retries-stuck' } })
-        } else {
-          for (const t of tasks) {
-            const history = JSON.parse((t.history as string) || '[]')
-            history.push({ action: 'lock_released', timestamp: Date.now(), note: 'timeout after 20min — the agent ghosted us' })
-            db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, history = ?, updated_at = ? WHERE id = ?`)
-              .run(newRetryCount, JSON.stringify(history), Date.now(), t.id)
-          }
-          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: rep.id, reason: 'timeout' } })
-        }
-
-        if (rep.project_id) {
-          broadcastEvent({ type: 'pipeline:updated', payload: { projectId: rep.project_id } })
-        }
-      }
-    } catch (err) {
-      console.error('[orchestrator] timeoutSweep error:', err)
-    }
-  }
-
-  // Archive sweep: purge old done tasks, their comments, and stale token_usage
-  private archiveSweep(): void {
-    try {
-      const cutoff = Date.now() - ARCHIVE_AGE_MS
-      // Delete comments for done tasks older than 14 days
-      const deletedComments = db.prepare(`
-        DELETE FROM task_comments WHERE task_id IN (
-          SELECT id FROM pipeline_tasks WHERE "column" = 'done' AND completed_at < ?
-        )
-      `).run(cutoff).changes
-      // Truncate description and history, then delete the tasks
-      const deletedTasks = db.prepare(`
-        DELETE FROM pipeline_tasks WHERE "column" = 'done' AND completed_at < ?
-      `).run(cutoff).changes
-      // Delete orphaned token_usage rows for tasks that no longer exist
-      const deletedUsage = db.prepare(`
-        DELETE FROM token_usage WHERE task_id IS NOT NULL AND task_id NOT IN (
-          SELECT id FROM pipeline_tasks
-        )
-      `).run().changes
-      if (deletedComments || deletedTasks || deletedUsage) {
-        console.log(`[orchestrator] Archive sweep: ${deletedTasks} tasks, ${deletedComments} comments, ${deletedUsage} token_usage rows purged`)
-        try { db.pragma('incremental_vacuum') } catch { /* non-critical */ }
-      }
-    } catch (err) {
-      console.error('[orchestrator] archiveSweep error:', err)
-    }
-  }
-
-  // Zombie sweep: runs every 30s — detect instances marked 'running' with no tracked process
-  private async zombieSweep(): Promise<void> {
-    // Check adopted processes from previous server run
-    try {
-      const deadAdopted = processRegistry.sweepAdopted()
-      for (const instanceId of deadAdopted) {
-        console.log(`[orchestrator] Adopted process finished → instance ${instanceId}`)
-        db.prepare("UPDATE instances SET state = 'idle', process_pid = NULL WHERE id = ?").run(instanceId)
-        broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
-        this.instanceTaskIds.delete(instanceId) // Fix #7: clean up leaked map entry
-
-        const locked = db.prepare('SELECT id, history, project_id FROM pipeline_tasks WHERE locked_by = ?')
-          .all(instanceId) as Array<{ id: string; history: string; project_id: string }>
-        for (const task of locked) {
-          const history = JSON.parse(task.history || '[]')
-          history.push({ action: 'lock_released', timestamp: Date.now(), note: 'adopted process exited' })
-          db.prepare('UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, history = ? WHERE id = ?')
-            .run(JSON.stringify(history), task.id)
-          broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
-        }
-      }
-      if (deadAdopted.length > 0) {
-        await this.safetySweep() // Fix #5: await to prevent overlap
-      }
-    } catch (err) {
-      console.error('[orchestrator] adopted sweep error:', err)
-    }
-
-    try {
-      const zombies = processRegistry.detectZombies()
-      for (const instanceId of zombies) {
-        console.warn(`[orchestrator] ZOMBIE: instance ${instanceId} is 'running' in DB but has no process`)
-        db.prepare("UPDATE instances SET state = 'idle', process_pid = NULL WHERE id = ?").run(instanceId)
-        broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
-        this.instanceTaskIds.delete(instanceId) // Fix #7: clean up leaked map entry
-
-        // Release any locked tasks
-        const locked = db.prepare('SELECT id, history, project_id FROM pipeline_tasks WHERE locked_by = ?').all(instanceId) as Array<{ id: string; history: string; project_id: string }>
-        for (const task of locked) {
-          const history = JSON.parse(task.history || '[]')
-          history.push({ action: 'lock_released', timestamp: Date.now(), note: 'zombie detection — process missing' })
-          db.prepare('UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, history = ? WHERE id = ?')
-            .run(JSON.stringify(history), task.id)
-          broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
-        }
-      }
-      // Fix #6: trigger reassignment after zombie cleanup
-      if (zombies.length > 0) {
-        await this.safetySweep()
-      }
-    } catch (err) {
-      console.error('[orchestrator] zombieSweep error:', err)
-    }
-  }
-
   unlockStartup(): void {
     this.startupLocked = false
     console.log('[orchestrator] Startup lock released — assignments enabled')
   }
 
-  // Core assignment logic — find idle managed agents and give them work (async with per-folder mutex)
+  // ── Core Assignment Logic ──
+
   private async assignWork(folderId: string): Promise<void> {
-    if (this.startupLocked) {
-      console.log('[orchestrator] Skipping assignWork — startup lock active')
+    if (this.startupLocked) return
+
+    const instances = db.prepare(`
+      SELECT * FROM instances
+      WHERE folder_id = ? AND process_state = 'idle' AND agent_role IS NOT NULL
+        AND orchestrator_managed = 1
+    `).all(folderId) as Record<string, unknown>[]
+
+    if (instances.length === 0) {
+      emitOrcLog({ type: 'no_idle_agents', detail: `folder=${folderId.slice(0, 8)}` })
       return
     }
-    console.log(`[orchestrator] assignWork: acquiring folder lock for ${folderId}`)
-    const release = await processRegistry.acquireFolderLock(folderId)
-    console.log(`[orchestrator] assignWork: lock acquired for ${folderId}`)
-    try {
-      const instances = db.prepare(`
-        SELECT * FROM instances
-        WHERE folder_id = ? AND state = 'idle' AND agent_role IS NOT NULL
-          AND orchestrator_managed = 1
-      `).all(folderId) as Record<string, unknown>[]
 
-      if (instances.length === 0) {
-        console.log(`[orchestrator] assignWork: no idle managed agents in folder ${folderId}`)
-        return
+    console.log(`[orchestrator] assignWork: ${instances.length} idle agent(s) in folder ${folderId}: ${instances.map(i => `${i.name}(${i.agent_role})`).join(', ')}`)
+
+    // Smart assignment: prefer agents with warm sessions
+    const CACHE_TTL_MS = 60 * 60 * 1000
+    const now = Date.now()
+    instances.sort((a, b) => {
+      const aWarm = a.session_id && a.last_task_at && (now - (a.last_task_at as number)) < CACHE_TTL_MS ? 1 : 0
+      const bWarm = b.session_id && b.last_task_at && (now - (b.last_task_at as number)) < CACHE_TTL_MS ? 1 : 0
+      return bWarm - aWarm
+    })
+
+    // Auto-assign default blueprint to ready tasks without one
+    this.autoAssignDefaultBlueprint(folderId)
+
+    const cooldownThreshold = now - MIN_REASSIGN_INTERVAL_MS
+    const allTasks = db.prepare(`
+      SELECT * FROM pipeline_tasks
+      WHERE project_id = ? AND "column" IN ('ready', 'in_progress')
+        AND locked_by IS NULL
+        AND labels NOT LIKE '%stuck%' AND labels NOT LIKE '%blocked%' AND labels NOT LIKE '%paused%'
+        AND (last_assigned_at IS NULL OR last_assigned_at < ?)
+      ORDER BY priority ASC, created_at ASC
+    `).all(folderId, cooldownThreshold) as Record<string, unknown>[]
+
+    const claimedTaskIds = new Set<string>()
+
+    for (const instance of instances) {
+      const role = instance.agent_role as string
+      if (role === 'scheduler') continue
+
+      // Cooldown check: use reserved_at from DB
+      const reservedAt = instance.reserved_at as number | null
+      if (reservedAt && now - reservedAt < SEND_COOLDOWN_MS) {
+        console.warn(`[orchestrator] COOLDOWN: Skipping send to ${instance.id} (${((now - reservedAt) / 1000).toFixed(1)}s since last send)`)
+        emitOrcLog({ type: 'cooldown_hit', instanceId: instance.id as string, instanceName: instance.name as string, detail: `${((now - reservedAt) / 1000).toFixed(1)}s since last send` })
+        continue
       }
 
-      console.log(`[orchestrator] assignWork: ${instances.length} idle agent(s) in folder ${folderId}: ${instances.map(i => `${i.name}(${i.agent_role})`).join(', ')}`)
+      const task = this.matchTaskForRole(role, allTasks, claimedTaskIds)
+      if (!task) continue
 
-      // Smart assignment: prefer agents with warm sessions (cache hits are ~10x cheaper)
-      const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
-      const now = Date.now()
-      instances.sort((a, b) => {
-        const aWarm = a.session_id && a.last_task_at && (now - (a.last_task_at as number)) < CACHE_TTL_MS ? 1 : 0
-        const bWarm = b.session_id && b.last_task_at && (now - (b.last_task_at as number)) < CACHE_TTL_MS ? 1 : 0
-        return bWarm - aWarm // warm agents first
-      })
-
-      for (const instance of instances) {
-        const role = instance.agent_role as string
-        const columns = ROLE_COLUMNS[role]
-        if (!columns) {
-          console.log(`[orchestrator] assignWork: no columns for role '${role}' on instance ${instance.name}`)
-          continue
+      claimedTaskIds.add(task.id as string)
+      if (task.group_id && (task.group_id as string) !== '' && role === 'builder') {
+        for (const t of allTasks) {
+          if (t.group_id === task.group_id) claimedTaskIds.add(t.id as string)
         }
-
-        const task = this.findNextTask(folderId, columns, role)
-        if (!task) {
-          console.log(`[orchestrator] assignWork: no tasks in [${columns.join(',')}] for ${instance.name}(${role})`)
-          continue
-        }
-
-        console.log(`[orchestrator] assignWork: found task "${task.title}" (${task.id}) for ${instance.name}(${role})`)
-        await this.assignTaskToInstance(task, instance, folderId)
       }
 
-      this.broadcastStatus(folderId)
-    } catch (err) {
-      console.error('[orchestrator] assignWork error:', err)
-    } finally {
-      release()
+      console.log(`[orchestrator] assignWork: found task "${task.title}" (${task.id}) for ${instance.name}(${role})`)
+      await this.assignTaskToInstance(task, instance, folderId)
     }
+
+    this.broadcastStatus(folderId)
   }
 
-  private findNextTask(folderId: string, columns: string[], role: string): Record<string, unknown> | undefined {
-    const placeholders = columns.map(() => '?').join(',')
+  private matchTaskForRole(role: string, allTasks: Record<string, unknown>[], claimed: Set<string>): Record<string, unknown> | undefined {
+    const roleTasks = allTasks.filter(t =>
+      t.current_step_role === role && !claimed.has(t.id as string)
+    )
 
-    // Builders: try bundles first
     if (role === 'builder') {
-      const bundleTask = db.prepare(`
-        SELECT * FROM pipeline_tasks
-        WHERE project_id = ? AND "column" IN (${placeholders})
-          AND locked_by IS NULL AND group_id IS NOT NULL AND group_id != ''
-        ORDER BY priority ASC, created_at ASC
-        LIMIT 1
-      `).get(folderId, ...columns) as Record<string, unknown> | undefined
-
+      const bundleTask = roleTasks.find(t => t.group_id && (t.group_id as string) !== '')
       if (bundleTask) {
         const locked = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE group_id = ? AND locked_by IS NOT NULL`)
           .get(bundleTask.group_id as string) as { count: number }
         if (locked.count === 0) return bundleTask
       }
+      return roleTasks.find(t => !t.group_id || (t.group_id as string) === '')
     }
 
-    // Solo tasks (builders only skip group tasks here — other roles can process any task)
-    const groupFilter = role === 'builder' ? `AND (group_id IS NULL OR group_id = '')` : ''
-    return db.prepare(`
-      SELECT * FROM pipeline_tasks
-      WHERE project_id = ? AND "column" IN (${placeholders})
-        AND locked_by IS NULL ${groupFilter}
-      ORDER BY priority ASC, created_at ASC
-      LIMIT 1
-    `).get(folderId, ...columns) as Record<string, unknown> | undefined
+    return roleTasks[0]
   }
+
+  private autoAssignDefaultBlueprint(folderId: string): void {
+    const tasksWithoutPipeline = db.prepare(
+      "SELECT id FROM pipeline_tasks WHERE project_id = ? AND \"column\" = 'ready' AND pipeline_id IS NULL"
+    ).all(folderId) as Array<{ id: string }>
+
+    if (tasksWithoutPipeline.length === 0) return
+
+    const defaultBp = db.prepare("SELECT id, steps FROM pipeline_blueprints WHERE is_default = 1 LIMIT 1").get() as { id: string; steps: string } | undefined
+    if (!defaultBp) return
+
+    const steps = JSON.parse(defaultBp.steps) as Array<{ role: string }>
+    const totalSteps = steps.length
+    const firstRole = steps[0]?.role || null
+
+    for (const task of tasksWithoutPipeline) {
+      db.prepare(
+        'UPDATE pipeline_tasks SET pipeline_id = ?, current_step = 1, total_steps = ?, current_step_role = ? WHERE id = ?'
+      ).run(defaultBp.id, totalSteps, firstRole, task.id)
+    }
+  }
+
+  // ── Transactional Reserve + Assign ──
 
   private async assignTaskToInstance(task: Record<string, unknown>, instance: Record<string, unknown>, folderId: string): Promise<void> {
     const instanceId = instance.id as string
     const role = instance.agent_role as string
     const now = Date.now()
 
-    console.log(`[orchestrator] assignTaskToInstance: "${task.title}" → ${instance.name}(${role}) [${instanceId.slice(0, 8)}]`)
-
-    // Hard 10-second cooldown — prevent duplicate sends from burst triggers
-    const lastSend = this.lastSendTime.get(instanceId) || 0
-    if (now - lastSend < SEND_COOLDOWN_MS) {
-      console.warn(`[orchestrator] COOLDOWN: Skipping send to ${instanceId} (${(now - lastSend) / 1000}s since last send)`)
+    // Concurrency limit check (DB-based)
+    if (!processRegistry.canSpawn()) {
+      console.warn(`[orchestrator] CONCURRENCY LIMIT: Skipping spawn for ${instanceId}`)
+      emitOrcLog({ type: 'concurrency_limit', instanceId, instanceName: instance.name as string, taskId: task.id as string, taskTitle: task.title as string, detail: `registry full (active=${processRegistry.getActiveCount()})` })
       return
     }
 
-    if (!processRegistry.reserveSlot(instanceId)) {
-      console.warn(`[orchestrator] CONCURRENCY LIMIT: Skipping spawn for ${instanceId} (registry full)`)
-      return
-    }
+    // If task is in 'ready', move it to 'in_progress' as part of the lock
+    const finalColumn = (task.column as string) === 'ready' ? 'in_progress' : (task.column as string)
 
-    const finalColumn = task.column as string
-
-    // Collect bundle tasks (builders only)
+    // Collect bundle tasks
     let tasksToLock: Record<string, unknown>[] = [task]
     if (task.group_id && (task.group_id as string) !== '' && role === 'builder') {
       tasksToLock = db.prepare(`SELECT * FROM pipeline_tasks WHERE group_id = ? ORDER BY group_index ASC`)
@@ -755,77 +710,72 @@ class OrchestratorService {
       if (tasksToLock.length === 0) tasksToLock = [task]
     }
 
-    // Lock all tasks atomically — conditional on locked_by IS NULL to prevent double-assignment
-    const lockTx = db.transaction(() => {
+    const taskIds = tasksToLock.map(t => t.id as string)
+
+    // Transactional reserve: lock tasks + transition instance to 'reserved' atomically
+    const reserved = db.transaction(() => {
       for (const t of tasksToLock) {
-        const history = JSON.parse((t.history as string) || '[]')
+        const history = safeJsonParse<Record<string, unknown>[]>(t.history as string, [])
         history.push({ action: 'assigned', timestamp: now, agent: instanceId })
         const result = db.prepare(
-          `UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, "column" = ?, history = ?, updated_at = ?
+          `UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, "column" = ?, history = ?, updated_at = ?, last_assigned_at = ?,
+           lock_version = lock_version + 1, version = version + 1
            WHERE id = ? AND locked_by IS NULL`
-        ).run(instanceId, now, finalColumn, JSON.stringify(history), now, t.id)
-        if (result.changes === 0) return false  // task already locked by someone else
+        ).run(instanceId, now, finalColumn, JSON.stringify(history), now, now, t.id)
+        if (result.changes === 0) return null // task already locked
       }
+
+      // Transition: idle → reserved
+      const ir = db.prepare(
+        `UPDATE instances SET process_state = 'reserved', state = 'idle', reserved_at = ?,
+         assigned_task_ids = ?, version = version + 1
+         WHERE id = ? AND process_state = 'idle'`
+      ).run(now, JSON.stringify(taskIds), instanceId)
+      if (ir.changes === 0) return null // instance not idle
+
       return true
-    })
-    const locked = lockTx()
-    if (!locked) {
-      processRegistry.releaseSlot(instanceId)
-      console.warn(`[orchestrator] Task ${task.id as string} already locked — skipping double-assignment for ${instanceId}`)
+    })()
+
+    if (!reserved) {
+      console.warn(`[orchestrator] Reserve FAILED: task ${task.id as string} already locked or instance ${instanceId} not idle`)
       return
     }
 
-    // Track task IDs so accumulateTaskTokens can find them even after moveTask clears locked_by
-    this.instanceTaskIds.set(instanceId, tasksToLock.map(t => t.id as string))
-
-    // Mark as running immediately so concurrent assignWork calls see it as busy
-    db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(instanceId)
+    console.log(`[orchestrator] Reserved: ${instanceId.slice(0, 8)} → tasks [${taskIds.map(id => id.slice(0, 8)).join(', ')}]`)
 
     // Build prompt
     const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown>
     const prompt = this.buildPrompt(tasksToLock, task, instance, folder)
 
     const cwd = (instance.cwd as string) || (folder.path as string)
-    const sessionId = (instance.session_id as string) || undefined  // Resume session for cache hits on pinned context
+    const sessionId = (instance.session_id as string) || undefined
 
     const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
     const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
 
-    // Model tiering — inject --model flag if not already set
-    // Auto-escalation: if the task failed before, upgrade to opus for the retry
     const retryCount = (task.retry_count as number) || 0
     const roleModels = getRoleModels()
     const model = retryCount > 0 ? 'opus' : roleModels[role]
     const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
-    if (!hasModelFlag && model) {
-      globalFlags.push(`--model=${model}`)
-    }
+    if (!hasModelFlag && model) globalFlags.push(`--model=${model}`)
 
-    // Tool scoping — reduce built-in tool surface per role
     const roleTools = getRoleTools()
     const tools = roleTools[role]
-    if (tools && !globalFlags.some(f => f.startsWith('--tools'))) {
-      globalFlags.push('--tools', tools)
-    }
+    if (tools && !globalFlags.some(f => f.startsWith('--tools'))) globalFlags.push('--tools', tools)
 
-    // Cache control
     try {
       const cacheRow = db.prepare("SELECT value FROM settings WHERE key = 'disableCache'").get() as { value: string } | undefined
-      if (cacheRow && JSON.parse(cacheRow.value) === true && !globalFlags.includes('--no-cache')) {
-        globalFlags.push('--no-cache')
-      }
+      if (cacheRow && JSON.parse(cacheRow.value) === true && !globalFlags.includes('--no-cache')) globalFlags.push('--no-cache')
     } catch { /* ignore */ }
 
-    // Max tokens
     try {
       const maxRow = db.prepare("SELECT value FROM settings WHERE key = 'maxTokens'").get() as { value: string } | undefined
       if (maxRow) {
         const maxTokens = JSON.parse(maxRow.value) as number
-        if (maxTokens > 0 && !globalFlags.some(f => f.startsWith('--max-tokens'))) {
-          globalFlags.push(`--max-tokens=${maxTokens}`)
-        }
+        if (maxTokens > 0 && !globalFlags.some(f => f.startsWith('--max-tokens'))) globalFlags.push(`--max-tokens=${maxTokens}`)
       }
     } catch { /* ignore */ }
+
     if (retryCount > 0) {
       console.log(`[orchestrator] Auto-escalation: task "${task.title}" failed ${retryCount}x, upgrading to opus`)
     }
@@ -837,8 +787,6 @@ class OrchestratorService {
     }
 
     resetOverdriveIfExpired(instanceId)
-
-    console.log(`[orchestrator] Assigning "${task.title}" → instance ${instanceId} (${role}, model: ${roleModels[role] || 'default'})`)
 
     // Extract images from task attachments
     let taskImages: Array<{ base64: string; mediaType: string }> | undefined
@@ -854,16 +802,10 @@ class OrchestratorService {
       if (taskImages.length === 0) taskImages = undefined
     }
 
-    // Save orchestrator prompt as a user message so it's visible in the session
+    // Save orchestrator prompt as a user message
     const msgId = crypto.randomUUID()
     const msgContent: Array<Record<string, unknown>> = [
-      {
-        type: 'orc-brief',
-        taskTitle: task.title as string,
-        taskId: task.id as string,
-        instanceName: instance.name as string,
-        projectId: folderId,
-      },
+      { type: 'orc-brief', taskTitle: task.title as string, taskId: task.id as string, instanceName: instance.name as string, projectId: folderId },
       { type: 'text', text: prompt },
     ]
     if (taskImages) {
@@ -875,26 +817,65 @@ class OrchestratorService {
       .run(msgId, instanceId, 'user', JSON.stringify(msgContent), now)
     broadcastEvent({ type: 'message:added', payload: { instanceId, message: { id: msgId, instanceId, role: 'user', content: msgContent, createdAt: now } } })
 
+    // Prune old messages
     this.pruneOldMessages(instanceId)
 
+    // Spawn the process
     try {
-      this.lastSendTime.set(instanceId, Date.now())
-      await sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: getMcpConfigPath(role) })
+      await sendMessage({ instanceId, text: prompt, images: taskImages, cwd, sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: getMcpConfigPath(role), compact: !!sessionId })
     } catch (err) {
       console.error(`[orchestrator] sendMessage failed for ${instanceId}:`, err)
-      // Rollback: release task locks, reset instance state, release spawn slot
-      processRegistry.releaseSlot(instanceId)
-      for (const t of tasksToLock) {
-        db.prepare('UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE id = ?').run(t.id)
-      }
-      db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(instanceId)
-      broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+      emitOrcLog({ type: 'spawn_failed', instanceId, instanceName: instance.name as string, taskId: task.id as string, taskTitle: task.title as string, detail: String(err) })
+      // Rollback reservation
+      this.rollbackReservation(instanceId, taskIds)
       return
     }
 
+    emitOrcLog({ type: 'assigned', instanceId, instanceName: instance.name as string, taskId: task.id as string, taskTitle: task.title as string, detail: `role=${role} model=${roleModels[role] || 'default'}` })
     broadcastEvent({ type: 'orchestrator:assigned', payload: { folderId, instanceId, taskId: task.id as string, taskTitle: task.title as string } })
     broadcastEvent({ type: 'pipeline:updated', payload: { projectId: folderId } })
+    updateDevLock()
   }
+
+  // ── Rollback: undo a failed reservation ──
+
+  private rollbackReservation(instanceId: string, taskIds: string[]): void {
+    db.transaction(() => {
+      for (const taskId of taskIds) {
+        db.prepare(
+          `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL,
+           lock_version = lock_version + 1, version = version + 1
+           WHERE id = ? AND locked_by = ?`
+        ).run(taskId, instanceId)
+      }
+      db.prepare(
+        `UPDATE instances SET process_state = 'idle', state = 'idle', assigned_task_ids = NULL,
+         version = version + 1
+         WHERE id = ? AND process_state IN ('reserved', 'spawning')`
+      ).run(instanceId)
+    })()
+    broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+  }
+
+  private pruneOldMessages(instanceId: string): void {
+    const KEEP_LAST = 50
+    try {
+      const row = db.prepare('SELECT COUNT(*) as c FROM messages WHERE instance_id = ?').get(instanceId) as { c: number }
+      if (row.c > KEEP_LAST) {
+        const cutoffRow = db.prepare(
+          'SELECT created_at FROM messages WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET ?'
+        ).get(instanceId, KEEP_LAST - 1) as { created_at: number } | undefined
+        if (cutoffRow) {
+          db.prepare('DELETE FROM messages WHERE instance_id = ? AND created_at < ?')
+            .run(instanceId, cutoffRow.created_at)
+        }
+      }
+    } catch (err) {
+      console.error('[orchestrator] pruneOldMessages error:', err)
+    }
+  }
+
+  // ── Prompt Building ──
 
   private buildPrompt(tasksToLock: Record<string, unknown>[], primaryTask: Record<string, unknown>, instance: Record<string, unknown>, folder: Record<string, unknown>, isResume = false): string {
     const role = instance.agent_role as string
@@ -902,78 +883,89 @@ class OrchestratorService {
     const taskId = primaryTask.id as string
     const instanceCwd = (instance.cwd as string) || (folder.path as string)
 
-    // Resume: lightweight message — agent already has context from prior session
     if (isResume) {
       const resumeObj = {
         type: 'resume',
         task: { id: taskId, title: primaryTask.title as string, column: primaryTask.column as string, priority: primaryTask.priority as number },
         instruction: `You were working on this task before. Resume where you left off. Write a short summary as your final message, then exit. The server will post it as a comment and move the task automatically.`
       }
-      const prompt = JSON.stringify(resumeObj, null, 2)
-      console.log(`[orchestrator] Resume prompt: ${prompt.length} chars for ${role} on "${primaryTask.title}"`)
-      return prompt
+      return JSON.stringify(resumeObj, null, 2)
     }
 
     const masterPrompt = this.loadMasterPrompt(role)
     const skills = this.loadInstanceSkills(instance)
     const isBundle = tasksToLock.length > 1
 
-    // Cap description to prevent spec bloat (5000 chars ≈ 1250 tokens max)
     const MAX_DESC_CHARS = 5000
     let description = (primaryTask.description as string) || ''
     if (description.length > MAX_DESC_CHARS) {
       description = description.slice(0, MAX_DESC_CHARS) + '\n\n[... description truncated at 5000 chars — read the full spec from task comments or source files if needed]'
     }
 
-    // Build structured JSON assignment
+    const currentStep = (primaryTask.current_step as number) || 1
+    const totalSteps = (primaryTask.total_steps as number) || 1
+    const stepRole = (primaryTask.current_step_role as string) || role
+
+    const taskObj: Record<string, unknown> = {
+      id: taskId,
+      projectId,
+      title: primaryTask.title as string,
+      priority: primaryTask.priority as number,
+      column: primaryTask.column as string,
+      description,
+    }
+    if (totalSteps > 1) {
+      taskObj.step = currentStep
+      taskObj.totalSteps = totalSteps
+      taskObj.stepRole = stepRole
+    }
+
     const assignment: Record<string, unknown> = {
       scope: instanceCwd,
       role,
-      task: {
-        id: taskId,
-        projectId,
-        title: primaryTask.title as string,
-        priority: primaryTask.priority as number,
-        column: primaryTask.column as string,
-        description,
-      },
+      task: taskObj,
       rules: [
         'Only access files under scope directory.',
         'Write a short summary (1-3 sentences) as your final message before exiting. The server will post it as a task comment automatically.',
       ],
     }
 
-    // Planner still needs API access to update task title/description
+    const stepInstructions = primaryTask.step_instructions ? JSON.parse((primaryTask.step_instructions as string) || '{}') : {}
+    const taskStepInstruction = stepInstructions[String(currentStep)]
+    let blueprintStepInstruction: string | undefined
+    if (primaryTask.pipeline_id) {
+      const bp = db.prepare('SELECT steps FROM pipeline_blueprints WHERE id = ?').get(primaryTask.pipeline_id as string) as { steps: string } | undefined
+      if (bp) {
+        const steps = JSON.parse(bp.steps) as Array<{ role: string; instruction?: string }>
+        blueprintStepInstruction = steps[currentStep - 1]?.instruction
+      }
+    }
+    const stepInstruction = taskStepInstruction || blueprintStepInstruction
+    if (stepInstruction) assignment.stepInstruction = stepInstruction
+
     if (role === 'planner') {
       assignment.api = {
         updateTask: `PUT http://localhost:3333/api/pipelines/${projectId}/tasks/${taskId}  body: {"title":"...","description":"..."}`,
       }
     }
 
-    // Extract filesToModify from spec so builders see it immediately in the assignment
     if (description) {
       try {
         const spec = JSON.parse(description)
         if (spec.frontend?.files && Array.isArray(spec.frontend.files)) {
           assignment.filesToModify = spec.frontend.files
         }
-      } catch { /* description is not JSON — that's fine */ }
+      } catch { /* not JSON */ }
     }
 
     const rawAttachments = JSON.parse((primaryTask.attachments as string) || '[]') as Array<{ name: string }>
-    if (rawAttachments.length > 0) {
-      assignment.attachments = `${rawAttachments.length} screenshot(s) included with this message.`
-    }
+    if (rawAttachments.length > 0) assignment.attachments = `${rawAttachments.length} screenshot(s) included with this message.`
 
     const dependsOn = JSON.parse((primaryTask.depends_on as string) || '[]') as string[]
-    if (dependsOn.length > 0) {
-      assignment.prerequisites = dependsOn
-    }
+    if (dependsOn.length > 0) assignment.prerequisites = dependsOn
 
     const priorComments = this.loadTaskComments(taskId)
-    if (priorComments) {
-      assignment.priorComments = priorComments
-    }
+    if (priorComments) assignment.priorComments = priorComments
 
     if (isBundle) {
       assignment.bundle = tasksToLock.map(t => ({
@@ -983,14 +975,8 @@ class OrchestratorService {
       }))
     }
 
-    // Compose: master prompt (human-readable) + JSON assignment
     const parts: string[] = []
-
-    if (masterPrompt) {
-      parts.push(masterPrompt)
-      parts.push('')
-    }
-
+    if (masterPrompt) { parts.push(masterPrompt); parts.push('') }
     if (skills.length > 0) {
       for (const skill of skills) {
         parts.push(`### Skill: ${skill.name}`)
@@ -998,12 +984,6 @@ class OrchestratorService {
       }
       parts.push('')
     }
-
-    if (role === 'tester') {
-      parts.push('## playwriter: `playwriter session new` then `playwriter -e "..."` (page global). Relative screenshot paths.')
-      parts.push('')
-    }
-
     parts.push('## ASSIGNMENT')
     parts.push('```json')
     parts.push(JSON.stringify(assignment, null, 2))
@@ -1011,15 +991,15 @@ class OrchestratorService {
 
     const prompt = parts.join('\n')
     const promptChars = prompt.length
-    const estimatedTokens = Math.round(promptChars / 4)
-    console.log(`[orchestrator] Prompt size: ${promptChars} chars (~${estimatedTokens} tokens) for ${role} on "${primaryTask.title}"`)
 
     // Persist prompt size for monitoring
     try {
       db.prepare(
         'INSERT INTO token_usage (instance_id, role, task_id, prompt_chars, created_at) VALUES (?, ?, ?, ?, ?)'
       ).run(instance.id as string, role, taskId, promptChars, Date.now())
-    } catch { /* non-critical */ }
+    } catch (err) {
+      console.error(`[orchestrator] token_usage INSERT failed for task ${taskId}:`, err)
+    }
 
     return prompt
   }
@@ -1048,13 +1028,11 @@ class OrchestratorService {
 
   private loadTaskComments(taskId: string): string {
     try {
-      // Last 3 unique comments (deduplicated by body), max 1500 chars
       const rows = db.prepare(
         'SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 10'
       ).all(taskId) as Array<{ author: string; body: string; created_at: number }>
       if (rows.length === 0) return ''
 
-      // Deduplicate by body content (planner loop-spam fix)
       const seen = new Set<string>()
       const unique = rows.filter(r => {
         const key = r.body.trim()
@@ -1066,7 +1044,6 @@ class OrchestratorService {
       const MAX_CHARS = 1500
       let result = ''
       for (const r of unique.reverse()) {
-        // Truncate individual comments to 400 chars
         const body = r.body.length > 400 ? r.body.slice(0, 400) + '...' : r.body
         const line = `[@${r.author}]: ${body}\n`
         if (result.length + line.length > MAX_CHARS) break
@@ -1078,47 +1055,32 @@ class OrchestratorService {
     }
   }
 
+  // ── Scheduler Task Dispatch ──
+
   async triggerScheduledTask(task: PipelineTask): Promise<void> {
     try {
       const folderId = task.projectId
       const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown>
-      if (!folder) {
-        console.warn(`[orchestrator] triggerScheduledTask: folder ${folderId} not found`)
-        return
-      }
+      if (!folder) return
 
-      // Mark as running before spawning
       markScheduleRunning(task.id, true)
 
       const now = Date.now()
       const runId = crypto.randomUUID()
 
-      // Build scheduler prompt
       const masterPrompt = this.loadMasterPrompt('scheduler')
       const skillContent = task.skill ? this.loadSkillByName(task.skill) : null
 
       const MAX_DESC_CHARS = 5000
       let description = task.description || ''
-      if (description.length > MAX_DESC_CHARS) {
-        description = description.slice(0, MAX_DESC_CHARS) + '\n\n[... truncated]'
-      }
+      if (description.length > MAX_DESC_CHARS) description = description.slice(0, MAX_DESC_CHARS) + '\n\n[... truncated]'
 
       const assignment = {
         role: 'scheduler',
-        task: {
-          id: task.id,
-          projectId: folderId,
-          title: task.title,
-          description,
-          skill: task.skill ?? null,
-        },
-        api: {
-          comment: `POST http://localhost:3333/api/pipelines/${folderId}/tasks/${task.id}/comments  body: {"author":"scheduler","body":"..."}`,
-        },
+        task: { id: task.id, projectId: folderId, title: task.title, description, skill: task.skill ?? null },
         rules: [
           'Do not move this task to another column.',
-          'Post a brief summary comment when finished.',
-          'If you encounter an error, post the error as a comment and exit.',
+          'Write a short summary (1-2 sentences) as your final message before exiting. The server will post it as a task comment automatically.',
           'Only access files under your assigned scope directory.',
         ],
       }
@@ -1132,30 +1094,42 @@ class OrchestratorService {
       parts.push('```')
       const prompt = parts.join('\n')
 
-      // Find or create a scheduler instance in this folder
+      // Find or create a scheduler instance
       let schedulerInstance = db.prepare(
-        "SELECT * FROM instances WHERE folder_id = ? AND agent_role = 'scheduler' AND state = 'idle' LIMIT 1"
+        "SELECT * FROM instances WHERE folder_id = ? AND agent_role = 'scheduler' AND process_state = 'idle' LIMIT 1"
       ).get(folderId) as Record<string, unknown> | undefined
 
       let instanceId: string
       if (schedulerInstance) {
         instanceId = schedulerInstance.id as string
       } else {
-        // Create a temporary scheduler instance
         instanceId = crypto.randomUUID()
         db.prepare(`
-          INSERT INTO instances (id, folder_id, name, cwd, state, agent_role, orchestrator_managed, sort_order, created_at)
-          VALUES (?, ?, 'Chrono', ?, 'idle', 'scheduler', 1, 999, ?)
+          INSERT INTO instances (id, folder_id, name, cwd, state, process_state, agent_role, orchestrator_managed, sort_order, created_at, version)
+          VALUES (?, ?, 'Chrono', ?, 'idle', 'idle', 'scheduler', 1, 999, ?, 1)
         `).run(instanceId, folderId, (folder.path as string) || '', now)
         schedulerInstance = db.prepare('SELECT * FROM instances WHERE id = ?').get(instanceId) as Record<string, unknown>
       }
 
-      // Track this instance as a scheduler
-      activeSchedulerInstances.add(instanceId)
-      db.prepare("UPDATE instances SET state = 'running', active_task_id = ?, active_task_title = ?, task_started_at = ? WHERE id = ?")
-        .run(task.id, task.title, now, instanceId)
+      if (!processRegistry.canSpawn()) {
+        console.warn(`[orchestrator] CONCURRENCY LIMIT: Skipping scheduler dispatch for "${task.title}"`)
+        markScheduleRunning(task.id, false)
+        return
+      }
 
-      // Record initial execution entry
+      // Transition to reserved with scheduler context
+      const schedulerCtx = JSON.stringify({ taskId: task.id, runId, startedAt: now })
+      const reserved = db.prepare(
+        `UPDATE instances SET process_state = 'reserved', state = 'idle', reserved_at = ?,
+         assigned_task_ids = ?, is_scheduler_run = 1, scheduler_context = ?, version = version + 1
+         WHERE id = ? AND process_state = 'idle'`
+      ).run(now, JSON.stringify([task.id]), schedulerCtx, instanceId)
+
+      if (reserved.changes === 0) {
+        markScheduleRunning(task.id, false)
+        return
+      }
+
       const exec: ScheduleExecution = { runId, startedAt: now, instanceId, status: 'running' }
       appendExecution(task.id, exec)
 
@@ -1168,10 +1142,9 @@ class OrchestratorService {
       if (!globalFlags.some(f => f.startsWith('--model'))) globalFlags.push(`--model=${model}`)
 
       const roleTools = getRoleTools()
-      const tools = roleTools['scheduler']
-      if (tools && !globalFlags.some(f => f.startsWith('--tools'))) globalFlags.push('--tools', tools)
+      const rTools = roleTools['scheduler']
+      if (rTools && !globalFlags.some(f => f.startsWith('--tools'))) globalFlags.push('--tools', rTools)
 
-      // Save message for visibility
       const msgId = crypto.randomUUID()
       const msgContent = [
         { type: 'orc-brief', taskTitle: task.title, taskId: task.id, instanceName: 'Chrono', projectId: folderId },
@@ -1180,20 +1153,6 @@ class OrchestratorService {
       db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(msgId, instanceId, 'user', JSON.stringify(msgContent), now)
       broadcastEvent({ type: 'message:added', payload: { instanceId, message: { id: msgId, instanceId, role: 'user', content: msgContent, createdAt: now } } })
-
-      console.log(`[orchestrator] Scheduler dispatch: "${task.title}" → instance ${instanceId}`)
-
-      if (!processRegistry.canSpawn()) {
-        console.warn(`[orchestrator] CONCURRENCY LIMIT: Skipping scheduler dispatch for "${task.title}"`)
-        markScheduleRunning(task.id, false)
-        activeSchedulerInstances.delete(instanceId)
-        this.schedulerRunContexts.delete(instanceId)
-        db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(instanceId)
-        return
-      }
-
-      // Store run context so onProcessExit can route to scheduler exit handler
-      this.schedulerRunContexts.set(instanceId, { taskId: task.id, runId, startedAt: now })
 
       await sendMessage({ instanceId, text: prompt, cwd, flags: globalFlags, mcpConfigPath: getMcpConfigPath('scheduler') })
 
@@ -1204,13 +1163,7 @@ class OrchestratorService {
     }
   }
 
-  private onSchedulerExit(
-    instanceId: string,
-    taskId: string,
-    runId: string,
-    startedAt: number,
-  ): void {
-    // Read cost data from token_usage table
+  private onSchedulerExit(instanceId: string, taskId: string, runId: string, startedAt: number): void {
     let costUsd: number | undefined
     let tokensUsed: number | undefined
     try {
@@ -1222,9 +1175,9 @@ class OrchestratorService {
         tokensUsed = (usageRow.input_tokens || 0) + (usageRow.output_tokens || 0)
       }
     } catch { /* non-critical */ }
+
     try {
       const now = Date.now()
-      // Update the execution entry
       const task = db.prepare('SELECT * FROM pipeline_tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined
       if (task) {
         let executions: ScheduleExecution[]
@@ -1237,8 +1190,6 @@ class OrchestratorService {
       }
 
       updateScheduleAfterRun(taskId, now)
-
-      db.prepare("UPDATE instances SET state = 'idle', active_task_id = NULL, active_task_title = NULL WHERE id = ?").run(instanceId)
 
       const projectId = (task?.project_id as string) ?? ''
       broadcastEvent({ type: 'pipeline:updated', payload: { projectId } })
@@ -1257,15 +1208,17 @@ class OrchestratorService {
     }
   }
 
+  // ── Status Broadcast ──
+
   broadcastStatus(folderId: string): void {
     try {
-      const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown>
+      const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(folderId) as { orchestrator_active: number } | undefined
       const active = Boolean(folder?.orchestrator_active)
 
-      const idleAgents = db.prepare(`SELECT COUNT(*) as count FROM instances WHERE folder_id = ? AND agent_role IS NOT NULL AND state = 'idle'`)
+      const idleAgents = db.prepare(`SELECT COUNT(*) as count FROM instances WHERE folder_id = ? AND agent_role IS NOT NULL AND process_state = 'idle'`)
         .get(folderId) as { count: number }
 
-      const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('spec','build','qa','ship') AND locked_by IS NULL`)
+      const pendingTasks = db.prepare(`SELECT COUNT(*) as count FROM pipeline_tasks WHERE project_id = ? AND "column" IN ('ready','in_progress') AND locked_by IS NULL`)
         .get(folderId) as { count: number }
 
       broadcastEvent({ type: 'orchestrator:status', payload: { folderId, active, idleAgents: idleAgents.count, pendingTasks: pendingTasks.count } })
@@ -1274,28 +1227,10 @@ class OrchestratorService {
     }
   }
 
-  // Immediately check a folder when activated — debounced to coalesce burst triggers
-  triggerFolder(folderId: string): void {
-    // 50ms debounce: coalesces rapid triggers (LaunchTeamModal 4x PATCH, onProcessExit + safetySweep bursts)
-    const existing = this.folderTriggerTimers.get(folderId)
-    if (existing) {
-      console.log(`[orchestrator] triggerFolder: debouncing duplicate trigger for ${folderId}`)
-      clearTimeout(existing)
-    }
-    console.log(`[orchestrator] triggerFolder: scheduling assignWork for ${folderId} (50ms debounce)`)
-    this.folderTriggerTimers.set(folderId, setTimeout(() => {
-      this.folderTriggerTimers.delete(folderId)
-      console.log(`[orchestrator] triggerFolder: debounce fired, running assignWork for ${folderId}`)
-      this.assignWork(folderId).then(() => {
-        this.broadcastStatus(folderId)
-      }).catch(err => {
-        console.error('[orchestrator] triggerFolder assignWork error:', err)
-      })
-    }, 50))
-  }
+  // ── Resume Stale Instances ──
 
-  // Resume agents whose sessions were alive before server restart
   async resumeStaleInstances(snapshots: ResumeSnapshot[]): Promise<void> {
+    let resumed = 0, failed = 0
     for (const snap of snapshots) {
       try {
         const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(snap.instanceId) as Record<string, unknown> | undefined
@@ -1313,37 +1248,36 @@ class OrchestratorService {
         const primaryTask = tasks[0]
         const now = Date.now()
 
-        // Re-lock tasks to this instance (they were cleared by startup reset)
-        for (const t of tasks) {
-          const history = JSON.parse((t.history as string) || '[]')
-          history.push({ action: 'reassigned', timestamp: now, agent: snap.instanceId, note: 'server restart resume' })
+        // Re-lock tasks and reserve instance transactionally
+        const ok = db.transaction(() => {
+          for (const t of tasks) {
+            const history = safeJsonParse<Record<string, unknown>[]>(t.history as string, [])
+            history.push({ action: 'reassigned', timestamp: now, agent: snap.instanceId, note: 'server restart resume' })
+            db.prepare(
+              "UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, history = ?, updated_at = ?, version = version + 1 WHERE id = ?"
+            ).run(snap.instanceId, now, JSON.stringify(history), now, t.id)
+          }
           db.prepare(
-            "UPDATE pipeline_tasks SET locked_by = ?, locked_at = ?, history = ?, updated_at = ? WHERE id = ?"
-          ).run(snap.instanceId, now, JSON.stringify(history), now, t.id)
-        }
+            `UPDATE instances SET process_state = 'reserved', state = 'running', reserved_at = ?,
+             assigned_task_ids = ?, version = version + 1
+             WHERE id = ?`
+          ).run(now, JSON.stringify(snap.lockedTaskIds), snap.instanceId)
+          return true
+        })()
 
-        // Mark instance as running so triggerAll() below won't double-assign it
-        db.prepare("UPDATE instances SET state = 'running' WHERE id = ?").run(snap.instanceId)
+        if (!ok) continue
 
         const cwd = (instance.cwd as string) || (folder.path as string)
-
         const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
         const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
 
-        // Model tiering for resumed sessions
         const role = instance.agent_role as string
         const roleModels = getRoleModels()
-        const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
-        if (!hasModelFlag && role && roleModels[role]) {
-          globalFlags.push(`--model=${roleModels[role]}`)
-        }
+        if (!globalFlags.some(f => f.startsWith('--model')) && role && roleModels[role]) globalFlags.push(`--model=${roleModels[role]}`)
 
-        // Tool scoping for resumed sessions
         const roleTools = getRoleTools()
         const rTools = roleTools[role]
-        if (rTools && !globalFlags.some(f => f.startsWith('--tools'))) {
-          globalFlags.push('--tools', rTools)
-        }
+        if (rTools && !globalFlags.some(f => f.startsWith('--tools'))) globalFlags.push('--tools', rTools)
 
         let agentPrompt: string | undefined
         if (instance.agent_id) {
@@ -1351,21 +1285,17 @@ class OrchestratorService {
           agentPrompt = agent?.content
         }
 
-        // Use lightweight resume prompt — agent already has context from prior session
         const prompt = this.buildPrompt(tasks, primaryTask, instance, folder, true)
 
-        console.log(`[orchestrator] Resuming "${primaryTask.title as string}" → instance ${snap.instanceId} (--resume ${snap.sessionId}, model: ${roleModels[role] || 'default'})`)
-
         try {
-          this.lastSendTime.set(snap.instanceId, Date.now())
           await sendMessage({ instanceId: snap.instanceId, text: prompt, cwd, sessionId: snap.sessionId, flags: globalFlags, agentPrompt, mcpConfigPath: getMcpConfigPath(role) })
+          resumed++
+          emitOrcLog({ type: 'session_resumed', instanceId: snap.instanceId, instanceName: instance.name as string, taskId: primaryTask.id as string, taskTitle: primaryTask.title as string, detail: `session=${snap.sessionId.slice(0, 8)}` })
         } catch (err) {
           console.error(`[orchestrator] resumeStaleInstances sendMessage failed for ${snap.instanceId}:`, err)
-          // Rollback: unlock tasks and reset instance to idle so triggerAll can reassign normally
-          for (const t of tasks) {
-            db.prepare('UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE id = ?').run(t.id)
-          }
-          db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(snap.instanceId)
+          failed++
+          // Rollback
+          this.rollbackReservation(snap.instanceId, snap.lockedTaskIds)
           continue
         }
 
@@ -1373,25 +1303,73 @@ class OrchestratorService {
         broadcastEvent({ type: 'pipeline:updated', payload: { projectId: snap.folderId } })
       } catch (err) {
         console.error('[orchestrator] resumeStaleInstances error for', snap.instanceId, err)
+        failed++
       }
     }
-
-    // Fresh assignments for any idle agents that had no in-progress work
+    console.log(`[orchestrator] resumeStaleInstances: ${resumed}/${snapshots.length} resumed, ${failed} failed`)
     await this.triggerAll()
   }
 
-  // Trigger assignment for all active folders (used at startup)
   async triggerAll(): Promise<void> {
     try {
-      const folders = db.prepare('SELECT * FROM folders WHERE orchestrator_active = 1').all() as Record<string, unknown>[]
+      const folders = db.prepare('SELECT id FROM folders WHERE orchestrator_active = 1').all() as { id: string }[]
       for (const folder of folders) {
-        await this.assignWork(folder.id as string)
+        await this.assignWork(folder.id)
       }
-      console.log(`[orchestrator] triggerAll — checked ${folders.length} active folders`)
     } catch (err) {
       console.error('[orchestrator] triggerAll error:', err)
     }
   }
+
+  clearDevLock(): void {
+    clearDevLock()
+  }
 }
 
 export const orchestrator = new OrchestratorService()
+
+// ── Process alive check (imported from process-registry) ──
+function isProcessAliveCheck(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ── Dev lockfile management ──
+const DEV_LOCK_DIR = path.join(os.homedir(), '.orcstrator')
+const DEV_LOCK_PATH = path.join(DEV_LOCK_DIR, 'dev.lock')
+
+export function updateDevLock(): void {
+  try {
+    const anyActive = (db.prepare('SELECT COUNT(*) as c FROM folders WHERE orchestrator_active = 1').get() as { c: number }).c > 0
+    const processesActive = processRegistry.getActiveCount() > 0
+    const shouldLock = anyActive || processesActive
+
+    if (shouldLock) {
+      if (!fs.existsSync(DEV_LOCK_PATH)) {
+        fs.mkdirSync(DEV_LOCK_DIR, { recursive: true })
+        fs.writeFileSync(DEV_LOCK_PATH, JSON.stringify({ pid: process.pid, since: Date.now() }))
+        console.log('[dev-lock] Created lockfile — restart blocked')
+      }
+    } else {
+      if (fs.existsSync(DEV_LOCK_PATH)) {
+        fs.unlinkSync(DEV_LOCK_PATH)
+        console.log('[dev-lock] Removed lockfile — restart allowed')
+      }
+    }
+  } catch (err) {
+    console.warn('[dev-lock] Error updating lockfile:', err)
+  }
+}
+
+export function clearDevLock(): void {
+  try {
+    if (fs.existsSync(DEV_LOCK_PATH)) {
+      fs.unlinkSync(DEV_LOCK_PATH)
+      console.log('[dev-lock] Cleared lockfile on shutdown')
+    }
+  } catch { /* ignore */ }
+}

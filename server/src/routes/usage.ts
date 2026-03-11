@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { getCurrentUsage, generateAuthUrl, exchangeCode, disconnect, fetchUsage } from '../services/usage-monitor.js'
+import { scanUntrackedSessions } from '../services/session-scanner.js'
 import { db } from '../db.js'
 import type { DailySavingsEntry, SavingsSummary, UsageTrendDay, UsageByColumn, UsageForecast, UsageAnomaly, UsageEfficiencyDay } from '@orcstrator/shared'
 
@@ -57,7 +58,13 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
       ORDER BY cost_usd DESC
     `).all(since) as Array<Record<string, number | string>>
 
-    return rows.map(r => ({
+    const dataMap = new Map(rows.map(r => [r.col as string, r]))
+    const PIPELINE_COLS = ['ready', 'in_progress', 'in_review']
+    for (const col of PIPELINE_COLS) {
+      if (!dataMap.has(col)) dataMap.set(col, { col, cost_usd: 0, sessions: 0 })
+    }
+
+    return Array.from(dataMap.values()).map(r => ({
       column: r.col as string,
       costUsd: Number(r.cost_usd) || 0,
       sessions: Number(r.sessions) || 0,
@@ -255,6 +262,28 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     } satisfies SavingsSummary
   })
 
+  // Last-hour cache multiplier (lightweight, polled frequently)
+  app.get('/usage/multiplier', async () => {
+    const since = Date.now() - 3_600_000 // 1 hour
+    const row = db.prepare(`
+      SELECT
+        COALESCE(SUM(input_tokens), 0) AS total_input,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read,
+        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation
+      FROM token_usage
+      WHERE created_at >= ?
+    `).get(since) as { total_input: number; cache_read: number; cache_creation: number }
+    const totalInput = Number(row.total_input) || 0
+    const cacheRead = Number(row.cache_read) || 0
+    const cacheCreation = Number(row.cache_creation) || 0
+    if (totalInput === 0) return { multiplier: 1, cacheRatio: 0, totalInput: 0, cacheRead: 0 }
+    const coldInput = Math.max(0, totalInput - cacheRead - cacheCreation)
+    const actualCost = coldInput + cacheCreation * 1.25 + cacheRead * 0.1
+    const cacheRatio = cacheRead / totalInput
+    const multiplier = actualCost > 0 ? Math.min(+(totalInput / actualCost).toFixed(1), 10) : 1
+    return { multiplier, cacheRatio: +(cacheRatio * 100).toFixed(1), totalInput, cacheRead }
+  })
+
   // Usage log with task and project names
   app.get('/usage/log', async (request) => {
     const { limit = '100', days } = request.query as Record<string, string>
@@ -269,13 +298,15 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       SELECT
         tu.session_id,
+        tu.instance_id,
         tu.role,
         tu.input_tokens,
         tu.output_tokens,
         tu.cost_usd,
         tu.created_at,
         pt.title AS task_title,
-        COALESCE(f.display_name, f.name) AS project_name
+        COALESCE(f.display_name, f.name) AS project_name,
+        i.name AS instance_name
       FROM token_usage tu
       LEFT JOIN pipeline_tasks pt ON tu.task_id = pt.id
       LEFT JOIN instances i ON tu.instance_id = i.id
@@ -422,6 +453,11 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.post('/usage/disconnect', async () => {
     disconnect()
     return { ok: true }
+  })
+
+  // Sync untracked direct CLI sessions into token_usage
+  app.post('/usage/sync-untracked', async () => {
+    return scanUntrackedSessions()
   })
 
   // Force refresh usage data

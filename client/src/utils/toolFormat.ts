@@ -1,4 +1,4 @@
-function shortenPath(path: string, max = 45): string {
+export function shortenPath(path: string, max = 45): string {
   if (!path) return ''
   // Normalize separators
   const normalized = path.replace(/\\/g, '/')

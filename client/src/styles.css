@@ -74,13 +74,17 @@
 
   /* Pipeline column colors */
   --col-backlog: #6b7280;
-  --col-scheduled: #6366f1;
+  --col-ready: #6366f1;
+  --col-in_progress: #3b82f6;
+  --col-in_review: #f59e0b;
+  --col-done: #6b7280;
+  --col-scheduled: #8b5cf6;
+  /* Legacy aliases — keep for components using var(--col-spec) etc. */
   --col-spec: #8b5cf6;
   --col-build: #3b82f6;
   --col-qa: #f59e0b;
   --col-staging: #ef4444;
   --col-ship: #10b981;
-  --col-done: #6b7280;
 }
 
 /* Light theme override */
@@ -179,8 +183,8 @@ body {
 /* === App Layout === */
 .app {
   display: flex;
-  height: 100vh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   overflow: hidden;
   background: var(--bg-primary);
 }
@@ -255,8 +259,7 @@ body {
 .orc-logo {
   width: 24px;
   height: 24px;
-  background: url(/spritesheets/orc.png) 0 0 / auto 24px no-repeat;
-  image-rendering: pixelated;
+  background: url(/logo.png) center / contain no-repeat;
   flex-shrink: 0;
 }
 
@@ -1344,6 +1347,70 @@ body {
   padding: 0 8px;
 }
 
+/* ── Quick command menu (</>  button) ── */
+.cmd-menu-wrap {
+  position: relative;
+}
+
+.cmd-trigger {
+  font-family: var(--font-mono) !important;
+  font-weight: 700;
+  font-size: 13px !important;
+  letter-spacing: -0.5px;
+}
+
+.cmd-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 230px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  z-index: 200;
+  padding: 4px 0;
+  animation: cmd-menu-in 0.15s ease-out;
+}
+
+@keyframes cmd-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.cmd-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: 12px;
+  transition: background 0.1s ease;
+}
+
+.cmd-menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.cmd-menu-cmd {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 11px;
+  min-width: 70px;
+}
+
+.cmd-menu-desc {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
 /* Message List */
 .message-list {
   flex: 1;
@@ -1587,6 +1654,170 @@ body {
 @keyframes wave-dot {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-6px); opacity: 1; }
+}
+
+/* === Thinking Indicator (Verbosity Levels 1-2) === */
+.thinking-indicator {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.thinking-indicator-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.thinking-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+}
+
+.thinking-wave span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: thinking-bounce 1.4s ease-in-out infinite;
+}
+
+.thinking-wave span:nth-child(1) { animation-delay: 0s; }
+.thinking-wave span:nth-child(2) { animation-delay: 0.15s; }
+.thinking-wave span:nth-child(3) { animation-delay: 0.3s; }
+.thinking-wave span:nth-child(4) { animation-delay: 0.45s; }
+.thinking-wave span:nth-child(5) { animation-delay: 0.6s; }
+
+@keyframes thinking-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-8px); opacity: 1; }
+}
+
+.thinking-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  animation: thinking-label-fade 0.3s ease-in-out;
+}
+
+@keyframes thinking-label-fade {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.thinking-tool-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent-muted);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.thinking-preview {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  max-height: 80px;
+  overflow: hidden;
+  padding-left: 34px;
+  line-height: 1.4;
+}
+
+.live-tool-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+}
+
+/* === Verbosity Dropdown (ChatHeader) === */
+.verbosity-menu-wrap {
+  position: relative;
+}
+
+.verbosity-trigger {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  gap: 4px;
+}
+
+.verbosity-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 240px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  z-index: 200;
+  padding: 4px 0;
+  animation: cmd-menu-in 0.15s ease-out;
+}
+
+.verbosity-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: 12px;
+  transition: background 0.1s ease;
+  position: relative;
+}
+
+.verbosity-option:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.verbosity-option.active {
+  color: var(--accent-text);
+}
+
+.verbosity-option.reset {
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+  padding-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  justify-content: center;
+}
+
+.verbosity-option-icon {
+  font-size: 14px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.verbosity-option-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  min-width: 60px;
+}
+
+.verbosity-option-desc {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  flex: 1;
+}
+
+.verbosity-option-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 /* === Activity Line (live tool label) === */
@@ -1918,6 +2149,181 @@ body {
 }
 
 .tool-call-show-more:hover { text-decoration: underline; }
+
+/* === Tool Call Formatted (tcf-*) === */
+.tcf-structured {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tcf-file-path {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: rgba(139, 92, 246, 0.15);
+  color: #c4b5fd;
+  padding: 2px 8px;
+  border-radius: 10px;
+  word-break: break-all;
+}
+
+.tcf-bash-command {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.08);
+  border-left: 3px solid #22c55e;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.tcf-code-block {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.25);
+  border-left: 3px solid var(--border);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.tcf-code-block.old {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.tcf-code-block.new {
+  border-left-color: #22c55e;
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.tcf-grep-pattern {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: rgba(251, 191, 36, 0.15);
+  color: #fcd34d;
+  padding: 2px 8px;
+  border-radius: 10px;
+  word-break: break-all;
+}
+
+.tcf-kv-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tcf-kv-chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.tcf-kv-key {
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+}
+
+.tcf-kv-val {
+  padding: 1px 5px;
+  color: var(--text-secondary);
+}
+
+.tcf-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.tcf-description {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-tertiary);
+}
+
+.tcf-json {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  max-height: 250px;
+  overflow-y: auto;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.tcf-key { color: #a78bfa; }
+.tcf-str { color: #6ee7b7; }
+.tcf-num { color: #fbbf24; }
+.tcf-bool { color: #60a5fa; }
+.tcf-null { color: #94a3b8; }
+.tcf-bracket { color: var(--text-muted); }
+
+/* Light theme overrides for tcf-* */
+[data-theme="light"] .tcf-file-path {
+  background: rgba(124, 58, 237, 0.1);
+  color: #7c3aed;
+}
+
+[data-theme="light"] .tcf-bash-command {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.06);
+  border-left-color: #16a34a;
+}
+
+[data-theme="light"] .tcf-code-block {
+  background: rgba(0, 0, 0, 0.04);
+  border-left-color: #d1d5db;
+}
+
+[data-theme="light"] .tcf-code-block.old {
+  border-left-color: #dc2626;
+  background: rgba(220, 38, 38, 0.04);
+}
+
+[data-theme="light"] .tcf-code-block.new {
+  border-left-color: #16a34a;
+  background: rgba(22, 163, 74, 0.04);
+}
+
+[data-theme="light"] .tcf-grep-pattern {
+  background: rgba(217, 119, 6, 0.1);
+  color: #b45309;
+}
+
+[data-theme="light"] .tcf-json {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .tcf-key { color: #7c3aed; }
+[data-theme="light"] .tcf-str { color: #059669; }
+[data-theme="light"] .tcf-num { color: #d97706; }
+[data-theme="light"] .tcf-bool { color: #2563eb; }
+[data-theme="light"] .tcf-null { color: #6b7280; }
+[data-theme="light"] .tcf-bracket { color: #9ca3af; }
 
 /* === Bash Block === */
 .bash-block {
@@ -2549,6 +2955,14 @@ body {
 
 .modal-footer .btn-danger-solid:hover {
   background: #b91c1c;
+}
+.modal-footer .btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.modal-footer .btn-primary:hover {
+  background: var(--accent-hover);
 }
 
 /* Form elements */
@@ -3286,7 +3700,6 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden;
 }
 
 .pipeline-header {
@@ -3364,6 +3777,7 @@ body {
 
 .pipeline-content {
   display: flex;
+  flex-direction: column;
   flex: 1;
   overflow: hidden;
 }
@@ -3371,9 +3785,12 @@ body {
 .pipeline-columns {
   display: flex;
   flex: 1;
-  overflow-x: auto;
+  min-height: 0;
+  align-items: stretch;
   padding: 16px;
   gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .orc-feed {
@@ -3396,7 +3813,13 @@ body {
 
 .orc-label {
   font-weight: 600;
-  color: var(--role-promoter, #3b82f6);
+  color: #22c55e;
+  font-size: 12px;
+}
+
+.human-label {
+  font-weight: 600;
+  color: #3b82f6;
   font-size: 12px;
 }
 
@@ -3450,15 +3873,14 @@ body {
 .orc-feed-entry.orc-feed-release .orc-feed-text { color: var(--role-tester, #f59e0b); }
 
 .pipeline-column {
-  min-width: 220px;
-  max-width: 280px;
+  min-width: 300px;
   flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--bg-secondary);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  overflow: hidden;
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
@@ -3478,12 +3900,11 @@ body {
 }
 
 .pipeline-column-header.backlog { border-bottom-color: var(--col-backlog); }
+.pipeline-column-header.ready { border-bottom-color: var(--col-ready); }
+.pipeline-column-header.in_progress { border-bottom-color: var(--col-in_progress); }
+.pipeline-column-header.in_review { border-bottom-color: var(--col-in_review); }
+.pipeline-column-header.done { border-bottom-color: var(--col-done); }
 .pipeline-column-header.scheduled { border-bottom-color: var(--col-scheduled); }
-.pipeline-column-header.spec { border-bottom-color: var(--col-spec); }
-.pipeline-column-header.build { border-bottom-color: var(--col-build); }
-.pipeline-column-header.qa { border-bottom-color: var(--col-qa); }
-.pipeline-column-header.staging { border-bottom-color: var(--col-staging); }
-.pipeline-column-header.ship { border-bottom-color: var(--col-ship); }
 .pipeline-column-header.done { border-bottom-color: var(--col-done); }
 
 /* Stuck task card */
@@ -3567,12 +3988,13 @@ body {
 }
 
 .pipeline-column-tasks {
-  flex: 1;
-  overflow-y: auto;
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .pipeline-add-btn {
@@ -3603,6 +4025,7 @@ body {
   cursor: grab;
   box-shadow: 0 1px 3px rgba(0,0,0,0.07);
   transition: all var(--transition-fast);
+  min-width: 0;
 }
 
 .task-card.dragging {
@@ -3636,11 +4059,14 @@ body {
 .task-priority-dot.p4 { background: var(--text-muted); }
 
 .task-card-title {
-  font-size: 15px;
+  font-family: var(--font-mono);
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
   flex: 1;
+  min-width: 0;
   line-height: 1.4;
+  word-break: break-word;
 }
 
 .task-card-footer {
@@ -3649,16 +4075,19 @@ body {
   justify-content: space-between;
   margin-top: 8px;
   gap: 6px;
+  min-width: 0;
 }
 
 .task-labels {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .task-label {
-  font-size: 16px;
+  font-size: 11px;
+  font-family: var(--font-mono);
   padding: 1px 6px;
   border-radius: 8px;
   background: var(--accent-muted);
@@ -3667,13 +4096,15 @@ body {
 }
 
 .task-agent-badge {
-  font-size: 16px;
+  font-size: 11px;
+  font-family: var(--font-mono);
   padding: 2px 8px;
   border-radius: 8px;
   background: var(--info-muted);
   color: var(--info);
   font-weight: 500;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Task Detail Panel */
@@ -3860,6 +4291,7 @@ body {
 .task-comment-author.role-builder { color: var(--role-builder); }
 .task-comment-author.role-tester  { color: var(--role-tester); }
 .task-comment-author.role-promoter{ color: var(--role-promoter); }
+.task-comment-author.human-label { color: #3b82f6; }
 
 .task-comment-time {
   font-size: 11px;
@@ -4623,6 +5055,30 @@ body {
   top: 0;
   min-width: 180px;
   z-index: 201;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  animation: fade-in 100ms ease;
+}
+
+.context-menu-item .submenu-arrow {
+  margin-left: auto;
+  opacity: 0.5;
+  font-size: 10px;
+}
+
+/* === Confirm Modal === */
+.confirm-modal {
+  max-width: 380px;
+  text-align: center;
+}
+.confirm-modal .modal-body {
+  padding: 16px 24px;
+}
+.confirm-modal .modal-footer {
+  padding: 12px 24px 16px;
 }
 
 /* === Modal Tabs === */
@@ -4710,8 +5166,52 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: width var(--transition-slow);
+  transition: width var(--transition-slow), box-shadow 0.4s ease, border-color 0.4s ease;
   position: relative;
+}
+
+/* Entrance animation on page load — mimics od-meter-entrance */
+@keyframes rs-entrance-anim {
+  0%   { opacity: 0; transform: translateX(30px) scale(0.96); }
+  40%  { opacity: 1; transform: translateX(-4px) scale(1.01); }
+  70%  { transform: translateX(2px) scale(0.99); }
+  100% { transform: translateX(0) scale(1); }
+}
+.right-sidebar.rs-entrance {
+  animation: rs-entrance-anim 1.2s ease-out forwards;
+}
+
+/* ── Right sidebar inherits overdrive tier glow ── */
+.right-sidebar.rs-od-warm {
+  animation: rs-entrance-anim 1.2s ease-out forwards, od-glow-warm 3s ease-in-out infinite;
+  animation-delay: 0s, 1.2s;
+  border-left-color: rgba(96,165,250,0.3);
+}
+.right-sidebar.rs-od-hot {
+  animation: rs-entrance-anim 1.2s ease-out forwards, od-glow-hot 2.5s ease-in-out infinite;
+  animation-delay: 0s, 1.2s;
+  border-left-color: rgba(34,211,238,0.4);
+}
+.right-sidebar.rs-od-blazing {
+  animation: rs-entrance-anim 1.2s ease-out forwards, od-glow-blazing 2s ease-in-out infinite;
+  animation-delay: 0s, 1.2s;
+  border-left-color: rgba(249,115,22,0.4);
+}
+.right-sidebar.rs-od-overdrive {
+  animation: rs-entrance-anim 1.2s ease-out forwards, od-glow-overdrive 1.5s ease-in-out infinite;
+  animation-delay: 0s, 1.2s;
+  border-left-color: rgba(239,68,68,0.4);
+}
+.right-sidebar.rs-od-supernova {
+  animation: rs-entrance-anim 1.2s ease-out forwards, od-glow-supernova 1s ease-in-out infinite;
+  animation-delay: 0s, 1.2s;
+  border-left-color: rgba(249,115,22,0.4) !important;
+}
+
+/* Paused state — entrance still plays but tier glow is killed */
+.right-sidebar.od-anim-paused {
+  animation: rs-entrance-anim 1.2s ease-out forwards !important;
+  box-shadow: none !important;
 }
 
 .right-sidebar.rs-collapsed {
@@ -5060,6 +5560,44 @@ body {
 .rs-orc-log-spawn_failed .rs-orc-log-text { color: var(--danger); }
 .rs-orc-log-lock_timeout .rs-orc-log-text { color: var(--warning); }
 .rs-orc-log-session_resumed .rs-orc-log-text { color: var(--role-planner); }
+.rs-orc-log-zombie_detected .rs-orc-log-text { color: var(--danger); }
+.rs-orc-log-adopted_dead .rs-orc-log-text { color: var(--warning); }
+.rs-orc-log-sweep_ran .rs-orc-log-text { color: var(--text-tertiary); }
+.rs-orc-log-safety_sweep .rs-orc-log-text { color: var(--text-tertiary); }
+.rs-orc-log-no_idle_agents .rs-orc-log-text { color: var(--text-tertiary); }
+.rs-orc-log-cooldown_hit .rs-orc-log-text { color: var(--warning); }
+.rs-orc-log-concurrency_limit .rs-orc-log-text { color: var(--warning); }
+.rs-orc-log-token_recorded .rs-orc-log-text { color: var(--text-secondary); }
+
+/* Filter buttons */
+.rs-orc-log-filters {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.rs-orc-filter-btn {
+  background: none;
+  border: 1px solid var(--bg-tertiary);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.rs-orc-filter-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+}
+
+.rs-orc-filter-btn.active {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border-color: var(--accent);
+}
 
 /* ============================================
    GAME DASHBOARD (off-mode view)
@@ -5953,60 +6491,70 @@ body {
   .od-meter-fill::after,
   .od-value-pop,
   .od-meter-levelup,
-  .od-fill-fire {
+  .od-fill-fire,
+  .right-sidebar.rs-entrance,
+  .right-sidebar.rs-od-warm,
+  .right-sidebar.rs-od-hot,
+  .right-sidebar.rs-od-blazing,
+  .right-sidebar.rs-od-overdrive,
+  .right-sidebar.rs-od-supernova {
     animation: none !important;
   }
 }
 
 .rs-footer {
   margin-top: auto;
-  padding: 10px 14px;
+  padding: 8px 10px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
-.rs-settings-btn {
-  flex: 1;
+.rs-footer-btn {
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
-  font-size: 12px;
-  padding: 7px 12px;
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
-  text-align: left;
-}
-
-.rs-settings-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--border-hover);
-  background: var(--bg-hover);
-}
-
-.rs-shutdown-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-tertiary);
   font-size: 14px;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  padding: 6px;
   cursor: pointer;
-  flex-shrink: 0;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+  flex: 1;
+  text-align: center;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.rs-footer-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-hover);
+  color: var(--text-primary);
 }
 
-.rs-shutdown-btn:hover {
+.rs-footer-btn.rs-shutdown-btn:hover {
   color: var(--danger, #ef4444);
   border-color: var(--danger, #ef4444);
   background: rgba(239, 68, 68, 0.08);
 }
+
+.rs-footer-tip-wrap { position: relative; display: inline-flex; flex: 1; }
+.rs-footer-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 3px 7px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-secondary);
+  z-index: 30;
+  pointer-events: none;
+}
+.rs-footer-tip-wrap:hover .rs-footer-tip,
+.rs-footer-tip-wrap.rs-tip-active .rs-footer-tip { display: block; }
 
 /* === Responsive === */
 @media (max-width: 900px) {
@@ -6523,9 +7071,10 @@ body {
   100% { transform: rotate(0deg) scale(0.65) translateY(6px); opacity: 0; filter: brightness(0) saturate(0); }
 }
 .instance-item.anim-remove {
-  animation: instance-remove-out 3.5s ease-in forwards;
+  animation: instance-remove-out 1.2s ease-in forwards;
   overflow: hidden;
   will-change: transform, opacity;
+  pointer-events: none;
 }
 .instance-item.anim-remove::after {
   content: 'X';
@@ -6735,12 +7284,11 @@ body {
 }
 
 .monster-card.backlog::before { background: var(--col-backlog); }
+.monster-card.ready::before { background: var(--col-ready); }
+.monster-card.in_progress::before { background: var(--col-in_progress); }
+.monster-card.in_review::before { background: var(--col-in_review); }
+.monster-card.done::before { background: var(--col-done); }
 .monster-card.scheduled::before { background: var(--col-scheduled); }
-.monster-card.spec::before { background: var(--col-spec); }
-.monster-card.build::before { background: var(--col-build); }
-.monster-card.qa::before { background: var(--col-qa); }
-.monster-card.staging::before { background: var(--col-staging); }
-.monster-card.ship::before { background: var(--col-ship); }
 .monster-card.done::before { background: var(--col-done); }
 
 /* Terminal block for code display */
@@ -7518,4 +8066,749 @@ body {
 }
 .usage-rec-info {
   border-left: 3px solid #3498db;
+}
+
+/* ═══════════════════════════════════════════
+   Star Power — screen-wide overdrive level-up celebration (10s)
+   Mario-star inspired: rainbow cycling, glow, everything sparkles
+   ═══════════════════════════════════════════ */
+
+@keyframes star-power-rainbow {
+  0%   { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+@keyframes star-power-border-glow {
+  0%   { box-shadow: inset 0 0 30px rgba(255, 215, 0, 0.15), 0 0 60px rgba(255, 215, 0, 0.08); }
+  25%  { box-shadow: inset 0 0 30px rgba(0, 255, 128, 0.15), 0 0 60px rgba(0, 255, 128, 0.08); }
+  50%  { box-shadow: inset 0 0 30px rgba(64, 160, 255, 0.15), 0 0 60px rgba(64, 160, 255, 0.08); }
+  75%  { box-shadow: inset 0 0 30px rgba(200, 80, 255, 0.15), 0 0 60px rgba(200, 80, 255, 0.08); }
+  100% { box-shadow: inset 0 0 30px rgba(255, 215, 0, 0.15), 0 0 60px rgba(255, 215, 0, 0.08); }
+}
+
+@keyframes star-power-flash-in {
+  0%   { opacity: 0.6; }
+  100% { opacity: 0; }
+}
+
+@keyframes star-power-sparkle {
+  0%, 100% { opacity: 0; transform: scale(0); }
+  50%      { opacity: 1; transform: scale(1); }
+}
+
+/* Flash overlay on activation */
+body.star-power::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(255, 255, 200, 0.6) 0%, transparent 70%);
+  animation: star-power-flash-in 0.8s ease-out forwards;
+}
+
+/* Persistent rainbow cycling on the whole app */
+body.star-power .app-layout {
+  animation: star-power-rainbow 2s linear infinite, star-power-border-glow 3s ease-in-out infinite;
+}
+
+/* Instance items get rainbow outlines */
+body.star-power .instance-item {
+  border-color: gold !important;
+  animation: star-power-rainbow 1.5s linear infinite;
+  box-shadow: 0 0 10px rgba(255, 215, 0, 0.4), 0 0 20px rgba(255, 215, 0, 0.15) !important;
+}
+
+/* Sidebar and panels get the glow */
+body.star-power .sidebar,
+body.star-power .right-sidebar {
+  animation: star-power-border-glow 2.5s ease-in-out infinite;
+}
+
+/* Message bubbles catch the rainbow */
+body.star-power .message-bubble {
+  animation: star-power-rainbow 2.5s linear infinite;
+  border-color: rgba(255, 215, 0, 0.3) !important;
+}
+
+/* Pipeline cards join the party */
+body.star-power .pipeline-card,
+body.star-power .task-card {
+  animation: star-power-rainbow 2s linear infinite;
+  border-color: gold !important;
+}
+
+/* Chat header and input glow */
+body.star-power .chat-header,
+body.star-power .message-input-container {
+  animation: star-power-border-glow 3s ease-in-out infinite;
+}
+
+/* State dots shimmer gold */
+body.star-power .instance-state-dot {
+  background: gold !important;
+  box-shadow: 0 0 8px rgba(255, 215, 0, 0.8);
+  animation: star-power-rainbow 0.8s linear infinite;
+}
+
+/* Buttons get highlighted */
+body.star-power button {
+  transition: all 0.3s ease;
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.3);
+}
+
+/* Scrollbar goes gold */
+body.star-power ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, gold, #ff8c00, gold) !important;
+}
+
+/* Folder groups and headers */
+body.star-power .folder-group,
+body.star-power .folder-header {
+  animation: star-power-rainbow 2s linear infinite;
+  border-color: gold !important;
+}
+
+/* Folder add button */
+body.star-power .folder-add-btn {
+  animation: star-power-rainbow 2s linear infinite;
+}
+
+/* Terminal panel */
+body.star-power .terminal-panel,
+body.star-power .terminal-panel-header {
+  animation: star-power-border-glow 2s ease-in-out infinite;
+}
+
+/* Message list */
+body.star-power .message-list {
+  animation: star-power-rainbow 3s linear infinite;
+}
+
+/* Connection status — fast cycle */
+body.star-power .connection-status {
+  animation: star-power-rainbow 0.6s linear infinite;
+}
+
+/* Modals */
+body.star-power .modal-panel,
+body.star-power .modal-header {
+  animation: star-power-border-glow 2s ease-in-out infinite;
+  border-color: gold !important;
+}
+
+/* Command menu */
+body.star-power .command-menu {
+  animation: star-power-rainbow 1.5s linear infinite;
+  border-color: gold !important;
+}
+
+/* Pipeline board and columns */
+body.star-power .pipeline-board {
+  animation: star-power-rainbow 2.5s linear infinite;
+}
+
+body.star-power .pipeline-column {
+  animation: star-power-border-glow 2s ease-in-out infinite;
+}
+
+body.star-power .pipeline-column-header {
+  border-bottom-color: gold !important;
+  animation: star-power-rainbow 1.5s linear infinite;
+}
+
+/* Overdrive badge — fast shimmer */
+body.star-power .od-badge-wrap {
+  animation: star-power-rainbow 0.5s linear infinite;
+}
+
+/* Role labels */
+body.star-power .instance-role-label {
+  animation: star-power-rainbow 1s linear infinite;
+}
+
+/* Activity bubble */
+body.star-power .activity-bubble {
+  animation: star-power-rainbow 2s linear infinite;
+}
+
+/* Pipeline board button */
+body.star-power .pipeline-board-btn {
+  animation: star-power-rainbow 2s linear infinite;
+}
+
+/* OD meter section */
+body.star-power .od-meter-section { animation: star-power-rainbow 1.5s linear infinite; border-color: gold !important; }
+
+/* RS sections */
+body.star-power .rs-section { animation: star-power-border-glow 2.5s ease-in-out infinite; }
+
+/* Settings page */
+body.star-power .settings-page-header,
+body.star-power .settings-page-tabs { animation: star-power-border-glow 2.5s ease-in-out infinite; border-color: gold !important; }
+
+/* Usage page */
+body.star-power .usage-page,
+body.star-power .usage-kpi-card { animation: star-power-rainbow 2s linear infinite; }
+
+/* Game panels */
+body.star-power .game-dashboard,
+body.star-power .game-screen { animation: star-power-rainbow 2s linear infinite; border-color: gold !important; }
+
+/* XP bars */
+body.star-power .xp-bar-track { animation: star-power-rainbow 1.2s linear infinite; }
+body.star-power .xp-bar-fill { animation: star-power-rainbow 0.8s linear infinite; }
+
+/* Task detail and blueprint editor */
+body.star-power .task-detail-panel,
+body.star-power .blueprint-editor-modal { animation: star-power-border-glow 2s ease-in-out infinite; border-color: gold !important; }
+
+/* All-projects kanban */
+body.star-power .all-kanban,
+body.star-power .all-kanban-header { animation: star-power-rainbow 2.5s linear infinite; }
+
+/* OrcDashboard, Agents, Sidebar nav, Tool calls, Thinking, Usage, Main content */
+body.star-power .orc-dash { animation: star-power-rainbow 2s linear infinite; border-color: gold !important; }
+body.star-power .orc-dash-status { animation: star-power-border-glow 2s ease-in-out infinite; }
+body.star-power .agents-page { animation: star-power-rainbow 2.5s linear infinite; }
+body.star-power .sidebar-nav-links { animation: star-power-border-glow 2s ease-in-out infinite; }
+body.star-power .sidebar-nav-btn { animation: star-power-rainbow 1s linear infinite; border-color: gold !important; }
+body.star-power .tool-call-block { animation: star-power-rainbow 1.5s linear infinite; border-color: gold !important; }
+body.star-power .thinking-indicator { animation: star-power-rainbow 0.8s linear infinite; }
+body.star-power .usage-section { animation: star-power-border-glow 2s ease-in-out infinite; }
+body.star-power .main-content { animation: star-power-border-glow 3s ease-in-out infinite; }
+
+/* Smooth fade-out — transition block for all star-power elements */
+body.star-power .app-layout,
+body.star-power .instance-item,
+body.star-power .sidebar,
+body.star-power .right-sidebar,
+body.star-power .message-bubble,
+body.star-power .pipeline-card,
+body.star-power .task-card,
+body.star-power .chat-header,
+body.star-power .message-input-container,
+body.star-power .instance-state-dot,
+body.star-power .folder-group,
+body.star-power .folder-header,
+body.star-power .folder-add-btn,
+body.star-power .terminal-panel,
+body.star-power .terminal-panel-header,
+body.star-power .message-list,
+body.star-power .connection-status,
+body.star-power .modal-panel,
+body.star-power .modal-header,
+body.star-power .command-menu,
+body.star-power .pipeline-board,
+body.star-power .pipeline-column,
+body.star-power .pipeline-column-header,
+body.star-power .od-badge-wrap,
+body.star-power .instance-role-label,
+body.star-power .activity-bubble,
+body.star-power .pipeline-board-btn,
+body.star-power .od-meter-section,
+body.star-power .rs-section,
+body.star-power .settings-page-header,
+body.star-power .settings-page-tabs,
+body.star-power .usage-page,
+body.star-power .usage-kpi-card,
+body.star-power .game-dashboard,
+body.star-power .game-screen,
+body.star-power .xp-bar-track,
+body.star-power .xp-bar-fill,
+body.star-power .task-detail-panel,
+body.star-power .blueprint-editor-modal,
+body.star-power .all-kanban,
+body.star-power .all-kanban-header,
+body.star-power .orc-dash,
+body.star-power .orc-dash-status,
+body.star-power .agents-page,
+body.star-power .sidebar-nav-links,
+body.star-power .sidebar-nav-btn,
+body.star-power .tool-call-block,
+body.star-power .thinking-indicator,
+body.star-power .usage-section,
+body.star-power .main-content {
+  transition: all 0.8s ease-out;
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  body.star-power .app-layout,
+  body.star-power .instance-item,
+  body.star-power .sidebar,
+  body.star-power .right-sidebar,
+  body.star-power .message-bubble,
+  body.star-power .pipeline-card,
+  body.star-power .task-card,
+  body.star-power .chat-header,
+  body.star-power .message-input-container,
+  body.star-power .instance-state-dot,
+  body.star-power .folder-group,
+  body.star-power .folder-header,
+  body.star-power .folder-add-btn,
+  body.star-power .terminal-panel,
+  body.star-power .terminal-panel-header,
+  body.star-power .message-list,
+  body.star-power .connection-status,
+  body.star-power .modal-panel,
+  body.star-power .modal-header,
+  body.star-power .command-menu,
+  body.star-power .pipeline-board,
+  body.star-power .pipeline-column,
+  body.star-power .pipeline-column-header,
+  body.star-power .od-badge-wrap,
+  body.star-power .instance-role-label,
+  body.star-power .activity-bubble,
+  body.star-power .pipeline-board-btn,
+  body.star-power .od-meter-section,
+  body.star-power .rs-section,
+  body.star-power .settings-page-header,
+  body.star-power .settings-page-tabs,
+  body.star-power .usage-page,
+  body.star-power .usage-kpi-card,
+  body.star-power .game-dashboard,
+  body.star-power .game-screen,
+  body.star-power .xp-bar-track,
+  body.star-power .xp-bar-fill,
+  body.star-power .task-detail-panel,
+  body.star-power .blueprint-editor-modal,
+  body.star-power .orc-dash,
+  body.star-power .orc-dash-status,
+  body.star-power .agents-page,
+  body.star-power .sidebar-nav-links,
+  body.star-power .sidebar-nav-btn,
+  body.star-power .tool-call-block,
+  body.star-power .thinking-indicator,
+  body.star-power .usage-section,
+  body.star-power .main-content {
+    animation: none !important;
+  }
+  body.star-power::before {
+    display: none;
+  }
+}
+
+/* ============================================
+   ANIMATION TIER CSS GATING
+   ============================================ */
+
+/* Tier 0: kill all animations and transitions */
+[data-anim-tier="0"] .instance-item[class*="anim-"] { animation: none !important; }
+[data-anim-tier="0"] .instance-item[class*="anim-"]::before,
+[data-anim-tier="0"] .instance-item[class*="anim-"]::after { display: none !important; }
+[data-anim-tier="0"] .overdrive-fire-canvas { display: none !important; }
+
+/* Tier 1: CSS transitions only, no keyframe animations */
+[data-anim-tier="1"] .instance-item[class*="anim-"] { animation: none !important; }
+[data-anim-tier="1"] .instance-item[class*="anim-"]::before,
+[data-anim-tier="1"] .instance-item[class*="anim-"]::after { display: none !important; }
+[data-anim-tier="1"] .overdrive-fire-canvas { display: none !important; }
+
+/* ============================================
+   VFX OVERLAY
+   ============================================ */
+
+@keyframes vfx-float-up {
+  0%   { transform: translateY(0) scale(1); opacity: 1; }
+  100% { transform: translateY(-60px) scale(1.2); opacity: 0; }
+}
+
+
+/* ============================================
+   ORC DASHBOARD (Operations Overview)
+   ============================================ */
+
+.orc-dash {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-primary);
+}
+
+/* --- Status Bar --- */
+.orc-dash-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.orc-dash-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-primary) 50%, var(--bg-secondary));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+}
+
+.orc-dash-pill strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.orc-dash-pulse {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: orc-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes orc-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+}
+
+/* --- Main Grid --- */
+.orc-dash-grid {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.orc-dash-left {
+  flex: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+}
+
+.orc-dash-right {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* --- Sections --- */
+.orc-dash-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+.orc-dash-section:last-child {
+  border-bottom: none;
+}
+
+.orc-dash-section-label {
+  padding: 6px 10px;
+  font-family: var(--font-pixel, var(--font-mono));
+  font-size: 8px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.orc-dash-empty {
+  padding: 12px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.orc-dash-all-clear {
+  color: #22c55e;
+}
+
+/* --- Active Agents Table --- */
+.orc-dash-table {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.orc-dash-table-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-primary);
+  z-index: 1;
+}
+
+.orc-dash-table-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  transition: background 0.1s;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.orc-dash-table-row:hover {
+  background: var(--bg-hover);
+}
+
+.orc-dash-cell-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Context health dot */
+.orc-dash-ctx-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.orc-dash-ctx-dot.ctx-cold   { background: #6b7280; }
+.orc-dash-ctx-dot.ctx-fresh  { background: #22c55e; }
+.orc-dash-ctx-dot.ctx-warm   { background: #f59e0b; }
+.orc-dash-ctx-dot.ctx-heavy  { background: #ef4444; }
+.orc-dash-ctx-dot.ctx-stale  { background: #9ca3af; }
+
+/* --- Project Status Bars --- */
+.orc-dash-projects {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 2px 0;
+}
+
+.orc-dash-project-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.orc-dash-project-row:hover {
+  background: var(--bg-hover);
+}
+
+.orc-dash-proj-name {
+  width: 130px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.orc-dash-orc-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+
+.orc-dash-bar-wrap {
+  flex: 1;
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+}
+
+.orc-dash-bar-seg {
+  height: 100%;
+  min-width: 3px;
+  opacity: 0.85;
+  transition: flex 0.3s;
+}
+
+.orc-dash-proj-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  width: 80px;
+  justify-content: flex-end;
+}
+
+.orc-dash-proj-running {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.orc-dash-proj-count {
+  color: var(--text-muted);
+}
+
+.orc-dash-proj-cost {
+  color: var(--text-tertiary);
+}
+
+/* --- Alerts --- */
+.orc-dash-alerts {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.orc-dash-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+  transition: background 0.1s;
+}
+
+.orc-dash-alert:hover {
+  background: var(--bg-hover);
+}
+
+.orc-dash-alert-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+}
+
+.orc-dash-alert-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orc-dash-alert-detail {
+  font-size: 9px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.orc-dash-alert-proj {
+  font-size: 9px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orc-dash-alert-red .orc-dash-alert-title { color: #ef4444; }
+.orc-dash-alert-orange .orc-dash-alert-title { color: #f97316; }
+.orc-dash-alert-yellow .orc-dash-alert-title { color: #eab308; }
+
+/* --- Activity Log --- */
+.orc-dash-log-filters {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.orc-dash-filter-btn {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.orc-dash-filter-btn:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.orc-dash-filter-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.orc-dash-log-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 2px;
+}
+
+.orc-dash-log-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.orc-dash-log-time {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  width: 28px;
+  text-align: right;
+  font-size: 9px;
+}
+
+.orc-dash-log-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Color-code error-type log entries */
+.orc-dash-log-spawn_failed .orc-dash-log-text,
+.orc-dash-log-task_stuck .orc-dash-log-text,
+.orc-dash-log-lock_timeout .orc-dash-log-text,
+.orc-dash-log-zombie_detected .orc-dash-log-text {
+  color: #ef4444;
+}
+
+.orc-dash-log-assigned .orc-dash-log-text {
+  color: #22c55e;
+}
+
+.orc-dash-log-process_exited .orc-dash-log-text {
+  color: #60a5fa;
 }

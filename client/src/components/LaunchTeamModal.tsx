@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import type { FolderConfig } from '@shared/types'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { useAgentNames } from '../hooks/useAgentNames'
 import { api } from '../api'
 import { randomName } from '../utils/naming'
 
@@ -22,7 +23,7 @@ interface TeamRow {
 export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
   const { settings } = useUI()
   const { dispatch } = useAppDispatch()
-  const agentNames = settings.orchestratorAgentNames || { planner: 'Planner', builder: 'Builder', tester: 'Tester', promoter: 'Promoter' }
+  const agentNames = useAgentNames()
 
   const [rows, setRows] = useState<TeamRow[]>(
     ROLES.map(role => ({ role, specialization: '', include: true }))
@@ -58,6 +59,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
 
       if (!folder.expanded) {
         dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
+        api.updateFolder(folder.id, { expanded: true }).catch(console.error)
       }
       onClose()
     } catch (err) {

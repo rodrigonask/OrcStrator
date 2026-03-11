@@ -82,7 +82,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="terminal-panel">
       <div className="terminal-panel-header">
-        <span className="terminal-panel-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>Terminal</span>
+        <span className="terminal-panel-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 8 }}>The Black Box</span>
         <div className="terminal-tabs">
           <button
             className={`terminal-tab ${tab === 'bash' ? 'active' : ''}`}
@@ -93,7 +93,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
             onClick={() => setTab('stream')}
           ><span style={{ fontFamily: 'var(--font-mono)', fontSize: 7 }}>Stream</span></button>
         </div>
-        <button className="terminal-panel-close" onClick={onClose} title="Close terminal">✕</button>
+        <button className="terminal-panel-close" onClick={onClose} title="Close the Black Box">✕</button>
       </div>
 
       {tab === 'bash' ? (

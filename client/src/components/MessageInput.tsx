@@ -4,6 +4,8 @@ import { useMessages } from '../context/MessagesContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
+import { useFeatureGate } from '../hooks/useFeatureGate'
+import { FeatureLockedModal } from './tour/FeatureLockedModal'
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -11,17 +13,25 @@ const MODELS = [
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
 ]
 
+const DRAFT_KEY = (id: string) => 'draft-' + id
+
 export function MessageInput() {
   const { selectedInstanceId: instanceId } = useUI()
   const { streamingContent } = useMessages()
   const { instances, folders } = useInstances()
   const { dispatch, sendMessage } = useAppDispatch()
   const { addXp } = useGame()
-  const [text, setText] = useState('')
+  const planModeGate = useFeatureGate('plan-mode')
+  const [text, setText] = useState(() => {
+    if (!instanceId) return ''
+    return sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? ''
+  })
   const [planMode, setPlanMode] = useState(false)
   const [model, setModel] = useState('claude-sonnet-4-6')
   const [images, setImages] = useState<{ base64: string; mediaType: string }[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prevInstanceRef = useRef<string | null>(instanceId ?? null)
 
   const isStreaming = instanceId ? !!streamingContent?.[instanceId] : false
 
@@ -42,11 +52,51 @@ export function MessageInput() {
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }, [text])
 
+  // Debounced save draft to sessionStorage (5s after last keystroke)
+  useEffect(() => {
+    if (!instanceId) return
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    draftTimerRef.current = setTimeout(() => {
+      if (text) {
+        sessionStorage.setItem(DRAFT_KEY(instanceId), text)
+      } else {
+        sessionStorage.removeItem(DRAFT_KEY(instanceId))
+      }
+    }, 5000)
+    return () => { if (draftTimerRef.current) clearTimeout(draftTimerRef.current) }
+  }, [text, instanceId])
+
+  // Restore draft when switching instances
+  useEffect(() => {
+    const prev = prevInstanceRef.current
+    prevInstanceRef.current = instanceId ?? null
+    // Flush previous instance draft immediately before switching
+    if (prev && prev !== instanceId) {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      // `text` in this closure is the old instance's text
+      if (text) {
+        sessionStorage.setItem(DRAFT_KEY(prev), text)
+      } else {
+        sessionStorage.removeItem(DRAFT_KEY(prev))
+      }
+    }
+    // Restore draft for new instance
+    if (instanceId) {
+      setText(sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? '')
+    } else {
+      setText('')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId])
+
   const handleSend = useCallback(() => {
     if (!instanceId || (!text.trim() && images.length === 0)) return
     const messageText = planMode ? 'Use plan mode. ' + text.trim() : text.trim()
     sendMessage(instanceId, messageText, images.map(i => i.base64), [`--model=${model}`])
     addXp('message-sent')
+    // Clear draft from sessionStorage
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    sessionStorage.removeItem(DRAFT_KEY(instanceId))
     setText('')
     setImages([])
     setPlanMode(false)
@@ -60,7 +110,7 @@ export function MessageInput() {
     // Shift+Tab toggles plan mode
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault()
-      setPlanMode(p => !p)
+      if (planModeGate.check()) setPlanMode(p => !p)
     }
   }, [handleSend])
 
@@ -177,7 +227,7 @@ export function MessageInput() {
           <input
             type="checkbox"
             checked={planMode}
-            onChange={e => setPlanMode(e.target.checked)}
+            onChange={e => { if (planModeGate.check()) setPlanMode(e.target.checked) }}
           />
           Plan Mode (Shift+Tab)
         </label>
@@ -198,6 +248,10 @@ export function MessageInput() {
         </div>
         <span className="input-hint" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>Enter to send, Shift+Enter for newline</span>
       </div>
+
+      {planModeGate.showLockedModal && planModeGate.gate && (
+        <FeatureLockedModal gate={planModeGate.gate} onClose={planModeGate.dismissModal} />
+      )}
     </div>
   )
 }

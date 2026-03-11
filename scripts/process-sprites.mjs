@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 
 const SRC = 'C:/Users/Rodrigo Nask/Desktop/Sprites';
-const DEST = 'C:/agents/nasklaude/client/public/spritesheets';
+const DEST = 'C:/agents/orcstrator/client/public/spritesheets';
 
 const FRAME_SIZE = 128;
 

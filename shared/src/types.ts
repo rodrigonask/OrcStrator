@@ -1,3 +1,7 @@
+// === VERBOSITY ===
+
+export type VerbosityLevel = 1 | 2 | 3 | 4 | 5
+
 // === FOLDERS & INSTANCES ===
 
 export interface FolderConfig {
@@ -19,6 +23,8 @@ export interface FolderConfig {
   stealthMode?: boolean
 }
 
+export type ProcessState = 'idle' | 'reserved' | 'spawning' | 'running' | 'exiting'
+
 export interface InstanceConfig {
   id: string
   folderId: string
@@ -26,6 +32,7 @@ export interface InstanceConfig {
   cwd: string
   sessionId?: string
   state: 'idle' | 'running' | 'paused'
+  processState?: ProcessState
   agentId?: string
   idleRestartMinutes: number
   sortOrder: number
@@ -42,6 +49,7 @@ export interface InstanceConfig {
   overdriveStartedAt?: number
   lastTaskAt?: number
   contextHealth?: 'cold' | 'fresh' | 'warm' | 'heavy' | 'stale'
+  ctxTokens?: number
 }
 
 // === CHAT MESSAGES ===
@@ -156,7 +164,22 @@ export interface UsageEfficiencyDay {
 
 // === PIPELINE ===
 
-export type PipelineColumn = 'backlog' | 'scheduled' | 'spec' | 'build' | 'qa' | 'ship' | 'done'
+export type PipelineColumn = 'backlog' | 'ready' | 'in_progress' | 'in_review' | 'done' | 'scheduled'
+
+export interface BlueprintStep {
+  role: string           // 'planner' | 'builder' | 'tester' | 'promoter' | 'scheduler'
+  agentId?: string       // optional FK to agents table
+  instruction?: string   // default instruction for this step
+}
+
+export interface PipelineBlueprint {
+  id: string
+  name: string
+  steps: BlueprintStep[]
+  isDefault: boolean
+  createdAt: number
+  updatedAt: number
+}
 
 export interface TaskAttachment {
   id: string
@@ -227,6 +250,11 @@ export interface PipelineTask {
   totalInputTokens?: number
   totalOutputTokens?: number
   totalCostUsd?: number
+  pipelineId?: string
+  currentStep?: number          // 1-indexed
+  totalSteps?: number
+  currentStepRole?: string      // denormalized for efficient DB query
+  stepInstructions?: Record<string, string>  // "1" → instruction override
 }
 
 export interface TaskComment {
@@ -238,7 +266,7 @@ export interface TaskComment {
 }
 
 export interface TaskHistoryEntry {
-  action: 'created' | 'moved' | 'claimed' | 'blocked' | 'unblocked' | 'edited' | 'completed'
+  action: 'created' | 'moved' | 'claimed' | 'blocked' | 'unblocked' | 'edited' | 'completed' | 'pipeline reset' | 'pipeline changed'
   timestamp: number
   agent?: string
   from?: string
@@ -272,6 +300,7 @@ export interface AgentConfig {
   mcpServers: string[]
   personality?: AgentPersonality | null
   source?: 'user' | 'native'
+  role?: string        // agent's default role (planner/builder/tester/promoter/scheduler)
   createdAt: number
 }
 
@@ -321,8 +350,11 @@ export interface AppSettings {
   columnLabels?: Partial<Record<PipelineColumn, string>>
   animationsEnabled?: boolean
   soundsEnabled?: boolean
+  animationTier?: 0 | 1 | 2 | 3 | 4
+  soundTier?: 0 | 1 | 2 | 3 | 4
   namingTheme?: 'fruits' | 'rpg' | 'wow' | 'memes'
   maxConcurrentProcesses?: number
+  verbosity?: VerbosityLevel
 }
 
 // === USAGE MONITORING ===
@@ -366,6 +398,44 @@ export type XpEventType =
   | 'tour-step' | 'challenge' | 'agent-created' | 'skill-created'
   | 'message-sent' | 'session-complete'
   | 'lesson-completed' | 'knowledge-base-created' | 'first-pipeline-task'
+
+// === ORCHESTRATOR LOG ===
+
+export type OrcLogEventType =
+  | 'assigned' | 'task_moved' | 'task_stuck'
+  | 'cooldown_hit' | 'concurrency_limit' | 'lock_timeout'
+  | 'spawn_failed' | 'zombie_detected'
+  | 'sweep_ran' | 'session_resumed'
+  | 'no_idle_agents'
+
+export interface OrcLogEntry {
+  id: number
+  type: OrcLogEventType | string
+  timestamp: number
+  instanceId?: string
+  instanceName?: string
+  taskId?: string
+  taskTitle?: string
+  detail?: string
+}
+
+export type OrcLogFilter = 'all' | 'errors' | 'assignments'
+
+// === SESSION FILES ===
+
+export interface SessionFile {
+  sessionId: string
+  instanceId?: string
+  instanceName?: string
+  folderId?: string
+  folderName?: string
+  folderEmoji?: string
+  mtime: number
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  lineCount: number
+}
 
 // === WEBSOCKET MESSAGES ===
 

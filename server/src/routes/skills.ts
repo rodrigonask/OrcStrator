@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import type { SkillConfig } from '@nasklaude/shared'
+import type { SkillConfig } from '@orcstrator/shared'
 import crypto from 'crypto'
 
 export default async function skillRoutes(app: FastifyInstance): Promise<void> {

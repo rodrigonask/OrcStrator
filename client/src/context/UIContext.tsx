@@ -1,24 +1,8 @@
 import { createContext, useContext } from 'react'
-import type { AppSettings, UsageData, PipelineColumn } from '@shared/types'
-
-/** Maps pipeline columns to the agent role responsible for that phase */
-export const COLUMN_TO_ROLE: Partial<Record<PipelineColumn, string>> = {
-  spec: 'planner',
-  build: 'builder',
-  qa: 'tester',
-  ship: 'promoter',
-}
-
-/** Inverse mapping: agent role → pipeline column */
-export const ROLE_TO_COLUMN: Record<string, PipelineColumn> = {
-  planner: 'spec',
-  builder: 'build',
-  tester: 'qa',
-  promoter: 'ship',
-}
+import type { AppSettings, UsageData, VerbosityLevel } from '@shared/types'
 
 export interface UIContextValue {
-  view: 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage'
+  view: 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage' | 'sessions'
   selectedInstanceId: string | null
   sidebarCollapsed: boolean
   terminalPanelOpen: boolean
@@ -30,6 +14,8 @@ export interface UIContextValue {
   serverRestarted: boolean
   usage: UsageData | null
   settings: AppSettings
+  gameActive: boolean
+  verbosityOverrides: Record<string, VerbosityLevel>
 }
 
 const defaultSettings: AppSettings = {
@@ -56,6 +42,8 @@ const defaultValue: UIContextValue = {
   serverRestarted: false,
   usage: null,
   settings: defaultSettings,
+  gameActive: false,
+  verbosityOverrides: {},
 }
 
 export const UIContext = createContext<UIContextValue>(defaultValue)

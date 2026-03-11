@@ -8,7 +8,9 @@ import type {
   UsageData,
   ClaudeStreamEvent,
   ClaudeProcessExitEvent,
+  VerbosityLevel,
 } from '@shared/types'
+import { vfxBus } from '../systems/vfx-bus'
 import { InstancesContext } from './InstancesContext'
 import { MessagesContext } from './MessagesContext'
 import { UIContext } from './UIContext'
@@ -41,7 +43,7 @@ interface UISlice {
   sidebarCollapsed: boolean
   showFolderBrowser: boolean
   editingFolderId: string | null
-  view: 'chat' | 'pipeline' | 'monitor' | 'agents'
+  view: 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage' | 'sessions'
   activePipelineId: string | null
   connected: boolean
   serverRestarted: boolean
@@ -49,6 +51,8 @@ interface UISlice {
   usage: UsageData | null
   terminalPanelOpen: boolean
   showSettings: boolean
+  gameActive: boolean
+  verbosityOverrides: Record<string, VerbosityLevel>
 }
 
 export interface StreamingToolCall {
@@ -87,13 +91,14 @@ export type Action =
   | { type: 'TOOL_COMPLETE'; payload: { instanceId: string; toolId: string; output: string; isError?: boolean } }
   | { type: 'SET_MESSAGE_TOKENS'; payload: { instanceId: string; messageId: string; inputTokens?: number; outputTokens?: number; costUsd?: number } }
   | { type: 'TOGGLE_SIDEBAR' }
-  | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' | 'monitor' | 'agents' }
+  | { type: 'SET_VIEW'; payload: 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage' | 'sessions' }
   | { type: 'SET_ACTIVE_PIPELINE'; payload: string | null }
   | { type: 'CLEAR_UNREAD'; payload: string }
   | { type: 'INCREMENT_UNREAD'; payload: string }
   | { type: 'SET_CONNECTED'; payload: boolean }
   | { type: 'SET_SERVER_BOOT_TIME'; payload: number }
   | { type: 'DISMISS_SERVER_RESTART' }
+  | { type: 'SET_SERVER_RESTARTED' }
   | { type: 'SET_USAGE'; payload: UsageData | null }
   | { type: 'UPDATE_SETTINGS'; payload: Partial<AppSettings> }
   | { type: 'CLEAR_MESSAGES'; payload: string }
@@ -108,6 +113,8 @@ export type Action =
   | { type: 'OPEN_SETTINGS' }
   | { type: 'CLOSE_SETTINGS' }
   | { type: 'APPEND_RAW_LINE'; payload: { instanceId: string; line: string; isStderr?: boolean } }
+  | { type: 'SET_GAME_ACTIVE'; payload: boolean }
+  | { type: 'SET_INSTANCE_VERBOSITY'; payload: { instanceId: string; level: VerbosityLevel | null } }
 
 // === Initial State ===
 
@@ -149,6 +156,8 @@ const initialUI: UISlice = {
   usage: null,
   terminalPanelOpen: false,
   showSettings: false,
+  gameActive: (() => { try { return localStorage.getItem('orcstrator.gameActive') === 'true' } catch { return false } })(),
+  verbosityOverrides: {},
 }
 
 // === Reducers ===
@@ -307,6 +316,8 @@ function uiReducer(state: UISlice, action: Action): UISlice {
     }
     case 'DISMISS_SERVER_RESTART':
       return { ...state, serverRestarted: false }
+    case 'SET_SERVER_RESTARTED':
+      return { ...state, serverRestarted: true }
     case 'SET_USAGE':
       return { ...state, usage: action.payload }
     case 'OPEN_FOLDER_BROWSER':
@@ -327,6 +338,18 @@ function uiReducer(state: UISlice, action: Action): UISlice {
       return { ...state, showSettings: true }
     case 'CLOSE_SETTINGS':
       return { ...state, showSettings: false }
+    case 'SET_GAME_ACTIVE': {
+      try { localStorage.setItem('orcstrator.gameActive', String(action.payload)) } catch { /* ignore */ }
+      return { ...state, gameActive: action.payload }
+    }
+    case 'SET_INSTANCE_VERBOSITY': {
+      const { instanceId, level } = action.payload
+      if (level === null) {
+        const { [instanceId]: _, ...rest } = state.verbosityOverrides
+        return { ...state, verbosityOverrides: rest }
+      }
+      return { ...state, verbosityOverrides: { ...state.verbosityOverrides, [instanceId]: level } }
+    }
     default:
       return state
   }
@@ -413,6 +436,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'SET_CONNECTED':
       case 'SET_SERVER_BOOT_TIME':
       case 'DISMISS_SERVER_RESTART':
+      case 'SET_SERVER_RESTARTED':
       case 'SET_USAGE':
       case 'OPEN_FOLDER_BROWSER':
       case 'CLOSE_FOLDER_BROWSER':
@@ -423,6 +447,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'SET_TERMINAL_OPEN':
       case 'OPEN_SETTINGS':
       case 'CLOSE_SETTINGS':
+      case 'SET_GAME_ACTIVE':
+      case 'SET_INSTANCE_VERBOSITY':
         uiDispatch(action)
         break
     }
@@ -434,16 +460,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     api.getState().then((data) => {
       if (mounted) {
         dispatch({ type: 'SET_STATE', payload: data })
-        const urlInstance = new URLSearchParams(window.location.search).get('instance')
-        if (urlInstance && data.instances.some((i: InstanceConfig) => i.id === urlInstance)) {
-          dispatch({ type: 'SELECT_INSTANCE', payload: urlInstance })
-          dispatch({ type: 'CLEAR_UNREAD', payload: urlInstance })
-          api.getHistory(urlInstance, { limit: 50 }).then((histData) => {
-            const messages = (histData as any).messages ?? histData
-            const hasMore = (histData as any).hasMore ?? false
-            dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlInstance, messages, hasMore } })
-          }).catch(() => {})
-        }
       }
     }).catch((err) => console.error('Failed to fetch initial state:', err))
 
@@ -466,6 +482,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // Check server boot time to detect restarts
           api.getHealth().then(health => {
             dispatch({ type: 'SET_SERVER_BOOT_TIME', payload: health.bootTime })
+          }).catch(() => {})
+
+          // On first load, check if a restart happened that hasn't been resolved yet
+          api.getRestartStatus().then(status => {
+            if (status.deactivatedFolders.length > 0) {
+              dispatch({ type: 'SET_SERVER_RESTARTED' })
+            }
           }).catch(() => {})
 
           if (payload.reconnected && uiStateRef.current.selectedInstanceId) {
@@ -496,6 +519,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (uiStateRef.current.terminalPanelOpen) {
               dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
             }
+          } else if (event.type === 'result' && event.inputTokens !== undefined) {
+            dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { ctxTokens: event.inputTokens } } })
           }
         }
       })
@@ -557,6 +582,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
     )
 
+    // VFX: pipeline events
+    unsubs.push(
+      api.onPipelineUpdated((payload: any) => {
+        if (payload?.action === 'moved') {
+          if (payload.newColumn === 'done') {
+            vfxBus.fire('task:completed', { text: 'DONE!' })
+          } else {
+            vfxBus.fire('task:moved')
+          }
+        } else if (payload?.action === 'created') {
+          vfxBus.fire('task:created')
+        }
+      })
+    )
+
+    // VFX: level-up events
+    unsubs.push(
+      api.onInstanceLevelUp((payload: { instanceId: string; newLevel: number }) => {
+        vfxBus.fire('level:up', { amount: payload.newLevel })
+      })
+    )
+
+    // VFX: profile level-up
+    unsubs.push(
+      api.onEvent('profile:level-up', (payload: { level: number }) => {
+        vfxBus.fire('level:up', { amount: payload.level, text: `LEVEL ${payload.level}!` })
+      })
+    )
+
     unsubs.push(
       api.onInstanceOverdrive((payload: { instanceId: string; overdriveTasks: number; overdriveStartedAt?: number; lastTaskAt?: number }) => {
         dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.instanceId, updates: { overdriveTasks: payload.overdriveTasks, overdriveStartedAt: payload.overdriveStartedAt, lastTaskAt: payload.lastTaskAt } } })
@@ -591,13 +645,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(intervalId)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Restore selected instance from URL on initial load
+  // Restore full UI state from URL on initial load
   const restoredFromUrl = useRef(false)
   useEffect(() => {
-    if (restoredFromUrl.current || instState.instances.length === 0 || uiState.selectedInstanceId !== null) return
+    if (restoredFromUrl.current || instState.instances.length === 0) return
     restoredFromUrl.current = true
-    const urlId = new URLSearchParams(location.search).get('instance')
-    if (urlId && instState.instances.some(i => i.id === urlId)) {
+    const params = new URLSearchParams(location.search)
+
+    // Restore view
+    const urlView = params.get('view') as typeof uiState.view | null
+    if (urlView && ['chat', 'pipeline', 'monitor', 'agents', 'usage', 'sessions'].includes(urlView)) {
+      dispatch({ type: 'SET_VIEW', payload: urlView })
+    }
+
+    // Restore settings modal
+    if (params.get('settings') === '1') {
+      dispatch({ type: 'OPEN_SETTINGS' })
+    }
+
+    // Restore pipeline project
+    const urlPipeline = params.get('pipeline')
+    if (urlPipeline) {
+      dispatch({ type: 'SET_ACTIVE_PIPELINE', payload: urlPipeline })
+    }
+
+    // Restore selected instance
+    const urlId = params.get('instance')
+    if (urlId && uiState.selectedInstanceId === null && instState.instances.some(i => i.id === urlId)) {
       dispatch({ type: 'SELECT_INSTANCE', payload: urlId })
       dispatch({ type: 'CLEAR_UNREAD', payload: urlId })
       api.getHistory(urlId, { limit: 50 }).then((data) => {
@@ -606,7 +680,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages, hasMore } })
       }).catch(() => {})
     }
-  }, [instState.instances, uiState.selectedInstanceId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [instState.instances]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync URL when view/instance/pipeline/settings change
+  useEffect(() => {
+    if (!restoredFromUrl.current) return // don't write URL before initial restore
+    const params = new URLSearchParams()
+    if (uiState.view !== 'chat') params.set('view', uiState.view)
+    if (uiState.selectedInstanceId) params.set('instance', uiState.selectedInstanceId)
+    if (uiState.activePipelineId) params.set('pipeline', uiState.activePipelineId)
+    if (uiState.showSettings) params.set('settings', '1')
+    const qs = params.toString()
+    window.history.replaceState(null, '', qs ? `?${qs}` : location.pathname)
+  }, [uiState.view, uiState.selectedInstanceId, uiState.activePipelineId, uiState.showSettings])
 
   // Dynamic page title
   useEffect(() => {
@@ -661,7 +747,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectInstance = useCallback((id: string | null) => {
     dispatch({ type: 'SELECT_INSTANCE', payload: id })
     if (id) {
-      window.history.replaceState(null, '', `?instance=${id}`)
       dispatch({ type: 'CLEAR_UNREAD', payload: id })
       if (!msgStateRef.current.messages[id]) {
         api.getHistory(id, { limit: 50 }).then((data) => {
@@ -670,8 +755,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
         }).catch((err) => console.error('Failed to fetch history:', err))
       }
-    } else {
-      window.history.replaceState(null, '', location.pathname)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -737,6 +820,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       serverRestarted: uiState.serverRestarted,
       usage: uiState.usage,
       settings: instState.settings,
+      gameActive: uiState.gameActive,
+      verbosityOverrides: uiState.verbosityOverrides,
     }),
     [uiState, instState.settings]
   )
@@ -797,9 +882,12 @@ export function useApp(): AppContextValue {
       activePipelineId: ui.activePipelineId,
       connected: ui.connected,
       serverRestarted: ui.serverRestarted,
+      serverBootTime: null,
       usage: ui.usage,
       terminalPanelOpen: ui.terminalPanelOpen,
       showSettings: ui.showSettings,
+      gameActive: ui.gameActive,
+      verbosityOverrides: ui.verbosityOverrides,
     }),
     [folders, instances, ui, msgs]
   )
