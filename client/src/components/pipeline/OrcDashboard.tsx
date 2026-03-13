@@ -130,9 +130,13 @@ export function OrcDashboard() {
     () => instances.filter(i => i.state === 'running'),
     [instances]
   )
+  const activeFolderIds = useMemo(
+    () => new Set(folders.filter(f => f.orchestratorActive).map(f => f.id)),
+    [folders]
+  )
   const idleCount = useMemo(
-    () => instances.filter(i => i.state === 'idle').length,
-    [instances]
+    () => instances.filter(i => i.state === 'idle' && activeFolderIds.has(i.folderId)).length,
+    [instances, activeFolderIds]
   )
 
   // Enrich running instances with process data
@@ -309,7 +313,7 @@ export function OrcDashboard() {
         </span>
         <span className="orc-dash-pill">
           UP{' '}
-          <strong>{health ? fmtUptime(health.uptime) : '\u2014'}</strong>
+          <strong>{health ? fmtUptime(health.uptime / 1000) : '\u2014'}</strong>
         </span>
       </div>
 
@@ -397,6 +401,16 @@ export function OrcDashboard() {
           {/* Project Status Bars */}
           <div className="orc-dash-section" style={{ flex: 2 }}>
             <div className="orc-dash-section-label">Projects</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 12px', padding: '0 4px 6px' }}>
+              {PIPELINE_COLUMNS.map(col => (
+                <span key={col} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                  <span
+                    style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: COLUMN_COLORS[col] }}
+                  />
+                  {DEFAULT_COLUMN_LABELS[col]}
+                </span>
+              ))}
+            </div>
             {sortedProjects.length === 0 ? (
               <div className="orc-dash-empty">No projects with tasks</div>
             ) : (
@@ -435,7 +449,7 @@ export function OrcDashboard() {
                           {running}r
                         </span>
                       )}
-                      <span className="orc-dash-proj-count">{total}t</span>
+                      <span className="orc-dash-proj-count">{total} tasks</span>
                       {cost > 0 && (
                         <span className="orc-dash-proj-cost">{fmtUsd(cost)}</span>
                       )}
@@ -515,7 +529,7 @@ export function OrcDashboard() {
                     <span className="orc-dash-log-time">
                       {fmtTime(log.timestamp)}
                     </span>
-                    <span className="orc-dash-log-text">{fmtOrcLog(log)}</span>
+                    <span className="orc-dash-log-text" title={log.taskTitle || undefined}>{fmtOrcLog(log)}</span>
                   </div>
                 ))
               )}
