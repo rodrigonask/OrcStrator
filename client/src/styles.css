@@ -1411,6 +1411,29 @@ body {
   color: var(--text-tertiary);
 }
 
+.cmd-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.cmd-menu-add .cmd-menu-cmd {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.custom-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.custom-cmd-row .form-input {
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
 /* Message List */
 .message-list {
   flex: 1;
@@ -2149,6 +2172,89 @@ body {
 }
 
 .tool-call-show-more:hover { text-decoration: underline; }
+
+/* === AskUser Multi-Question === */
+.askuser-multi {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.askuser-multi-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.askuser-multi-header {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-text, var(--accent));
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.askuser-multi-question {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+.askuser-multi-options {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.askuser-multi-opt {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  transition: all var(--transition-fast);
+}
+.askuser-multi-opt:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+.askuser-multi-opt.selected {
+  background: rgba(124, 58, 237, 0.12);
+  border-color: var(--accent);
+}
+.askuser-multi-opt-indicator {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.askuser-multi-opt.selected .askuser-multi-opt-indicator {
+  color: var(--accent);
+}
+.askuser-multi-opt-label {
+  font-weight: 500;
+}
+.askuser-multi-opt-desc {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-left: auto;
+}
+.askuser-multi-submit {
+  align-self: flex-end;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 14px;
+  margin-top: 4px;
+}
+.askuser-multi-submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 /* === Tool Call Formatted (tcf-*) === */
 .tcf-structured {
@@ -6808,7 +6914,7 @@ body {
 }
 .orchestrator-toggle-btn { opacity: 0.6; filter: grayscale(1); }
 .orchestrator-toggle-btn:hover { filter: grayscale(0); opacity: 1; background: var(--warning-muted); }
-.orchestrator-toggle-btn.active { filter: grayscale(0); opacity: 1; }
+.orchestrator-toggle-btn.active { filter: grayscale(0); opacity: 1; color: var(--accent, #7c3aed); }
 
 /* Pulsing lightning bolt when active */
 @keyframes orch-pulse {

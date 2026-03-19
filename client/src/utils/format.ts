@@ -37,8 +37,18 @@ export function getOdTier(mult: number) {
 
 export function fmtOrcLog(log: OrcLogEntry): string {
   const label = ORC_LOG_LABELS[log.type] || log.type
+  if (['task_moved', 'process_exited', 'task_stuck'].includes(log.type) && log.taskTitle) {
+    const title = log.taskTitle.length > 30 ? log.taskTitle.slice(0, 30) + '...' : log.taskTitle
+    const prefix = log.agentRole && log.instanceName
+      ? `${log.agentRole} | ${log.instanceName}`
+      : log.agentRole || log.instanceName || label
+    return `${prefix}: ${title}`
+  }
   if (log.taskTitle) {
     const title = log.taskTitle.length > 25 ? log.taskTitle.slice(0, 25) + '...' : log.taskTitle
+    if (log.agentRole && log.instanceName) {
+      return `${log.agentRole} | ${log.instanceName}: ${title}`
+    }
     if (log.instanceName) return `${label}: "${title}" \u2192 ${log.instanceName}`
     return `${label}: "${title}"`
   }

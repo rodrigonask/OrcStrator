@@ -21,10 +21,18 @@ interface AskUserOption {
   description?: string
 }
 
+interface AskUserQuestion {
+  header: string
+  question?: string
+  options: AskUserOption[]
+  multiSelect?: boolean
+}
+
 interface AskUserInput {
   question?: string
   options?: AskUserOption[]
   multiSelect?: boolean
+  questions?: AskUserQuestion[]
 }
 
 const TOOL_ICONS: Record<string, string> = {
@@ -46,6 +54,9 @@ function parseAskUserInput(input: string): AskUserInput | null {
   try {
     const parsed = JSON.parse(input)
     if (typeof parsed === 'object' && parsed !== null) {
+      if (Array.isArray(parsed.questions)) {
+        return { questions: parsed.questions } as AskUserInput
+      }
       return parsed as AskUserInput
     }
   } catch { /* not valid JSON yet — input may still be streaming */ }
@@ -72,7 +83,11 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
 
   const isAskUser = toolName === 'AskUserQuestion'
   const askUserData = isAskUser ? parseAskUserInput(input) : null
+  const isMultiQuestion = !!(askUserData?.questions && askUserData.questions.length > 0)
   const canRespond = isAskUser && isRunning && !output && !responded && selectedInstanceId
+
+  // Multi-question selections: Map<questionIndex, selectedLabels[]>
+  const [multiSelections, setMultiSelections] = useState<Map<number, string[]>>(new Map())
 
   const handleRespond = async (text: string) => {
     if (!selectedInstanceId) return
@@ -92,6 +107,37 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
     handleRespond(text)
   }
 
+  const handleMultiOptionClick = (qIndex: number, label: string, isMultiSelect: boolean) => {
+    setMultiSelections(prev => {
+      const next = new Map(prev)
+      const current = next.get(qIndex) || []
+      if (isMultiSelect) {
+        // Toggle
+        next.set(qIndex, current.includes(label)
+          ? current.filter(l => l !== label)
+          : [...current, label])
+      } else {
+        // Single-select: replace
+        next.set(qIndex, [label])
+      }
+      return next
+    })
+  }
+
+  const allQuestionsAnswered = isMultiQuestion && askUserData!.questions!.every((_q, i) => {
+    const sel = multiSelections.get(i)
+    return sel && sel.length > 0
+  })
+
+  const handleMultiSubmit = () => {
+    if (!askUserData?.questions) return
+    const parts = askUserData.questions.map((q, i) => {
+      const sel = multiSelections.get(i) || []
+      return `${q.header}: ${sel.join(', ')}`
+    })
+    handleRespond(parts.join('; '))
+  }
+
   const handleFreeTextSubmit = () => {
     if (freeText.trim()) {
       handleRespond(freeText.trim())
@@ -109,7 +155,8 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
       {/* AskUser interactive UI — always visible outside collapsible */}
       {isAskUser && askUserData && (
         <div style={{ padding: '8px 12px', borderLeft: '3px solid var(--accent)', marginTop: 4, borderRadius: '0 4px 4px 0', background: 'var(--bg-tertiary)' }}>
-          {askUserData.question && (
+          {/* Single-question format (backward compat) */}
+          {!isMultiQuestion && askUserData.question && (
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, marginBottom: 8, color: 'var(--text-primary)', lineHeight: 1.5 }}>
               {askUserData.question}
             </div>
@@ -119,7 +166,46 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
               Responded: {responded}
             </div>
           ) : canRespond ? (
-            askUserData.options && askUserData.options.length > 0 ? (
+            isMultiQuestion ? (
+              <div className="askuser-multi">
+                {askUserData.questions!.map((q, qi) => {
+                  const selected = multiSelections.get(qi) || []
+                  return (
+                    <div key={qi} className="askuser-multi-section">
+                      <div className="askuser-multi-header">{q.header}</div>
+                      {q.question && (
+                        <div className="askuser-multi-question">{q.question}</div>
+                      )}
+                      <div className="askuser-multi-options">
+                        {q.options.map((opt, oi) => {
+                          const isSelected = selected.includes(opt.label)
+                          return (
+                            <button
+                              key={oi}
+                              className={`askuser-multi-opt${isSelected ? ' selected' : ''}`}
+                              onClick={(e) => { e.stopPropagation(); handleMultiOptionClick(qi, opt.label, !!q.multiSelect) }}
+                            >
+                              <span className="askuser-multi-opt-indicator">
+                                {q.multiSelect ? (isSelected ? '\u2611' : '\u2610') : (isSelected ? '\u25C9' : '\u25CB')}
+                              </span>
+                              <span className="askuser-multi-opt-label">{opt.label}</span>
+                              {opt.description && <span className="askuser-multi-opt-desc">{opt.description}</span>}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+                <button
+                  className="btn btn-primary askuser-multi-submit"
+                  onClick={(e) => { e.stopPropagation(); handleMultiSubmit() }}
+                  disabled={!allQuestionsAnswered}
+                >
+                  Submit answers
+                </button>
+              </div>
+            ) : askUserData.options && askUserData.options.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {askUserData.options.map((opt, i) => (
                   <button

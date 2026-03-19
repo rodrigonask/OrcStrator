@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import type { PipelineTask, PipelineColumn, PipelineBlueprint } from '@shared/types'
 import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
@@ -29,6 +29,26 @@ export function PipelineBoard() {
   const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; task: PipelineTask } | null>(null)
   const [blueprints, setBlueprints] = useState<PipelineBlueprint[]>([])
   const [subMenu, setSubMenu] = useState<'pipeline' | 'priority' | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+
+  // Clamp context menu to viewport bounds after it renders
+  useEffect(() => {
+    if (!taskContextMenu || !contextMenuRef.current) return
+    const el = contextMenuRef.current
+    const rect = el.getBoundingClientRect()
+    const maxX = window.innerWidth - 8
+    const maxY = window.innerHeight - 8
+    let x = taskContextMenu.x
+    let y = taskContextMenu.y
+    if (x + rect.width > maxX) x = maxX - rect.width
+    if (y + rect.height > maxY) y = maxY - rect.height
+    if (x < 8) x = 8
+    if (y < 8) y = 8
+    if (x !== taskContextMenu.x || y !== taskContextMenu.y) {
+      el.style.left = `${x}px`
+      el.style.top = `${y}px`
+    }
+  }, [taskContextMenu])
 
   const columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(settings.columnLabels || {}) }
   const agentNames = useAgentNames()
@@ -410,6 +430,7 @@ export function PipelineBoard() {
         const isPaused = t.labels.includes('paused')
         return (
           <div
+            ref={contextMenuRef}
             className="context-menu"
             style={{ position: 'fixed', top: taskContextMenu.y, left: taskContextMenu.x, zIndex: 200 }}
             onMouseDown={e => e.stopPropagation()}

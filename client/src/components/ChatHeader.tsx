@@ -314,6 +314,27 @@ export function ChatHeader() {
                   <span className="cmd-menu-desc">{c.desc}</span>
                 </button>
               ))}
+              {(settings.customCommands ?? []).length > 0 && (
+                <div className="cmd-menu-separator" />
+              )}
+              {(settings.customCommands ?? []).map((cc, i) => (
+                <button
+                  key={`custom-${i}`}
+                  className="cmd-menu-item"
+                  onClick={() => handleQuickCommand(cc.command)}
+                >
+                  <span className="cmd-menu-cmd">{cc.name}</span>
+                  <span className="cmd-menu-desc">{cc.description}</span>
+                </button>
+              ))}
+              <div className="cmd-menu-separator" />
+              <button
+                className="cmd-menu-item cmd-menu-add"
+                onClick={() => { setCmdMenuOpen(false); dispatch({ type: 'OPEN_SETTINGS' }) }}
+              >
+                <span className="cmd-menu-cmd">+ Add command</span>
+                <span className="cmd-menu-desc">Manage in Settings</span>
+              </button>
             </div>
           )}
         </div>

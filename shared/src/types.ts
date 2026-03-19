@@ -83,7 +83,7 @@ export type ClaudeStreamEvent =
   | { type: 'tool-start'; instanceId: string; toolId: string; toolName: string }
   | { type: 'tool-input-delta'; instanceId: string; toolId: string; input: string }
   | { type: 'tool-complete'; instanceId: string; toolId: string; output: string; isError?: boolean }
-  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number }
+  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number; resultText?: string }
   | { type: 'error'; instanceId: string; message: string }
   | { type: 'system'; instanceId: string; sessionId?: string }
   | { type: 'raw-line'; instanceId: string; line: string; isStderr?: boolean }
@@ -362,6 +362,7 @@ export interface AppSettings {
   cloudSyncKey?: string
   machineName?: string
   machineId?: string
+  customCommands?: Array<{ name: string; command: string; description: string }>
 }
 
 // === CLOUD SYNC ===
@@ -419,7 +420,7 @@ export type XpEventType =
 // === ORCHESTRATOR LOG ===
 
 export type OrcLogEventType =
-  | 'assigned' | 'task_moved' | 'task_stuck'
+  | 'assigned' | 'task_moved' | 'task_stuck' | 'process_exited'
   | 'cooldown_hit' | 'concurrency_limit' | 'lock_timeout'
   | 'spawn_failed' | 'zombie_detected'
   | 'sweep_ran' | 'session_resumed'
@@ -431,6 +432,7 @@ export interface OrcLogEntry {
   timestamp: number
   instanceId?: string
   instanceName?: string
+  agentRole?: string
   taskId?: string
   taskTitle?: string
   detail?: string

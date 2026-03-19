@@ -195,6 +195,8 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   let lastOutputTokens: number | undefined
   let lastCacheCreation: number | undefined
   let lastCacheRead: number | undefined
+  let lastResultText: string | undefined
+  let sawAssistantText = false
 
   // Batching: accumulate events in 32ms windows
   let eventBatch: ClaudeStreamEvent[] = []
@@ -247,6 +249,9 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
             if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
             return b
           })
+          if (raw.message.content.some((b: Record<string, unknown>) => b.type === 'text' && typeof b.text === 'string' && (b.text as string).trim())) {
+            sawAssistantText = true
+          }
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
             VALUES (?, ?, ?, ?, ?)
@@ -277,6 +282,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
           lastOutputTokens = event.outputTokens
           lastCacheCreation = event.cacheCreationTokens
           lastCacheRead = event.cacheReadTokens
+          if (event.resultText) lastResultText = event.resultText
           console.log(`[claude-process] Result for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd} cache_create=${lastCacheCreation} cache_read=${lastCacheRead}`)
 
           // Eagerly persist token data NOW — protects against server crash before exit handler runs
@@ -375,6 +381,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
             lastOutputTokens = event.outputTokens
             lastCacheCreation = event.cacheCreationTokens
             lastCacheRead = event.cacheReadTokens
+            if (event.resultText) lastResultText = event.resultText
             if (event.sessionId) resolvedSessionId = event.sessionId
             console.log(`[claude-process] Result (flush) for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd}`)
           }
@@ -429,6 +436,16 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     // Clean up temp MCP config file if orchestrator generated one
     if (mcpConfigPath && mcpConfigPath.includes('orcstrator-mcp-')) {
       try { fs.unlinkSync(mcpConfigPath) } catch { /* already gone */ }
+    }
+
+    // Save synthetic assistant message when CLI produced no text (e.g. /compact, slash commands)
+    if (!sawAssistantText && lastResultText) {
+      const syntheticId = crypto.randomUUID()
+      const syntheticContent = JSON.stringify([{ type: 'text', text: lastResultText }])
+      db.prepare(`
+        INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(syntheticId, instanceId, 'assistant', syntheticContent, Date.now())
     }
 
     // Broadcast exit event (orchestrator will broadcast instance:state idle after cleanup)

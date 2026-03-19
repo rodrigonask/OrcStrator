@@ -198,6 +198,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   soundsEnabled: false,
   animationTier: 0,
   soundTier: 0,
+  customCommands: [],
 }
 
 export const DEFAULT_AGENT_NAMES: Record<string, string> = {

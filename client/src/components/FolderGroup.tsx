@@ -342,9 +342,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             onClick={(e) => { if (orcGate.check()) handleOrchestrateClick(e) }}
           >
             {isOrchestratorActive ? (
-              <span className="orch-pulse">{'\uD83D\uDC79'}</span>
+              <span className="orch-pulse">{'\uD83D\uDD04'}</span>
             ) : (
-              '\uD83D\uDC79'
+              '\uD83D\uDD04'
             )}
           </button>
           <div

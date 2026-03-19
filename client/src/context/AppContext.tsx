@@ -493,7 +493,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
           if (payload.reconnected && uiStateRef.current.selectedInstanceId) {
             const id = uiStateRef.current.selectedInstanceId
-            api.getHistory(id, { limit: 50 }).then((data) => {
+            api.getHistory(id, { limit: 150 }).then((data) => {
               const messages = (data as any).messages ?? data
               const hasMore = (data as any).hasMore ?? false
               dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
@@ -531,7 +531,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const { instanceId } = payload
         dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
         dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle', activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
-        api.getHistory(instanceId, { limit: 50 }).then((data) => {
+        api.getHistory(instanceId, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages, hasMore } })
@@ -674,7 +674,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (urlId && uiState.selectedInstanceId === null && instState.instances.some(i => i.id === urlId)) {
       dispatch({ type: 'SELECT_INSTANCE', payload: urlId })
       dispatch({ type: 'CLEAR_UNREAD', payload: urlId })
-      api.getHistory(urlId, { limit: 50 }).then((data) => {
+      api.getHistory(urlId, { limit: 150 }).then((data) => {
         const messages = (data as any).messages ?? data
         const hasMore = (data as any).hasMore ?? false
         dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages, hasMore } })
@@ -732,7 +732,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: 'SELECT_INSTANCE', payload: instances[next].id })
       dispatch({ type: 'CLEAR_UNREAD', payload: instances[next].id })
       if (!msgStateRef.current.messages[instances[next].id]) {
-        api.getHistory(instances[next].id, { limit: 50 }).then((data) => {
+        api.getHistory(instances[next].id, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId: instances[next].id, messages, hasMore } })
@@ -749,7 +749,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (id) {
       dispatch({ type: 'CLEAR_UNREAD', payload: id })
       if (!msgStateRef.current.messages[id]) {
-        api.getHistory(id, { limit: 50 }).then((data) => {
+        api.getHistory(id, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
@@ -780,12 +780,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const currentMsgs = msgStateRef.current.messages[instanceId]
     if (!currentMsgs || currentMsgs.length === 0) return
     const earliest = currentMsgs[0].createdAt
-    const data = await api.getHistory(instanceId, { limit: 50, before: earliest })
+    const data = await api.getHistory(instanceId, { limit: 150, before: earliest })
     const messages = (data as any).messages ?? data
     const hasMore = (data as any).hasMore ?? false
-    if (messages.length > 0) {
-      dispatch({ type: 'PREPEND_MESSAGES', payload: { instanceId, messages, hasMore } })
-    }
+    dispatch({ type: 'PREPEND_MESSAGES', payload: { instanceId, messages, hasMore: messages.length > 0 ? hasMore : false } })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Memoized context values — each slice only re-renders its consumers

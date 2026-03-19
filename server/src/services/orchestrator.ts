@@ -198,7 +198,7 @@ class OrchestratorService {
              labels = ?, history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
           ).run(newRetry, JSON.stringify(labels), JSON.stringify(history), now, task.id)
           console.warn(`[orchestrator] Task "${task.title}" failed ${newRetry}x — moved to in_review as stuck`)
-          emitOrcLog({ type: 'task_stuck', instanceId, instanceName: exitInst?.name, taskId: task.id, taskTitle: task.title, detail: `${newRetry} failures — moved to in_review` })
+          emitOrcLog({ type: 'task_stuck', instanceId, instanceName: exitInst?.name, agentRole: exitInst?.agent_role || undefined, taskId: task.id, taskTitle: task.title, detail: `${newRetry} failures — moved to in_review` })
           broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: task.id, reason: 'max-retries-stuck' } })
           broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
         } else {
@@ -268,8 +268,8 @@ class OrchestratorService {
       const isFailure = commentText.includes('[ACTION NEEDED]')
 
       for (const taskId of taskIds) {
-        const task = db.prepare('SELECT id, locked_by, "column" as col, history, project_id, pipeline_id, current_step, total_steps, current_step_role FROM pipeline_tasks WHERE id = ?')
-          .get(taskId) as { id: string; locked_by: string | null; col: string; history: string; project_id: string; pipeline_id: string | null; current_step: number; total_steps: number; current_step_role: string | null } | undefined
+        const task = db.prepare('SELECT id, title, locked_by, "column" as col, history, project_id, pipeline_id, current_step, total_steps, current_step_role FROM pipeline_tasks WHERE id = ?')
+          .get(taskId) as { id: string; title: string; locked_by: string | null; col: string; history: string; project_id: string; pipeline_id: string | null; current_step: number; total_steps: number; current_step_role: string | null } | undefined
         if (!task || task.locked_by !== instanceId) continue
 
         const now = Date.now()
@@ -332,7 +332,9 @@ class OrchestratorService {
 
         const logTarget = isFailure ? `${targetColumn} (stuck)` : targetColumn === 'done' ? 'done' : `${targetColumn} step ${newStep}/${task.total_steps}`
         console.log(`[orchestrator] Auto-moved task ${taskId}: ${task.col} → ${logTarget} (${role})`)
-        emitOrcLog({ type: 'task_moved', instanceId, instanceName: undefined, taskId, detail: `${task.col} → ${logTarget} by ${role}` })
+        const movedInst = db.prepare('SELECT name FROM instances WHERE id = ?').get(instanceId) as { name: string } | undefined
+        const moveType = targetColumn === 'done' ? 'process_exited' : 'task_moved'
+        emitOrcLog({ type: moveType, instanceId, instanceName: movedInst?.name, agentRole: role, taskId, taskTitle: task.title })
         broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
 
         setImmediate(() => {

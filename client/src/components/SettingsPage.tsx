@@ -66,6 +66,9 @@ export function SettingsPage() {
   const [maxTokens, setMaxTokens] = useState(settings.maxTokens ?? 0)
   const [maxConcurrent, setMaxConcurrent] = useState(settings.maxConcurrentProcesses ?? 8)
   const [verbosity, setVerbosity] = useState<number>(settings.verbosity ?? 3)
+  const [customCommands, setCustomCommands] = useState<Array<{ name: string; command: string; description: string }>>(
+    settings.customCommands ?? []
+  )
   const [saved, setSaved] = useState(false)
 
   // Cloud Sync state
@@ -120,6 +123,18 @@ export function SettingsPage() {
     })
   }, [])
 
+  const addCustomCommand = useCallback(() => {
+    setCustomCommands(prev => [...prev, { name: '', command: '', description: '' }])
+  }, [])
+
+  const removeCustomCommand = useCallback((index: number) => {
+    setCustomCommands(prev => prev.filter((_, i) => i !== index))
+  }, [])
+
+  const updateCustomCommand = useCallback((index: number, field: 'name' | 'command' | 'description', value: string) => {
+    setCustomCommands(prev => prev.map((cc, i) => i === index ? { ...cc, [field]: value } : cc))
+  }, [])
+
   const handleSave = useCallback(() => {
     const cleanFlags = flags.filter(f =>
       !f.startsWith('--dangerously-skip-permissions') &&
@@ -153,12 +168,13 @@ export function SettingsPage() {
       cloudSyncUrl: cloudSyncUrl || undefined,
       cloudSyncKey: cloudSyncKey || undefined,
       machineName: machineName || undefined,
+      customCommands: customCommands.filter(cc => cc.name.trim() && cc.command.trim()),
     }
     dispatch({ type: 'UPDATE_SETTINGS', payload })
     api.updateSettings(payload)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingTheme, verbosity, cloudSyncUrl, cloudSyncKey, machineName])
+  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingTheme, verbosity, cloudSyncUrl, cloudSyncKey, machineName, customCommands])
 
   const handleBack = useCallback(() => {
     dispatch({ type: 'CLOSE_SETTINGS' })
@@ -367,6 +383,51 @@ export function SettingsPage() {
                     <span className="settings-toggle-label">Desktop notifications</span>
                     <div className={`toggle-switch ${notifications ? 'active' : ''}`} onClick={() => setNotifications(n => !n)} />
                   </div>
+                </div>
+
+                {/* Custom Commands */}
+                <div className="settings-card">
+                  {sectionTitle('Custom Commands')}
+                  <p style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8 }}>
+                    Add your own slash commands to the &lt;/&gt; menu.
+                  </p>
+                  {customCommands.map((cc, i) => (
+                    <div key={i} className="custom-cmd-row">
+                      <input
+                        className="form-input"
+                        placeholder="Name"
+                        value={cc.name}
+                        onChange={e => updateCustomCommand(i, 'name', e.target.value)}
+                        style={{ width: 80 }}
+                      />
+                      <input
+                        className="form-input"
+                        placeholder="/command text"
+                        value={cc.command}
+                        onChange={e => updateCustomCommand(i, 'command', e.target.value)}
+                        style={{ flex: 1 }}
+                      />
+                      <input
+                        className="form-input"
+                        placeholder="Description"
+                        value={cc.description}
+                        onChange={e => updateCustomCommand(i, 'description', e.target.value)}
+                        style={{ flex: 1 }}
+                      />
+                      <button
+                        className="settings-flag-remove"
+                        onClick={() => removeCustomCommand(i)}
+                        title="Remove command"
+                      >x</button>
+                    </div>
+                  ))}
+                  <button
+                    className="btn btn-sm"
+                    onClick={addCustomCommand}
+                    style={{ marginTop: 6 }}
+                  >
+                    + Add Command
+                  </button>
                 </div>
 
               </div>

@@ -63,7 +63,7 @@ function OrcBriefBubble({ taskTitle, instanceName, projectId, fullPrompt, create
   return (
     <div className="orc-brief-bubble" style={{ boxShadow: '0 0 12px 2px rgba(168, 85, 247, 0.4), 0 0 4px 1px rgba(168, 85, 247, 0.2)' }}>
       <div className="orc-brief-header">
-        <span className="orc-brief-icon">{'\uD83D\uDC79'}</span>
+        <span className="orc-brief-icon">{'\uD83D\uDD04'}</span>
         <span className="orc-brief-quip" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
           {parts.map((part, i) => (
             <span key={i}>
@@ -129,7 +129,7 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults,
     <div className={`message-bubble ${role}`}>
       {role === 'system' && <div className="message-role-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>The Orc</div>}
       {nonToolContent.map((block, i) => (
-        <ContentBlock key={i} block={block} toolResults={toolResults} verbosity={verbosity} />
+        <ContentBlock key={i} block={block} toolResults={toolResults} verbosity={verbosity} isHuman={role === 'human'} />
       ))}
       {createdAt && (
         <div className="message-timestamp" style={{ fontFamily: 'var(--font-mono)' }}>{formatTimestamp(createdAt)}</div>
@@ -143,16 +143,18 @@ function ContentBlock({
   toolResults,
   defaultExpanded = false,
   verbosity = 3,
+  isHuman = false,
 }: {
   block: MessageContentBlock
   toolResults: Map<string, { output: string; isError?: boolean }>
   defaultExpanded?: boolean
   verbosity?: VerbosityLevel
+  isHuman?: boolean
 }) {
   if (block.type === 'text') {
     if (!block.text.trim()) return null
     const collapseAt = verbosity >= 5 ? Infinity : verbosity >= 4 ? 1200 : 600
-    return <TextContent text={block.text} collapseChars={collapseAt} />
+    return <TextContent text={block.text} collapseChars={collapseAt} escapeHtml={isHuman} />
   }
 
   if (block.type === 'image') {
@@ -209,13 +211,14 @@ function ContentBlock({
   return null
 }
 
-function TextContent({ text, collapseChars = 600 }: { text: string; collapseChars?: number }) {
+function TextContent({ text, collapseChars = 600, escapeHtml = false }: { text: string; collapseChars?: number; escapeHtml?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const isTall = collapseChars < Infinity && text.length > collapseChars
   const displayText = isTall && !expanded ? text.slice(0, collapseChars) : text
 
   const html = useMemo(() => {
-    const raw = marked.parse(displayText) as string
+    const safeText = escapeHtml ? displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;') : displayText
+    const raw = marked.parse(safeText) as string
     return DOMPurify.sanitize(raw, {
       ALLOWED_TAGS: [
         'p', 'br', 'strong', 'em', 'b', 'i', 'u', 's', 'del',

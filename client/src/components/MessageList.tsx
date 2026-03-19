@@ -59,8 +59,7 @@ export function MessageList() {
   const liveText = instanceId ? (streamingContent?.[instanceId] || '') : ''
   const liveToolCalls = instanceId ? (streamingToolCalls?.[instanceId] || []) : []
 
-  const lastMessage = messages[messages.length - 1]
-  const showLiveTurn = isAgentRunning || !!liveText || liveToolCalls.length > 0 || lastMessage?.role === 'user'
+  const showLiveTurn = isAgentRunning || !!liveText || liveToolCalls.length > 0
 
   // Build a map of toolId -> result for the current message set
   const toolResults = useMemo(() => {
@@ -217,6 +216,11 @@ export function MessageList() {
               })()}
               {liveText && (
                 <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{liveText}</div>
+              )}
+              {isAgentRunning && liveToolCalls.length === 0 && !liveText && (
+                <div className="wave-indicator">
+                  <span /><span /><span />
+                </div>
               )}
             </>
           )}
