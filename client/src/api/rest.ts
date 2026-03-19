@@ -264,4 +264,12 @@ export const rest = {
     get<{ inputTokens: number; outputTokens: number; costUsd: number; lineCount: number }>(`/api/sessions/${sessionId}/stats`),
   requestSessionSummary: (sessionId: string, instanceId: string) =>
     post<{ ok: true; instanceId: string; sessionId: string }>(`/api/sessions/${sessionId}/request-summary`, { instanceId }),
+
+  // Cloud Sync
+  testSyncConnection: (url: string, key: string) =>
+    post<{ ok: boolean; error?: string }>('/api/sync/test', { url, key }),
+  getSyncStatus: () =>
+    get<{ status: string; error: string | null; machineId: string; folders: Array<{ folderId: string; cloudSync: boolean; lastSyncedAt: number | null }> }>('/api/sync/status'),
+  triggerSync: (folderId: string) =>
+    post<{ ok: boolean; error?: string }>(`/api/sync/trigger/${folderId}`),
 }

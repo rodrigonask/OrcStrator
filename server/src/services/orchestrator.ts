@@ -6,6 +6,7 @@ import { updateOverdriveOnComplete, resetOverdriveIfExpired } from './overdrive.
 import { markScheduleRunning, appendExecution, updateScheduleAfterRun, safeJsonParse } from './task-manager.js'
 import { emitOrcLog, getRoleModels, getRoleTools, getPermissionFlag, serverStartTime } from './orchestrator-utils.js'
 import { getMcpConfigPath, AGENTS_DIR } from './mcp-config.js'
+import { cloudSync } from './cloud-sync.js'
 import type { PipelineTask, ScheduleExecution, OrcLogEntry } from '@orcstrator/shared'
 import fs from 'fs'
 import path from 'path'
@@ -107,6 +108,21 @@ class OrchestratorService {
 
       // Phase 4: Archive sweep (every 2160th tick ~6h)
       if (this.tickCounter % 2160 === 0) this.archiveSweep()
+
+      // Phase 5: Cloud sync (every tick — internally skips unchanged projects)
+      try {
+        await cloudSync.syncIfNeeded()
+      } catch (err) {
+        // Never block the tick loop for sync errors
+        console.error('[orchestrator] Cloud sync error (non-fatal):', err)
+      }
+
+      // Phase 6: Full cloud sync (every 360th tick ~1h)
+      if (this.tickCounter % 360 === 0) {
+        cloudSync.fullSync().catch(err => {
+          console.error('[orchestrator] Full cloud sync error (non-fatal):', err)
+        })
+      }
     } finally {
       this.tickRunning = false
     }

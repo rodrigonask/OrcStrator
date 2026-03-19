@@ -508,12 +508,33 @@ function migration021(): void {
   setSchemaVersion(21)
 }
 
+function migration022(): void {
+  // Cloud Sync: per-folder sync opt-in + tracking columns
+  const columns: Array<[string, string]> = [
+    ['folders', 'cloud_sync INTEGER DEFAULT 0'],
+    ['folders', 'last_synced_at INTEGER DEFAULT NULL'],
+    ['folders', 'cloud_last_modified_at INTEGER DEFAULT NULL'],
+  ]
+  for (const [table, col] of columns) {
+    safeAddColumn(table, col)
+  }
+
+  // Cloud Sync settings (URL, key, machine identity)
+  const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
+  insertSetting.run('cloudSyncUrl', JSON.stringify(''))
+  insertSetting.run('cloudSyncKey', JSON.stringify(''))
+  insertSetting.run('machineName', JSON.stringify(''))
+  insertSetting.run('machineId', JSON.stringify(''))
+
+  setSchemaVersion(22)
+}
+
 const migrations = [
   migration001, migration002, migration003, migration004, migration005,
   migration006, migration007, migration008, migration009, migration010,
   migration011, migration012, migration013, migration014, migration015,
   migration016, migration017, migration018, migration019, migration020,
-  migration021,
+  migration021, migration022,
 ]
 
 function runMigrations(): void {

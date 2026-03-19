@@ -14,6 +14,7 @@ import { schedulerService } from './services/scheduler-service.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
 import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
 import { resetOverdriveForAll } from './services/overdrive.js'
+import { cloudSync } from './services/cloud-sync.js'
 
 // Route modules
 import stateRoutes from './routes/state.js'
@@ -30,6 +31,7 @@ import fsRoutes from './routes/fs.js'
 import orchestratorRoutes from './routes/orchestrator.js'
 import mcpRoutes from './routes/mcp.js'
 import sessionsRoutes from './routes/sessions.js'
+import syncRoutes from './routes/sync.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -216,6 +218,7 @@ async function main(): Promise<void> {
   })
   orchestrator.start()
   schedulerService.start()
+  cloudSync.initialize()
 
   // Resume dead sessions + trigger work — only on clean startup, NOT on restart
   if (!isRestart) {
@@ -258,6 +261,7 @@ async function main(): Promise<void> {
     await api.register(orchestratorRoutes)
     await api.register(mcpRoutes)
     await api.register(sessionsRoutes)
+    await api.register(syncRoutes)
   }, { prefix: '/api' })
 
   // In production, serve the client build as static files

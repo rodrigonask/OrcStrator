@@ -3,6 +3,7 @@ import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { startPolling } from '../services/usage-monitor.js'
 import { setMaxConcurrentProcesses } from '../services/process-registry.js'
+import { cloudSync } from '../services/cloud-sync.js'
 
 export default async function settingsRoutes(app: FastifyInstance): Promise<void> {
   // Get all settings
@@ -52,6 +53,11 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     // If max concurrent processes changed, update the registry limit
     if ('maxConcurrentProcesses' in body && typeof body.maxConcurrentProcesses === 'number') {
       setMaxConcurrentProcesses(body.maxConcurrentProcesses)
+    }
+
+    // If cloud sync settings changed, re-initialize the sync client
+    if ('cloudSyncUrl' in body || 'cloudSyncKey' in body || 'machineName' in body) {
+      cloudSync.initialize()
     }
 
     return settings

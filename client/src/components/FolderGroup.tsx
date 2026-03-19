@@ -9,6 +9,7 @@ import { useInstances } from '../context/InstancesContext'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
+import { rest } from '../api/rest'
 import { InstanceItem } from './InstanceItem'
 import { useConfirm } from './ConfirmModal'
 import { LaunchTeamModal } from './LaunchTeamModal'
@@ -59,6 +60,23 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     .sort((a, b) => a.sortOrder - b.sortOrder)
   const expanded = folder.expanded
   const isOrchestratorActive = folder.orchestratorActive || false
+  const isCloudSynced = folder.cloudSync || false
+  const cloudConfigured = !!(settings.cloudSyncUrl && settings.cloudSyncKey)
+
+  const handleCloudSyncToggle = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!cloudConfigured) {
+      await alert('Configure Cloud Sync in Settings > Advanced first.')
+      return
+    }
+    const newVal = !isCloudSynced
+    dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: { cloudSync: newVal } } })
+    api.updateFolder(folder.id, { cloudSync: newVal } as Partial<FolderConfig>)
+    if (newVal) {
+      // Trigger initial sync
+      rest.triggerSync(folder.id).catch(() => {})
+    }
+  }, [cloudConfigured, isCloudSynced, folder.id, dispatch, alert])
 
   const instanceSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
@@ -299,6 +317,25 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
           >
             ▤
           </button>
+          {cloudConfigured && (
+            <button
+              className={`cloud-sync-btn ${isCloudSynced ? 'active' : ''}`}
+              title={isCloudSynced ? 'Synced to Cloud' : 'Sync to Cloud'}
+              onClick={handleCloudSyncToggle}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '2px 4px',
+                fontSize: 14,
+                opacity: isCloudSynced ? 1 : 0.4,
+                color: isCloudSynced ? 'var(--accent)' : 'var(--text-tertiary)',
+                transition: 'opacity 0.2s, color 0.2s',
+              }}
+            >
+              {isCloudSynced ? '\u2601' : '\u2601'}
+            </button>
+          )}
           <button
             className={`orchestrator-toggle-btn ${isOrchestratorActive ? 'active' : ''}`}
             title={isOrchestratorActive ? 'The Orc is active — click to stop' : 'Activate The Orc'}

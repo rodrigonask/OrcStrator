@@ -68,6 +68,13 @@ export function SettingsPage() {
   const [verbosity, setVerbosity] = useState<number>(settings.verbosity ?? 3)
   const [saved, setSaved] = useState(false)
 
+  // Cloud Sync state
+  const [cloudSyncUrl, setCloudSyncUrl] = useState(settings.cloudSyncUrl || '')
+  const [cloudSyncKey, setCloudSyncKey] = useState(settings.cloudSyncKey || '')
+  const [machineName, setMachineName] = useState(settings.machineName || '')
+  const [syncTesting, setSyncTesting] = useState(false)
+  const [syncTestResult, setSyncTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
+
   useEffect(() => {
     rest.getMcpAvailable().then(r => {
       setMcpServers(r.servers)
@@ -143,16 +150,33 @@ export function SettingsPage() {
       soundsEnabled: soundTier > 0,
       namingTheme,
       verbosity: verbosity as VerbosityLevel,
+      cloudSyncUrl: cloudSyncUrl || undefined,
+      cloudSyncKey: cloudSyncKey || undefined,
+      machineName: machineName || undefined,
     }
     dispatch({ type: 'UPDATE_SETTINGS', payload })
     api.updateSettings(payload)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingTheme, verbosity])
+  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingTheme, verbosity, cloudSyncUrl, cloudSyncKey, machineName])
 
   const handleBack = useCallback(() => {
     dispatch({ type: 'CLOSE_SETTINGS' })
   }, [dispatch])
+
+  const handleTestSync = useCallback(async () => {
+    if (!cloudSyncUrl || !cloudSyncKey) return
+    setSyncTesting(true)
+    setSyncTestResult(null)
+    try {
+      const result = await rest.testSyncConnection(cloudSyncUrl, cloudSyncKey)
+      setSyncTestResult(result)
+    } catch {
+      setSyncTestResult({ ok: false, error: 'Connection failed' })
+    } finally {
+      setSyncTesting(false)
+    }
+  }, [cloudSyncUrl, cloudSyncKey])
 
   const sectionTitle = (text: string) => (
     <div className="settings-section-title">{text}</div>
@@ -534,6 +558,61 @@ export function SettingsPage() {
               </div>
 
               <div className="settings-col">
+                {/* Cloud Sync */}
+                <div className="settings-card">
+                  {sectionTitle('Cloud Sync (Supabase)')}
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 10 }}>
+                    Sync your pipeline across machines. Create a free{' '}
+                    <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Supabase</a>{' '}
+                    project, run the schema from <code style={{ fontSize: 10 }}>server/supabase/schema.sql</code>, then paste your credentials below.
+                  </p>
+                  <div className="form-group" style={{ marginBottom: 8 }}>
+                    <label className="form-label">Machine Name</label>
+                    <input
+                      className="form-input"
+                      placeholder="e.g. Desktop, Laptop, Server"
+                      value={machineName}
+                      onChange={e => setMachineName(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 8 }}>
+                    <label className="form-label">Supabase URL</label>
+                    <input
+                      className="form-input"
+                      placeholder="https://abc123.supabase.co"
+                      value={cloudSyncUrl}
+                      onChange={e => setCloudSyncUrl(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 8 }}>
+                    <label className="form-label">Supabase Anon Key</label>
+                    <input
+                      className="form-input"
+                      type="password"
+                      placeholder="eyJ..."
+                      value={cloudSyncKey}
+                      onChange={e => setCloudSyncKey(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button
+                      className="btn btn-sm"
+                      onClick={handleTestSync}
+                      disabled={syncTesting || !cloudSyncUrl || !cloudSyncKey}
+                    >
+                      {syncTesting ? 'Testing...' : 'Test Connection'}
+                    </button>
+                    {syncTestResult && (
+                      <span style={{
+                        fontSize: 11,
+                        color: syncTestResult.ok ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)',
+                      }}>
+                        {syncTestResult.ok ? 'Connected!' : syncTestResult.error || 'Failed'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
                 {/* Usage Poll */}
                 <div className="settings-card">
                   {sectionTitle('Usage Poll Interval')}

@@ -197,6 +197,12 @@ export function PipelineBoard() {
     <div className="pipeline-board">
       <div className="pipeline-header">
         <span className="pipeline-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 14 }}>Pipeline Project</span>
+        {(() => {
+          const f = folders.find(f => f.id === projectId)
+          return f?.cloudSync ? (
+            <span title={f.lastSyncedAt ? `Last synced: ${new Date(f.lastSyncedAt).toLocaleTimeString()}` : 'Synced to Cloud'} style={{ fontSize: 12, color: 'var(--accent)', marginLeft: 4 }}>{'\u2601'}</span>
+          ) : null
+        })()}
         {folders.length > 1 ? (
           <select
             className="pipeline-project-select"

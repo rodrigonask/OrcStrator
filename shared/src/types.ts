@@ -21,6 +21,8 @@ export interface FolderConfig {
   createdAt: number
   orchestratorActive?: boolean
   stealthMode?: boolean
+  cloudSync?: boolean
+  lastSyncedAt?: number
 }
 
 export type ProcessState = 'idle' | 'reserved' | 'spawning' | 'running' | 'exiting'
@@ -355,6 +357,21 @@ export interface AppSettings {
   namingTheme?: 'fruits' | 'rpg' | 'wow' | 'memes'
   maxConcurrentProcesses?: number
   verbosity?: VerbosityLevel
+  // Cloud Sync (Supabase)
+  cloudSyncUrl?: string
+  cloudSyncKey?: string
+  machineName?: string
+  machineId?: string
+}
+
+// === CLOUD SYNC ===
+
+export type CloudSyncStatus = 'disconnected' | 'connected' | 'syncing' | 'error'
+
+export interface CloudSyncState {
+  status: CloudSyncStatus
+  lastSyncedAt?: number
+  error?: string
 }
 
 // === USAGE MONITORING ===
