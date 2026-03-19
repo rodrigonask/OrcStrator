@@ -125,12 +125,16 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   const safeFlags = filterFlags(flags)
   args.push(...safeFlags)
 
-  // Agent system prompt — strip null bytes and other control chars (except \n, \r, \t)
-  if (agentPrompt) {
-    const sanitized = agentPrompt.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    if (sanitized.length > 0) {
-      args.push('--append-system-prompt', sanitized)
-    }
+  // System context — always tell Claude it's running inside OrcStrator
+  const orcstratorContext = 'You are running inside OrcStrator, a multi-instance Claude orchestration platform. The user is chatting with you through its UI, not a terminal.'
+  const fullSystemPrompt = agentPrompt
+    ? `${orcstratorContext}\n\n${agentPrompt}`
+    : orcstratorContext
+
+  // Strip null bytes and other control chars (except \n, \r, \t)
+  const sanitized = fullSystemPrompt.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+  if (sanitized.length > 0) {
+    args.push('--append-system-prompt', sanitized)
   }
 
   // Environment — delete CLAUDECODE to prevent nested session issues
