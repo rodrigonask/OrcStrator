@@ -24,8 +24,8 @@ export function CommandMenu() {
 
   const commands: Command[] = useMemo(() => [
     {
-      name: '/new-instance',
-      description: 'Create a new Claude instance in the selected folder',
+      name: '/new-chat',
+      description: 'Create a new chat in the selected folder',
       action: () => {
         const folderId = folders[0]?.id
         if (folderId) {
@@ -43,7 +43,7 @@ export function CommandMenu() {
     },
     {
       name: '/monitor',
-      description: 'Open process monitor — view instances, kill switch',
+      description: 'Open process monitor — view chats, kill switch',
       action: () => dispatch({ type: 'SET_VIEW', payload: 'monitor' }),
     },
     {
@@ -58,12 +58,12 @@ export function CommandMenu() {
     },
     {
       name: '/pause-all',
-      description: 'Pause all running instances',
+      description: 'Pause all running chats',
       action: () => instances.forEach(i => api.pauseInstance(i.id)),
     },
     {
       name: '/resume-all',
-      description: 'Resume all paused instances',
+      description: 'Resume all paused chats',
       action: () => instances.forEach(i => api.resumeInstance(i.id)),
     },
     {

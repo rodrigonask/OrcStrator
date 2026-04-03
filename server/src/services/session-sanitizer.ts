@@ -60,32 +60,51 @@ export async function sanitizeSession(cwd: string, sessionId: string): Promise<v
 function stripBase64FromEntry(entry: Record<string, unknown>): { entry: Record<string, unknown>; changed: boolean } {
   let changed = false
 
-  if (Array.isArray(entry.content)) {
-    const newContent = entry.content.map((block: unknown) => {
-      if (block && typeof block === 'object') {
-        const b = block as Record<string, unknown>
-        // Strip base64 image source data
-        if (b.type === 'image' && typeof b.source === 'object' && b.source) {
-          const source = b.source as Record<string, unknown>
-          if (source.type === 'base64' && typeof source.data === 'string' && (source.data as string).length > 1000) {
-            changed = true
-            return { ...b, source: { ...source, data: '[STRIPPED]' } }
+  // Claude CLI session files nest content under entry.message.content, not entry.content directly
+  const message = entry.message as Record<string, unknown> | undefined
+  const contentArray = Array.isArray(message?.content) ? message!.content as unknown[] : Array.isArray(entry.content) ? entry.content as unknown[] : null
+
+  if (contentArray) {
+    const newContent = contentArray
+      .map((block: unknown) => {
+        if (block && typeof block === 'object') {
+          const b = block as Record<string, unknown>
+          // Strip base64 image source data — replace with text placeholder so session stays valid on resume
+          if (b.type === 'image' && typeof b.source === 'object' && b.source) {
+            const source = b.source as Record<string, unknown>
+            if (source.type === 'base64' && typeof source.data === 'string' && (source.data as string).length > 1000) {
+              changed = true
+              return { type: 'text', text: '[Image was sent here]' }
+            }
+          }
+          // Also check for base64 in text blocks (sometimes embedded)
+          if (b.type === 'text' && typeof b.text === 'string') {
+            const text = b.text as string
+            const base64Pattern = /data:[^;]+;base64,[A-Za-z0-9+/=]{1000,}/g
+            if (base64Pattern.test(text)) {
+              changed = true
+              return { ...b, text: text.replace(base64Pattern, 'data:image/png;base64,[STRIPPED]') }
+            }
           }
         }
-        // Also check for base64 in text blocks (sometimes embedded)
-        if (b.type === 'text' && typeof b.text === 'string') {
-          const text = b.text as string
-          // Match data URIs with base64 content
-          const base64Pattern = /data:[^;]+;base64,[A-Za-z0-9+/=]{1000,}/g
-          if (base64Pattern.test(text)) {
+        return block
+      })
+      // Remove empty text blocks — the API rejects content arrays with { type: 'text', text: '' }
+      .filter((block: unknown) => {
+        if (block && typeof block === 'object') {
+          const b = block as Record<string, unknown>
+          if (b.type === 'text' && (b.text as string) === '') {
             changed = true
-            return { ...b, text: text.replace(base64Pattern, 'data:image/png;base64,[STRIPPED]') }
+            return false
           }
         }
-      }
-      return block
-    })
+        return true
+      })
+
     if (changed) {
+      if (message) {
+        return { entry: { ...entry, message: { ...message, content: newContent } }, changed: true }
+      }
       return { entry: { ...entry, content: newContent }, changed: true }
     }
   }

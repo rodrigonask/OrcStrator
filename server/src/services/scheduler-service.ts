@@ -9,9 +9,13 @@ class SchedulerService {
 
   start(): void {
     if (this.timer) return
-    this.timer = setInterval(() => this.tick(), POLL_INTERVAL_MS)
+    this.timer = setInterval(() => {
+      this.tick().catch(err => console.error('[scheduler] tick error:', err))
+    }, POLL_INTERVAL_MS)
     // Run once immediately after a short startup delay
-    setTimeout(() => this.tick(), 5_000)
+    setTimeout(() => {
+      this.tick().catch(err => console.error('[scheduler] initial tick error:', err))
+    }, 5_000)
     console.log('[scheduler] SchedulerService started — polling every 60s')
   }
 

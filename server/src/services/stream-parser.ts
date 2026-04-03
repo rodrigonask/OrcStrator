@@ -117,6 +117,7 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
         cacheCreationTokens: cacheCreation || undefined,
         cacheReadTokens: cacheRead || undefined,
         resultText,
+        model: data.model as string | undefined,
       }
     }
 
@@ -130,6 +131,9 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
 
       const events: ClaudeStreamEvent[] = []
       for (const block of contentBlocks) {
+        if (block.type === 'text' && typeof block.text === 'string' && (block.text as string).trim()) {
+          events.push({ type: 'text-delta', instanceId, text: block.text as string })
+        }
         if (block.type === 'tool_use') {
           const toolId = block.id as string
           events.push({ type: 'tool-start', instanceId, toolId, toolName: block.name as string })

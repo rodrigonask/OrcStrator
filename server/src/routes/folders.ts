@@ -177,6 +177,31 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     return { released: instances.length, instanceIds }
   })
 
+  // Close All — kill all processes and delete all instances in the folder
+  app.post('/folders/:id/close-all', async (request) => {
+    const { id: folderId } = request.params as { id: string }
+    const instances = db.prepare('SELECT * FROM instances WHERE folder_id = ?').all(folderId) as Record<string, unknown>[]
+
+    await Promise.all(instances.map(inst => processRegistry.killProcess(inst.id as string)))
+
+    const instanceIds = instances.map(i => i.id as string)
+
+    // Release any pipeline tasks locked by these instances
+    if (instanceIds.length > 0) {
+      const placeholders = instanceIds.map(() => '?').join(',')
+      db.prepare(`UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL WHERE locked_by IN (${placeholders})`).run(...instanceIds)
+    }
+
+    db.prepare('DELETE FROM instances WHERE folder_id = ?').run(folderId)
+    db.prepare('UPDATE folders SET orchestrator_active = 0 WHERE id = ?').run(folderId)
+
+    for (const id of instanceIds) {
+      broadcastEvent({ type: 'instance:deleted', payload: { id } })
+    }
+
+    return { closed: instances.length, instanceIds }
+  })
+
   // Renew — kill all processes, clear sessions, release locked tasks, warm up fresh sessions
   app.post('/folders/:id/renew', async (request) => {
     const { id: folderId } = request.params as { id: string }

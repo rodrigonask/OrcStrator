@@ -1,6 +1,6 @@
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS } from '@orcstrator/shared'
+import { DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS, DEFAULT_ROLE_EFFORT } from '@orcstrator/shared'
 import type { OrcLogEntry } from '@orcstrator/shared'
 
 // ── Orchestrator Event Ring Buffer ──
@@ -61,16 +61,35 @@ export function getRoleTools(): Record<string, string> {
   return result
 }
 
-/** Permission mode: read from settings */
+/** Permission mode: read from settings, returns the appropriate CLI flag */
 export function getPermissionFlag(): string {
   try {
     const row = db.prepare("SELECT value FROM settings WHERE key = 'permissionMode'").get() as { value: string } | undefined
     if (row) {
       const mode = JSON.parse(row.value) as string
-      if (mode === 'bypass') return '--dangerously-skip-permissions'
+      if (mode === 'bypassPermissions') return '--dangerously-skip-permissions'
       if (mode === 'plan') return '--permission-mode=plan'
+      if (mode === 'acceptEdits') return '--permission-mode=acceptEdits'
+      if (mode === 'dontAsk') return '--permission-mode=dontAsk'
+      if (mode === 'auto') return '--permission-mode=auto'
       if (mode === 'default') return '--permission-mode=default'
     }
   } catch { /* fallback */ }
   return '--dangerously-skip-permissions'
+}
+
+/** Effort levels: read from settings per-role, fallback to defaults */
+export function getRoleEffort(): Record<string, string> {
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'orchestratorEffort'").get() as { value: string } | undefined
+    if (row) {
+      const effort = JSON.parse(row.value) as Record<string, string>
+      const result = { ...DEFAULT_ROLE_EFFORT }
+      for (const [role, level] of Object.entries(effort)) {
+        if (level) result[role] = level
+      }
+      return result
+    }
+  } catch { /* use defaults */ }
+  return DEFAULT_ROLE_EFFORT
 }

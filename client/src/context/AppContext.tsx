@@ -178,13 +178,13 @@ function instancesReducer(state: InstancesSlice, action: Action): InstancesSlice
     }
     case 'UPDATE_FOLDER':
       return { ...state, folders: state.folders.map(f => f.id === action.payload.id ? { ...f, ...action.payload.updates } : f) }
-    case 'REORDER_FOLDERS':
+    case 'REORDER_FOLDERS': {
+      const orderMap = new Map(action.payload.map((id, i) => [id, i]))
       return {
         ...state,
-        folders: action.payload
-          .map((id, index) => { const f = state.folders.find(f => f.id === id); return f ? { ...f, sortOrder: index } : null })
-          .filter((f): f is FolderConfig => f !== null),
+        folders: state.folders.map(f => orderMap.has(f.id) ? { ...f, sortOrder: orderMap.get(f.id)! } : f),
       }
+    }
     case 'REORDER_INSTANCES': {
       const { folderId, ids } = action.payload
       const others = state.instances.filter(i => i.folderId !== folderId)
@@ -519,8 +519,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (uiStateRef.current.terminalPanelOpen) {
               dispatch({ type: 'APPEND_RAW_LINE', payload: { instanceId, line: event.line, isStderr: event.isStderr } })
             }
+          } else if (event.type === 'assistant-message') {
+            dispatch({ type: 'ADD_MESSAGE', payload: event.message })
+            dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
           } else if (event.type === 'result' && event.inputTokens !== undefined) {
-            dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { ctxTokens: event.inputTokens } } })
+            const updates: Record<string, unknown> = { ctxTokens: event.inputTokens }
+            if (event.model) updates.ctxModel = event.model
+            dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates } })
           }
         }
       })
@@ -542,16 +547,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(api.onUsageUpdated((payload: any) => dispatch({ type: 'SET_USAGE', payload })))
 
     unsubs.push(
-      api.onEvent('instance:updated', (payload: { id: string; state?: string; sessionId?: string | null }) => {
+      api.onEvent('instance:updated', (payload: Record<string, unknown>) => {
+        if (!payload.id) return
+        const id = payload.id as string
         const updates: Record<string, unknown> = {}
-        if (payload.state !== undefined) updates.state = payload.state
+        const fields = ['state', 'sessionId', 'name', 'agentRole', 'specialization',
+          'orchestratorManaged', 'sortOrder', 'agentId', 'idleRestartMinutes',
+          'xpTotal', 'level', 'overdriveTasks', 'overdriveStartedAt', 'lastTaskAt']
+        for (const f of fields) {
+          if (f in payload) updates[f] = payload[f] ?? undefined
+        }
+        // Clear task metadata when session ends
         if (payload.sessionId === null || payload.sessionId === undefined) {
           updates.sessionId = undefined
           updates.activeTaskId = undefined
           updates.activeTaskTitle = undefined
           updates.taskStartedAt = undefined
         }
-        dispatch({ type: 'UPDATE_INSTANCE', payload: { id: payload.id, updates } })
+        dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates } })
       })
     )
 

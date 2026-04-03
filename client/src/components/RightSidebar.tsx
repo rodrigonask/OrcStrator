@@ -3,26 +3,20 @@ import { createPortal } from 'react-dom'
 import { useUI } from '../context/UIContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
-import { useGame } from '../context/GameContext'
-import { useFeatureGate } from '../hooks/useFeatureGate'
 import { useAgentNames } from '../hooks/useAgentNames'
 import { OrcFeed } from './pipeline/OrcFeed'
-import { OverdriveFire } from './OverdriveFire'
-import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { api } from '../api'
-import { fmtNum, fmtUsd, fmtTime, getOdTier, fmtOrcLog } from '../utils/format'
-import { TIER_COLORS, TIER_ICONS, ORC_LOG_FILTER_TYPES, ANIMATION_TIERS, SOUND_TIERS } from '@shared/constants'
+import { fmtUsd, fmtTime, fmtOrcLog } from '../utils/format'
+import { ORC_LOG_FILTER_TYPES, ANIMATION_TIERS, SOUND_TIERS } from '@shared/constants'
 import { resolveAnimTier, resolveSoundTier } from '../hooks/useVFX'
 import { vfxBus } from '../systems/vfx-bus'
 import { soundEngine } from '../systems/sound-engine'
 import type { SavingsSummary, OrcLogEntry, OrcLogFilter } from '@shared/types'
 
 export function RightSidebar() {
-  const { settings, activePipelineId, view, gameActive } = useUI()
+  const { settings, activePipelineId, view, gameActive, showSettings } = useUI()
   const { instances, folders } = useInstances()
   const { dispatch } = useAppDispatch()
-  const { profile, currentLevel, nextLevel, xpProgress } = useGame()
-  const overdriveGate = useFeatureGate('overdrive')
   const [collapsed, setCollapsed] = useState(false)
   const [orcMode, setOrcMode] = useState(false)
   const [savings, setSavings] = useState<SavingsSummary | null>(null)
@@ -30,7 +24,6 @@ export function RightSidebar() {
   const [orcLogs, setOrcLogs] = useState<OrcLogEntry[]>([])
   const [orcFilter, setOrcFilter] = useState<OrcLogFilter>('all')
   const [orcHovered, setOrcHovered] = useState(false)
-  const [odAnimPaused, setOdAnimPaused] = useState(() => localStorage.getItem('od-anim-paused') === '1')
   const [liveMultiplier, setLiveMultiplier] = useState<number | null>(null)
   const [showAnimTip, setShowAnimTip] = useState<string | null>(null)
   const [showSoundTip, setShowSoundTip] = useState<string | null>(null)
@@ -96,14 +89,7 @@ export function RightSidebar() {
     dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: orcFolderId })
   }, [dispatch, orcFolderId])
 
-  const userName = (settings.userName as string | undefined) || 'The Human'
-  const userEmoji = (settings.userEmoji as string | undefined) || '🧠'
-  const tier = currentLevel?.tier ?? 'Beginner'
-  const tierColor = TIER_COLORS[tier] ?? '#10b981'
-  const tierIcon = TIER_ICONS[tier] ?? '🌱'
-
   const activeAgents = instances.filter(i => i.state === 'running').length
-  const totalProjects = folders.length
 
   const handleShutdownConfirm = useCallback(async () => {
     setShowShutdown(false)
@@ -114,42 +100,26 @@ export function RightSidebar() {
     }
   }, [])
 
-  const totalTokensUsed = savings
-    ? savings.days.reduce((s, d) => s + d.totalInput + d.totalOutput, 0)
-    : 0
-
-  // Multiplier from last-hour actual cache ratio (polled every 30s)
-  // 1 / (1 - cacheRatio): 80% cache → 5x, 90% → 10x
   const overdriveMultiplier = liveMultiplier ?? 1
 
-  const odTier = getOdTier(overdriveMultiplier)
-
-  // Track level-up transitions for animations
-  const prevTierRef = useRef(odTier.label)
-  const [odLevelUpAnim, setOdLevelUpAnim] = useState(false)
-  useEffect(() => {
-    if (odTier.label !== prevTierRef.current) {
-      prevTierRef.current = odTier.label
-      setOdLevelUpAnim(true)
-      const t = setTimeout(() => setOdLevelUpAnim(false), 1200)
-      return () => clearTimeout(t)
+  const handleNavClick = useCallback((target: 'pipeline' | 'agents' | 'sessions' | 'usage') => {
+    if (target === 'pipeline') {
+      const pipelineId = activePipelineId || folders[0]?.id || null
+      if (pipelineId) dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: pipelineId })
     }
-  }, [odTier.label])
+    dispatch({ type: 'SELECT_INSTANCE', payload: null })
+    dispatch({ type: 'SET_VIEW', payload: target })
+  }, [dispatch, activePipelineId, folders])
 
-  const isOnFire = overdriveMultiplier >= 5
-  const fireIntensity = isOnFire ? Math.min((overdriveMultiplier - 5) / 5 + 0.3, 1) : 0
-
-  const STATS = [
-    { icon: '⚔️', value: fmtNum(profile?.tasksDone ?? 0), label: 'Tasks Done' },
-    { icon: '🤖', value: String(activeAgents), label: 'Active' },
-    { icon: '📁', value: String(totalProjects), label: 'Projects' },
-    { icon: '🔄', value: savings ? fmtNum(savings.totalSessions) : '—', label: 'Sessions' },
-    { icon: '📊', value: totalTokensUsed > 0 ? fmtNum(totalTokensUsed) : '—', label: 'Tokens Used' },
-    { icon: '💰', value: savings && savings.savedUsd > 0 ? fmtUsd(savings.savedUsd) : '—', label: 'Saved w Cache' },
+  const NAV_ITEMS: { key: 'pipeline' | 'agents' | 'sessions' | 'usage'; label: string }[] = [
+    { key: 'pipeline', label: 'Pipeline' },
+    { key: 'agents', label: 'Agents' },
+    { key: 'sessions', label: 'Sessions' },
+    { key: 'usage', label: 'Usage' },
   ]
 
   return (
-    <aside className={`right-sidebar rs-entrance${collapsed ? ' rs-collapsed' : ''}${overdriveGate.unlocked && overdriveMultiplier > 1 ? ` rs-od-${odTier.label.toLowerCase()}` : ''}${odAnimPaused ? ' od-anim-paused' : ''}`}>
+    <aside className={`right-sidebar rs-entrance${collapsed ? ' rs-collapsed' : ''}`}>
       {/* Collapse button */}
       <div className="rs-header-btns">
         <button
@@ -157,17 +127,14 @@ export function RightSidebar() {
           onClick={() => setCollapsed(c => !c)}
           title={collapsed ? 'Expand panel' : 'Collapse panel'}
         >
-          {collapsed ? '◀' : '▶'}
+          {collapsed ? '\u25C0' : '\u25B6'}
         </button>
       </div>
 
       {collapsed ? (
         <div className="rs-collapsed-icons">
-          <button className="rs-icon-btn" onClick={() => { setCollapsed(false); setOrcMode(false) }} title="User stats">
-            {userEmoji}
-          </button>
-          <button className="rs-icon-btn rs-icon-sword" onClick={() => { setCollapsed(false); setOrcMode(true) }} title="Orc activity">
-            ⚔
+          <button className="rs-icon-btn" onClick={() => { setCollapsed(false); setOrcMode(false) }} title="Orc panel">
+            {'\u2694'}
           </button>
         </div>
       ) : orcMode ? (
@@ -183,7 +150,7 @@ export function RightSidebar() {
                 </div>
                 <div className="rs-orc-header-right">
                   <button className="rs-orc-board-btn" onClick={handleGoToBoard}>Board</button>
-                  <button className="rs-orc-close-btn" onClick={() => setOrcMode(false)} title="Close Orc view">✕</button>
+                  <button className="rs-orc-close-btn" onClick={() => setOrcMode(false)} title="Close Orc view">{'\u2715'}</button>
                 </div>
               </div>
               <div className="rs-orc-agents">
@@ -200,7 +167,7 @@ export function RightSidebar() {
                       <span className="rs-orc-agent-name">{inst.name}</span>
                       {inst.activeTaskTitle && (
                         <span className="rs-orc-agent-task">
-                          {inst.activeTaskTitle.length > 35 ? inst.activeTaskTitle.slice(0, 35) + '…' : inst.activeTaskTitle}
+                          {inst.activeTaskTitle.length > 35 ? inst.activeTaskTitle.slice(0, 35) + '\u2026' : inst.activeTaskTitle}
                         </span>
                       )}
                     </div>
@@ -213,190 +180,65 @@ export function RightSidebar() {
         </div>
       ) : (
         <>
-          {/* ── Identity card (compact) ── */}
-          <div className="rs-identity-card">
-            <div style={{ fontFamily: 'var(--font-pixel)', fontSize: 7, color: 'var(--text-tertiary)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 4 }}>
-              The Human
-            </div>
-            <div className="rs-identity-top">
-              <span
-                className="rs-avatar-sm"
-                style={['Cosmic', 'Mythic', 'Elite'].includes(tier) ? { filter: `drop-shadow(0 0 5px ${tierColor})` } : {}}
-              >
-                {userEmoji}
-              </span>
-              <div className="rs-identity-info">
-                <div className="rs-name">{userName}</div>
-                <div className="rs-identity-meta">
-                  <span
-                    className="rs-tier-badge"
-                    style={{
-                      color: tierColor,
-                      borderColor: tierColor,
-                      fontFamily: 'var(--font-pixel)',
-                      fontSize: 7,
-                      boxShadow: `0 0 6px ${tierColor}44`,
-                    }}
-                  >
-                    {tierIcon} {tier}
-                  </span>
-                  <span style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: tierColor }}>
-                    Lv.{currentLevel?.level ?? 1}
-                  </span>
-                </div>
-              </div>
-            </div>
-            {/* Thin XP strip */}
-            <div className="rs-xp-strip-track">
-              <div
-                className="rs-xp-strip-fill"
-                style={{ width: `${Math.min(xpProgress * 100, 100)}%`, background: tierColor, boxShadow: `0 0 4px ${tierColor}` }}
-              />
-            </div>
-            <div className="rs-xp-strip-label">
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>
-                {profile ? fmtNum(profile.totalXp) : '0'} XP
-              </span>
-              {nextLevel && profile && (
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>
-                  {fmtNum(nextLevel.xpRequired - profile.totalXp)} to Lv.{nextLevel.level}
-                </span>
-              )}
-            </div>
+          {/* ── Compact Overdrive line ── */}
+          <div className="rs-od-compact">
+            <span className="rs-od-compact-label">Cache</span>
+            <span className="rs-od-compact-value" style={{ color: overdriveMultiplier >= 3 ? '#22d3ee' : overdriveMultiplier >= 2 ? '#60a5fa' : 'var(--text-secondary)' }}>
+              {overdriveMultiplier.toFixed(1)}x
+            </span>
+            {savings && savings.savedUsd > 0 && (
+              <span className="rs-od-compact-saved">{fmtUsd(savings.savedUsd)} saved</span>
+            )}
           </div>
 
-          {/* ── Stats grid (30d) ── */}
-          <div className="rs-section" data-tour-id="tour-stats">
-            <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>Stats <span style={{ color: 'var(--text-tertiary)', fontSize: 7 }}>(30d)</span></div>
-            <div className="rs-stats-grid">
-              {STATS.map(({ icon, value, label }) => (
-                <div key={label} className="rs-stat-card">
-                  <div className="rs-stat-icon">{icon}</div>
-                  <div className="rs-stat-value" style={{ fontFamily: 'var(--font-pixel)', fontSize: 9 }}>{value}</div>
-                  <div className="rs-stat-label" style={{ fontFamily: 'var(--font-mono)' }}>{label}</div>
-                </div>
-              ))}
+          {/* ── The Orc POV ── */}
+          {orcLogs.length === 0 ? (
+            <div className="rs-orc-empty">
+              <span style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: 'var(--text-tertiary)' }}>The Orc</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>No orders yet</span>
             </div>
-          </div>
-
-          {/* ── Overdrive Multiplier ── */}
-          {overdriveGate.unlocked && (() => {
-            const barPct = Math.min(((overdriveMultiplier - 1) / 4) * 100, 100)
-            const tierClass = `od-meter-${odTier.label.toLowerCase()}`
-            return (
-              <div className={`rs-section od-meter-section ${tierClass}${odLevelUpAnim ? ' od-meter-levelup' : ''}${isOnFire && !odAnimPaused ? ' od-meter-fire' : ''}${odAnimPaused ? ' od-anim-paused' : ''}`}>
-                {/* Fire canvas overlay for 5x+ (hidden when paused) */}
-                {isOnFire && !odAnimPaused && (
-                  <OverdriveFire intensity={fireIntensity} width={232} height={50} />
-                )}
-
-                <div className="od-meter-header">
-                  <span className="od-meter-label">
-                    Overdrive
-                    <span className="rs-overdrive-tip-wrap">
-                      <span className="rs-overdrive-tip-icon">?</span>
-                      <span className="rs-overdrive-tip">For every $1 you spend, you get ${overdriveMultiplier.toFixed(1)} of work done. Smart caching reuses context at 90% discount. Keep sessions close together to push past 5x and ignite Supernova mode.</span>
-                    </span>
+          ) : (
+            <div className="rs-section rs-orc-pov-section">
+              <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                The Orc
+                <div className="rs-orc-log-filters">
+                  {(['all', 'errors', 'assignments'] as OrcLogFilter[]).map(f => (
                     <button
-                      className={`od-eye-btn${odAnimPaused ? ' od-eye-off' : ''}`}
-                      onClick={() => {
-                        const next = !odAnimPaused
-                        setOdAnimPaused(next)
-                        localStorage.setItem('od-anim-paused', next ? '1' : '0')
-                      }}
-                      title={odAnimPaused ? 'Enable animations' : 'Disable animations'}
+                      key={f}
+                      className={`rs-orc-filter-btn${orcFilter === f ? ' active' : ''}`}
+                      onClick={() => setOrcFilter(f)}
                     >
-                      {odAnimPaused ? '\u25C9' : '\u25CE'}
+                      {f.charAt(0).toUpperCase() + f.slice(1)}
                     </button>
-                  </span>
-                  <span className={`od-meter-value${odLevelUpAnim ? ' od-value-pop' : ''}`} style={{ color: odTier.color }}>
-                    {overdriveMultiplier.toFixed(1)}x
-                  </span>
-                </div>
-
-                {/* Tier label */}
-                <div className="od-meter-tier" style={{ color: odTier.color }}>
-                  {odTier.label}
-                </div>
-
-                {/* Scale bar with touchpoints */}
-                <div className="od-meter-track">
-                  <div
-                    className={`od-meter-fill${isOnFire ? ' od-fill-fire' : ''}`}
-                    style={{
-                      width: `${barPct}%`,
-                      background: isOnFire
-                        ? `linear-gradient(90deg, ${odTier.color}, #ff6b2b, #fbbf24)`
-                        : odTier.color,
-                    }}
-                  />
-                  {/* Touchpoints: 1x, 2x, 3x, 4x, 5x */}
-                  {[1, 2, 3, 4, 5].map(n => (
-                    <span
-                      key={n}
-                      className="od-meter-mark"
-                      style={{ left: `${((n - 1) / 4) * 100}%` }}
-                    >
-                      <span className={`od-meter-mark-label${overdriveMultiplier >= n ? ' od-mark-active' : ''}`}>{n}x</span>
-                    </span>
                   ))}
                 </div>
               </div>
-            )
-          })()}
-          {!overdriveGate.unlocked && (
-            <div
-              className="rs-section"
-              style={{ cursor: 'pointer', opacity: 0.5 }}
-              onClick={() => overdriveGate.check()}
-            >
-              <div style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                {'\uD83D\uDD12'} Overdrive — Lv.{overdriveGate.gate?.level}
+              <div
+                className="rs-orc-log-list"
+                ref={orcPovRef}
+                onMouseEnter={() => setOrcHovered(true)}
+                onMouseLeave={() => setOrcHovered(false)}
+              >
+                {(() => {
+                  const filtered = orcFilter === 'all'
+                    ? orcLogs
+                    : orcLogs.filter(l => ORC_LOG_FILTER_TYPES[orcFilter]?.includes(l.type as string))
+                  return filtered.length === 0 ? (
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', padding: '4px 0' }}>
+                      No {orcFilter} events
+                    </div>
+                  ) : (
+                    filtered.map(log => (
+                      <div key={log.id} className={`rs-orc-log-entry rs-orc-log-${log.type}`}>
+                        <span className="rs-orc-log-time">{fmtTime(log.timestamp)}</span>
+                        <span className="rs-orc-log-text">{fmtOrcLog(log)}</span>
+                      </div>
+                    ))
+                  )
+                })()}
               </div>
             </div>
           )}
-
-          {/* ── The Orc POV ── */}
-          <div className="rs-section rs-orc-pov-section">
-            <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-              The Orc
-              <div className="rs-orc-log-filters">
-                {(['all', 'errors', 'assignments'] as OrcLogFilter[]).map(f => (
-                  <button
-                    key={f}
-                    className={`rs-orc-filter-btn${orcFilter === f ? ' active' : ''}`}
-                    onClick={() => setOrcFilter(f)}
-                  >
-                    {f.charAt(0).toUpperCase() + f.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div
-              className="rs-orc-log-list"
-              ref={orcPovRef}
-              onMouseEnter={() => setOrcHovered(true)}
-              onMouseLeave={() => setOrcHovered(false)}
-            >
-              {(() => {
-                const filtered = orcFilter === 'all'
-                  ? orcLogs
-                  : orcLogs.filter(l => ORC_LOG_FILTER_TYPES[orcFilter]?.includes(l.type as string))
-                return filtered.length === 0 ? (
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', padding: '4px 0' }}>
-                    {orcFilter === 'all' ? 'No orders yet' : `No ${orcFilter} events`}
-                  </div>
-                ) : (
-                  filtered.map(log => (
-                    <div key={log.id} className={`rs-orc-log-entry rs-orc-log-${log.type}`}>
-                      <span className="rs-orc-log-time">{fmtTime(log.timestamp)}</span>
-                      <span className="rs-orc-log-text">{fmtOrcLog(log)}</span>
-                    </div>
-                  ))
-                )
-              })()}
-            </div>
-          </div>
 
           {/* ── Footer ── */}
           <div className="rs-footer">
@@ -405,7 +247,7 @@ export function RightSidebar() {
               onClick={() => dispatch({ type: 'SET_GAME_ACTIVE', payload: !gameActive })}
               title={gameActive ? 'Switch to Pipeline' : 'Switch to Game'}
             >
-              {gameActive ? '🎮' : '📋'}
+              {gameActive ? '\uD83C\uDFAE' : '\uD83D\uDCCB'}
             </button>
             <span className={`rs-footer-tip-wrap${showAnimTip ? ' rs-tip-active' : ''}`}>
               <span className="rs-footer-tip">Animations: {ANIMATION_TIERS[resolveAnimTier(settings)]?.name ?? 'Peaceful'}</span>
@@ -424,7 +266,7 @@ export function RightSidebar() {
                   animTipTimer.current = setTimeout(() => setShowAnimTip(null), 1500)
                 }}
               >
-                {ANIMATION_TIERS[resolveAnimTier(settings)]?.icon ?? '⏸'}
+                {ANIMATION_TIERS[resolveAnimTier(settings)]?.icon ?? '\u23F8'}
               </button>
             </span>
             <span className={`rs-footer-tip-wrap${showSoundTip ? ' rs-tip-active' : ''}`}>
@@ -447,18 +289,37 @@ export function RightSidebar() {
                   soundTipTimer.current = setTimeout(() => setShowSoundTip(null), 1500)
                 }}
               >
-                {SOUND_TIERS[resolveSoundTier(settings)]?.icon ?? '🔇'}
+                {SOUND_TIERS[resolveSoundTier(settings)]?.icon ?? '\uD83D\uDD07'}
               </button>
             </span>
             <button className="rs-footer-btn" data-tour-id="tour-settings" onClick={() => dispatch({ type: 'OPEN_SETTINGS' })} title="Settings">
-              ⚙
+              {'\u2699'}
             </button>
             <button
               className="rs-footer-btn rs-shutdown-btn"
               onClick={() => setShowShutdown(true)}
               title="Shutdown"
             >
-              ⏻
+              {'\u23FB'}
+            </button>
+          </div>
+
+          {/* ── Nav links ── */}
+          <div className="rs-nav-bar">
+            {NAV_ITEMS.map(({ key, label }) => (
+              <button
+                key={key}
+                className={`rs-nav-item${view === key ? ' active' : ''}`}
+                onClick={() => handleNavClick(key)}
+              >
+                <span className="font-mono" style={{ fontSize: 11 }}>{label}</span>
+              </button>
+            ))}
+            <button
+              className={`rs-nav-item${showSettings ? ' active' : ''}`}
+              onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
+            >
+              <span className="font-mono" style={{ fontSize: 11 }}>Settings</span>
             </button>
           </div>
         </>
@@ -469,7 +330,7 @@ export function RightSidebar() {
           <div className="modal-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
             <div className="modal-header">
               <span className="modal-title">Log out and TERMINATE THE SERVER?</span>
-              <button className="modal-close" onClick={() => setShowShutdown(false)}>×</button>
+              <button className="modal-close" onClick={() => setShowShutdown(false)}>{'\u00D7'}</button>
             </div>
             <div className="modal-body">
               <p style={{ marginBottom: 8 }}>
@@ -477,7 +338,7 @@ export function RightSidebar() {
               </p>
               {activeAgents > 0 && (
                 <p style={{ color: 'var(--warning)', fontSize: 13, margin: 0 }}>
-                  ⚠ {activeAgents} agent{activeAgents !== 1 ? 's are' : ' is'} currently running.
+                  {'\u26A0'} {activeAgents} agent{activeAgents !== 1 ? 's are' : ' is'} currently running.
                 </p>
               )}
             </div>
@@ -488,10 +349,6 @@ export function RightSidebar() {
           </div>
         </div>,
         document.body
-      )}
-
-      {overdriveGate.showLockedModal && overdriveGate.gate && (
-        <FeatureLockedModal gate={overdriveGate.gate} onClose={overdriveGate.dismissModal} />
       )}
     </aside>
   )

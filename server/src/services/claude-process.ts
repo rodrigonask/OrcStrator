@@ -38,7 +38,8 @@ const ALLOWED_FLAGS = new Set([
   '--verbose', '--output-format', '--input-format',
   '--resume', '--session-id', '--no-cache',
   '--mcp-config', '--strict-mcp-config',
-  '--tools', '--allowedTools', '--disallowedTools'
+  '--tools', '--allowedTools', '--disallowedTools',
+  '--effort', '--max-budget-usd', '--fallback-model',
 ])
 
 function filterFlags(flags: string[]): string[] {
@@ -103,6 +104,12 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     }
   }
 
+  // Pre-resume sanitization: strip leftover base64 image data from the session file
+  // so Claude CLI doesn't load invalid [STRIPPED] markers or bloated image payloads
+  if (sessionId && cwd) {
+    await sanitizeSession(cwd, sessionId)
+  }
+
   // Build CLI args
   const args: string[] = ['--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json']
 
@@ -140,8 +147,8 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // Environment — delete CLAUDECODE to prevent nested session issues
   const env = { ...process.env }
   delete env['CLAUDECODE']
-  // Trigger auto-compaction earlier to prevent runaway context growth
-  env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = '60'
+  // Trigger auto-compaction to prevent runaway context growth (CLI default is ~80-95%)
+  env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = '80'
 
   // Spawn the process
   const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
@@ -233,105 +240,125 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // Read stdout line by line
   let stdoutBuffer = ''
   child.stdout?.on('data', (chunk: Buffer) => {
-    resetTimeout()
-    stdoutBuffer += chunk.toString()
-    const lines = stdoutBuffer.split('\n')
-    stdoutBuffer = lines.pop() || ''
+    try {
+      resetTimeout()
+      stdoutBuffer += chunk.toString()
+      const lines = stdoutBuffer.split('\n')
+      stdoutBuffer = lines.pop() || ''
 
-    for (const line of lines) {
-      // Save assistant messages to DB before parsing
-      try {
-        const raw = JSON.parse(line.trim())
-        if (raw.type === 'assistant' && raw.message?.content) {
-          const msgId = crypto.randomUUID()
-          const content = raw.message.content.map((b: Record<string, unknown>) => {
-            if (b.type === 'text') return { type: 'text', text: b.text }
-            if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
-            return b
-          })
-          if (raw.message.content.some((b: Record<string, unknown>) => b.type === 'text' && typeof b.text === 'string' && (b.text as string).trim())) {
-            sawAssistantText = true
-          }
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(msgId, instanceId, 'assistant', JSON.stringify(content), Date.now())
-        }
-      } catch {
-        // non-JSON line, ignore
-      }
+      for (const line of lines) {
+        // Save assistant messages to DB before parsing
+        try {
+          const raw = JSON.parse(line.trim())
+          if (raw.type === 'assistant' && raw.message?.content) {
+            const msgId = crypto.randomUUID()
+            const content = raw.message.content.map((b: Record<string, unknown>) => {
+              if (b.type === 'text') return { type: 'text', text: b.text }
+              if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
+              return b
+            })
+            if (raw.message.content.some((b: Record<string, unknown>) => b.type === 'text' && typeof b.text === 'string' && (b.text as string).trim())) {
+              sawAssistantText = true
+            }
+            const createdAt = Date.now()
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
+              VALUES (?, ?, ?, ?, ?)
+            `).run(msgId, instanceId, 'assistant', JSON.stringify(content), createdAt)
 
-      // Forward raw line to client for terminal stream view
-      if (line.trim()) {
-        enqueueEvent({ type: 'raw-line', instanceId, line })
-      }
-
-      const parsed = parseLine(line)
-      if (!parsed) continue
-      const lineEvents = Array.isArray(parsed) ? parsed : [parsed]
-
-      for (const event of lineEvents) {
-        if (event.type === 'system' && event.sessionId) {
-          resolvedSessionId = event.sessionId
-          db.prepare('UPDATE instances SET session_id = ? WHERE id = ?').run(resolvedSessionId, instanceId)
-        }
-
-        if (event.type === 'result') {
-          lastCostUsd = event.costUsd
-          lastInputTokens = event.inputTokens
-          lastOutputTokens = event.outputTokens
-          lastCacheCreation = event.cacheCreationTokens
-          lastCacheRead = event.cacheReadTokens
-          if (event.resultText) lastResultText = event.resultText
-          console.log(`[claude-process] Result for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd} cache_create=${lastCacheCreation} cache_read=${lastCacheRead}`)
-
-          // Eagerly persist token data NOW — protects against server crash before exit handler runs
-          try {
-            db.prepare(
-              `UPDATE token_usage
-               SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
-                   cache_creation_tokens = ?, cache_read_tokens = ?
-               WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)`
-            ).run(
-              resolvedSessionId || null,
-              lastInputTokens || 0,
-              lastOutputTokens || 0,
-              lastCostUsd || 0,
-              lastCacheCreation || 0,
-              lastCacheRead || 0,
+            // Broadcast the saved message so the client can display it immediately
+            enqueueEvent({
+              type: 'assistant-message',
               instanceId,
-              instanceId
-            )
-          } catch { /* non-critical — exit handler will retry */ }
+              message: { id: msgId, instanceId, role: 'assistant', content, createdAt }
+            })
+          }
+        } catch {
+          // non-JSON line, ignore
         }
 
-        enqueueEvent(event)
+        // Forward raw line to client for terminal stream view
+        if (line.trim()) {
+          enqueueEvent({ type: 'raw-line', instanceId, line })
+        }
+
+        const parsed = parseLine(line)
+        if (!parsed) continue
+        const lineEvents = Array.isArray(parsed) ? parsed : [parsed]
+
+        for (const event of lineEvents) {
+          if (event.type === 'system' && event.sessionId) {
+            resolvedSessionId = event.sessionId
+            try { db.prepare('UPDATE instances SET session_id = ? WHERE id = ?').run(resolvedSessionId, instanceId) } catch { /* non-critical */ }
+          }
+
+          if (event.type === 'result') {
+            lastCostUsd = event.costUsd
+            lastInputTokens = event.inputTokens
+            lastOutputTokens = event.outputTokens
+            lastCacheCreation = event.cacheCreationTokens
+            lastCacheRead = event.cacheReadTokens
+            if (event.resultText) lastResultText = event.resultText
+            console.log(`[claude-process] Result for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cost=$${lastCostUsd} cache_create=${lastCacheCreation} cache_read=${lastCacheRead}`)
+
+            // Eagerly persist token data NOW — protects against server crash before exit handler runs
+            try {
+              db.prepare(
+                `UPDATE token_usage
+                 SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
+                     cache_creation_tokens = ?, cache_read_tokens = ?
+                 WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)`
+              ).run(
+                resolvedSessionId || null,
+                lastInputTokens || 0,
+                lastOutputTokens || 0,
+                lastCostUsd || 0,
+                lastCacheCreation || 0,
+                lastCacheRead || 0,
+                instanceId,
+                instanceId
+              )
+            } catch { /* non-critical — exit handler will retry */ }
+          }
+
+          enqueueEvent(event)
+        }
       }
+    } catch (err) {
+      console.error(`[claude-process] stdout handler error [${instanceId.slice(0, 8)}]:`, err)
     }
   })
 
   // Stderr — forward line-by-line as raw-line events
   let stderrBuffer = ''
   child.stderr?.on('data', (chunk: Buffer) => {
-    stderrBuffer += chunk.toString()
-    const lines = stderrBuffer.split('\n')
-    stderrBuffer = lines.pop() || ''
-    for (const line of lines) {
-      if (line.trim()) {
-        console.error(`[claude-process] stderr [${instanceId.slice(0, 8)}]:`, line)
-        enqueueEvent({ type: 'raw-line', instanceId, line, isStderr: true })
+    try {
+      stderrBuffer += chunk.toString()
+      const lines = stderrBuffer.split('\n')
+      stderrBuffer = lines.pop() || ''
+      for (const line of lines) {
+        if (line.trim()) {
+          console.error(`[claude-process] stderr [${instanceId.slice(0, 8)}]:`, line)
+          enqueueEvent({ type: 'raw-line', instanceId, line, isStderr: true })
+        }
       }
+    } catch (err) {
+      console.error(`[claude-process] stderr handler error [${instanceId.slice(0, 8)}]:`, err)
     }
   })
 
   // Write user message to stdin as NDJSON, then close
   // stream-json format: { type: "user", message: { role: "user", content: "..." }, session_id, parent_tool_use_id }
-  const messageContent: unknown[] = [{ type: 'text', text }]
+  const messageContent: unknown[] = []
+  // Only include text block if non-empty — API rejects { type: 'text', text: '' }
+  if (text) messageContent.push({ type: 'text', text })
   if (images && images.length > 0) {
     for (const img of images) {
       messageContent.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.base64 } })
     }
   }
+  // Fallback: content must have at least one block
+  if (messageContent.length === 0) messageContent.push({ type: 'text', text })
   const inputMessage = {
     type: 'user',
     message: { role: 'user', content: messageContent },
@@ -340,6 +367,10 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   }
   const stdinPayload = JSON.stringify(inputMessage)
   console.log(`[claude-process] STDIN → ${instanceId}: ${stdinPayload.length} chars (text: ${text.slice(0, 100)}...)`)
+  // Guard against unhandled 'error' on stdin (e.g. process dies before write completes)
+  child.stdin?.on('error', (err) => {
+    console.warn(`[claude-process] stdin write error [${instanceId.slice(0, 8)}]:`, err.message)
+  })
   child.stdin?.write(stdinPayload + '\n')
   child.stdin?.end()
 

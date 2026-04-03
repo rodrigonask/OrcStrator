@@ -91,6 +91,8 @@ export const rest = {
     post<{ ok: true }>(`/api/instances/${instanceId}/resume`),
   syncSession: (instanceId: string) =>
     post<{ ok: true }>(`/api/instances/${instanceId}/sync`),
+  sendCommand: (instanceId: string, command: string) =>
+    post<{ ok: boolean; result: string }>(`/api/instances/${instanceId}/command`, { command }),
 
   // History
   getHistory: (instanceId: string, params?: { before?: number; limit?: number }) => {
@@ -202,6 +204,7 @@ export const rest = {
     ),
   pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
+  closeAll: (folderId: string) => post<{ closed: number; instanceIds: string[] }>(`/api/folders/${folderId}/close-all`),
   renewFolder: (folderId: string, body?: { newNames?: string[] }) => post<{ renewed: number; oldInstanceIds: string[]; newInstances: Record<string, unknown>[] }>(`/api/folders/${folderId}/renew`, body),
   shutdownAll: () => post<{ killed: number; instanceIds: string[] }>('/api/shutdown'),
   terminate: () => post<{ ok: true; killed: number; instanceIds: string[] }>('/api/terminate'),

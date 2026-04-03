@@ -51,12 +51,20 @@ export function registerWebSocket(app: FastifyInstance): void {
 
   // 30s ping to keep connections alive
   pingInterval = setInterval(() => {
-    for (const client of clients) {
-      if (client.readyState === client.OPEN) {
-        client.ping()
-      } else {
-        clients.delete(client)
+    try {
+      for (const client of clients) {
+        try {
+          if (client.readyState === client.OPEN) {
+            client.ping()
+          } else {
+            clients.delete(client)
+          }
+        } catch {
+          clients.delete(client)
+        }
       }
+    } catch (err) {
+      console.error('[ws] ping interval error:', err)
     }
   }, 30_000)
 

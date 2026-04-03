@@ -38,7 +38,7 @@ export function FolderBrowserModal({ rootFolder, onClose, onSelect }: FolderBrow
   )
 }
 
-// Simple flat list of subfolders under rootFolder
+// Navigable subfolder picker scoped to rootFolder
 function RootScopedBrowser({
   rootFolder,
   onClose,
@@ -48,18 +48,37 @@ function RootScopedBrowser({
   onClose: () => void
   onSelect: (path: string) => void
 }) {
+  const [currentPath, setCurrentPath] = useState(rootFolder)
   const [entries, setEntries] = useState<DirectoryEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const isAtRoot = currentPath === rootFolder
+
+  const loadDirectory = useCallback((dir: string) => {
     setLoading(true)
     setError(null)
-    api.getSubfolders(rootFolder)
-      .then(result => setEntries(result.folders))
+    api.getSubfolders(dir)
+      .then(result => {
+        setEntries(result.folders)
+        setCurrentPath(result.dir)
+      })
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
-  }, [rootFolder])
+  }, [])
+
+  useEffect(() => {
+    loadDirectory(rootFolder)
+  }, [rootFolder, loadDirectory])
+
+  const goUp = useCallback(() => {
+    let parent = currentPath.replace(/[\\/][^\\/]+[\\/]?$/, '')
+    if (/^[A-Za-z]:$/.test(parent)) parent += '\\'
+    if (!parent) parent = rootFolder
+    // Don't navigate above rootFolder
+    if (parent.length < rootFolder.length) parent = rootFolder
+    loadDirectory(parent)
+  }, [currentPath, rootFolder, loadDirectory])
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -70,7 +89,7 @@ function RootScopedBrowser({
         </div>
         <div className="modal-body folder-browser">
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
-            Showing subfolders of: <strong>{rootFolder}</strong>
+            Showing subfolders of: <strong>{currentPath}</strong>
           </div>
 
           {error && <div className="message-error">{error}</div>}
@@ -80,25 +99,49 @@ function RootScopedBrowser({
             </div>
           ) : (
             <div className="folder-list">
+              {!isAtRoot && (
+                <div className="folder-list-item" onClick={goUp}>
+                  <span className="folder-list-icon">..</span>
+                  <span>Back</span>
+                </div>
+              )}
               {entries.map(entry => (
                 <div
                   key={entry.path}
                   className="folder-list-item"
-                  onClick={() => onSelect(entry.path)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                 >
-                  <span className="folder-list-icon">{'\uD83D\uDCC2'}</span>
-                  <span>{entry.name}</span>
+                  <span
+                    style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                    onClick={() => onSelect(entry.path)}
+                  >
+                    <span className="folder-list-icon">{'\uD83D\uDCC2'}</span>
+                    <span>{entry.name}</span>
+                  </span>
+                  <button
+                    className="btn"
+                    onClick={() => loadDirectory(entry.path)}
+                    style={{ padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+                    title={`Browse into ${entry.name}`}
+                  >
+                    {'\u25BC'}
+                  </button>
                 </div>
               ))}
               {entries.length === 0 && (
                 <div className="folder-list-item" style={{ color: 'var(--text-muted)', cursor: 'default' }}>
-                  No subfolders found in {rootFolder}
+                  No subfolders found
                 </div>
               )}
             </div>
           )}
         </div>
         <div className="modal-footer">
+          {!isAtRoot && (
+            <button className="btn btn-primary" onClick={() => onSelect(currentPath)} style={{ marginRight: 'auto' }}>
+              Select This Folder
+            </button>
+          )}
           <button className="btn" onClick={onClose}>Cancel</button>
         </div>
       </div>

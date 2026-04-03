@@ -32,13 +32,34 @@ function SortableInstanceItem({ instance, folderOrchestratorActive, extraClass }
   )
 }
 
+function SortableChildFolder({ node, depth }: { node: FolderTreeNode; depth: number }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.folder.id })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+  return (
+    <div ref={setNodeRef} style={style}>
+      <FolderGroup folder={node.folder} childNodes={node.children} depth={depth} dragHandleProps={{ ...attributes, ...listeners }} />
+    </div>
+  )
+}
+
+
+interface FolderTreeNode {
+  folder: FolderConfig
+  children: FolderTreeNode[]
+}
 
 interface FolderGroupProps {
   folder: FolderConfig
+  childNodes?: FolderTreeNode[]
+  depth?: number
   dragHandleProps?: Record<string, unknown>
 }
 
-export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
+export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProps }: FolderGroupProps) {
   const { instances: allInstances } = useInstances()
   const { settings } = useUI()
   const { dispatch } = useAppDispatch()
@@ -46,7 +67,6 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
   const [confirmOrchestrate, setConfirmOrchestrate] = useState(false)
   const [showLaunchTeam, setShowLaunchTeam] = useState(false)
   const [showCreateTask, setShowCreateTask] = useState(false)
-  const [showAddMenu, setShowAddMenu] = useState(false)
   const [orchStatus, setOrchStatus] = useState<{ idleAgents: number; pendingTasks: number } | null>(null)
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
   const [dyingIds, setDyingIds] = useState<Set<string>>(new Set())
@@ -78,7 +98,23 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     }
   }, [cloudConfigured, isCloudSynced, folder.id, dispatch, alert])
 
-  const instanceSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+
+  const sortedChildNodes = useMemo(() =>
+    [...childNodes].sort((a, b) => a.folder.sortOrder - b.folder.sortOrder),
+    [childNodes]
+  )
+
+  const handleChildFolderDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const ids = sortedChildNodes.map(n => n.folder.id)
+    const oldIndex = ids.indexOf(active.id as string)
+    const newIndex = ids.indexOf(over.id as string)
+    const reordered = arrayMove(ids, oldIndex, newIndex)
+    dispatch({ type: 'REORDER_FOLDERS', payload: reordered })
+    api.reorderFolders(reordered).catch(console.error)
+  }, [sortedChildNodes, dispatch])
 
   const handleInstanceDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event
@@ -115,7 +151,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     try {
       const instance = await api.createInstance({
         folderId: folder.id,
-        name: randomName(settings.namingTheme || 'fruits'),
+        name: randomName(settings.namingThemes ?? (settings.namingTheme ? [settings.namingTheme] : ['memes'])),
         cwd: folder.path,
       })
       dispatch({ type: 'ADD_INSTANCE', payload: instance })
@@ -209,12 +245,27 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     }
   }, [folder.id, dispatch])
 
-  const handleRenew = useCallback(async () => {
+  const handleCloseAll = useCallback(async () => {
     closeContextMenu()
-    const ok = await confirm(`Renew all ${instances.length} instance${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will close all sessions and create fresh ones.`)
+    const ok = await confirm(`Close all ${instances.length} chat${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will kill all processes and remove all chats.`)
     if (!ok) return
     try {
-      const newNames = instances.map(() => randomName(settings.namingTheme || 'fruits'))
+      const result = await rest.closeAll(folder.id)
+      for (const id of result.instanceIds) {
+        dispatch({ type: 'REMOVE_INSTANCE', payload: id })
+      }
+      dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: { orchestratorActive: false } } })
+    } catch (err) {
+      console.error('Failed to close all:', err)
+    }
+  }, [folder.id, instances.length, folder.displayName, folder.name, dispatch, closeContextMenu, confirm])
+
+  const handleRenew = useCallback(async () => {
+    closeContextMenu()
+    const ok = await confirm(`Renew all ${instances.length} chat${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will close all sessions and create fresh ones.`)
+    if (!ok) return
+    try {
+      const newNames = instances.map(() => randomName(settings.namingThemes ?? (settings.namingTheme ? [settings.namingTheme] : ['memes'])))
       const result = await api.renewFolder(folder.id, { newNames })
 
       // 1. Play the death animation on all old instances
@@ -275,6 +326,181 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
     return props
   }, [dragHandleProps])
 
+  // Compact child row for nested folders (depth > 0)
+  if (depth > 0) {
+    return (
+      <>
+        <div
+          className="folder-child-row"
+          onClick={toggleExpanded}
+          onContextMenu={handleContextMenu}
+          {...safeDragProps}
+        >
+          <span className="folder-emoji" style={{ fontSize: 14, width: 18 }}>{folder.emoji || '\uD83D\uDCC1'}</span>
+          <span className="folder-child-name">{folder.displayName || folder.name}</span>
+          <div className={`folder-status ${statusClass}`} />
+          <div className="folder-child-actions">
+            <div className="folder-btn-wrap">
+              <button className="pipeline-board-btn" onClick={(e) => { e.stopPropagation(); if (pipelineGate.check()) handlePipeline() }}>▤</button>
+              <span className="folder-btn-tip">Pipeline board</span>
+            </div>
+            <div className="folder-btn-wrap">
+              <button
+                className={`orchestrator-toggle-btn ${isOrchestratorActive ? 'active' : ''}`}
+                onClick={(e) => { e.stopPropagation(); if (orcGate.check()) handleOrchestrateClick(e) }}
+              >
+                {isOrchestratorActive ? <span className="orch-pulse">{'\uD83D\uDD04'}</span> : '\uD83D\uDD04'}
+              </button>
+              <span className="folder-btn-tip">{isOrchestratorActive ? 'Stop The Orc' : 'Activate The Orc'}</span>
+            </div>
+            <div className="folder-btn-wrap">
+              <button className="pipeline-board-btn" onClick={(e) => { e.stopPropagation(); setShowCreateTask(true) }}>+</button>
+              <span className="folder-btn-tip">New task</span>
+            </div>
+            <div className="folder-btn-wrap">
+              <button className="pipeline-board-btn new-instance-btn" onClick={(e) => { e.stopPropagation(); handleAddInstance() }}>💬</button>
+              <span className="folder-btn-tip">New chat</span>
+            </div>
+          </div>
+          <span className={`folder-chevron ${expanded ? 'expanded' : ''}`} style={{ fontSize: 10 }}>&#9654;</span>
+        </div>
+        {expanded && (
+          <div className="folder-child-instances">
+            <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleInstanceDragEnd}>
+              <SortableContext items={instances.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                {instances.map(inst => (
+                  <SortableInstanceItem
+                    key={inst.id}
+                    instance={inst}
+                    folderOrchestratorActive={isOrchestratorActive}
+                    extraClass={dyingIds.has(inst.id) ? 'anim-remove' : undefined}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+            {instances.length === 0 && (
+              <div style={{ padding: '4px 12px 4px 52px', fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                No chats
+              </div>
+            )}
+            {sortedChildNodes.length > 0 && (
+              <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleChildFolderDragEnd}>
+                <SortableContext items={sortedChildNodes.map(n => n.folder.id)} strategy={verticalListSortingStrategy}>
+                  {sortedChildNodes.map(child => (
+                    <SortableChildFolder key={child.folder.id} node={child} depth={(depth || 0) + 1} />
+                  ))}
+                </SortableContext>
+              </DndContext>
+            )}
+          </div>
+        )}
+
+        {contextMenu && createPortal(
+          <>
+            <div
+              style={{ position: 'fixed', inset: 0, zIndex: 199 }}
+              onClick={closeContextMenu}
+              onContextMenu={(e) => { e.preventDefault(); closeContextMenu() }}
+            />
+            <div
+              className="context-menu"
+              style={{ top: contextMenu.y, left: contextMenu.x }}
+              onClick={e => e.stopPropagation()}
+            >
+              <button className="context-menu-item" onClick={handleEdit}>Edit Project</button>
+              <button className="context-menu-item" onClick={handleAddInstance}>Add Chat</button>
+              <button className="context-menu-item" onClick={() => { if (pipelineGate.check()) handlePipeline(); else closeContextMenu() }}>Pipeline</button>
+              <button className="context-menu-item" onClick={() => { if (teamsGate.check()) { setShowLaunchTeam(true); closeContextMenu() } else { closeContextMenu() } }}>Launch a Team</button>
+              <div className="context-menu-separator" />
+              <button className="context-menu-item" onClick={handlePauseAll}>Pause All</button>
+              <button className="context-menu-item" onClick={() => { setShowReleaseConfirm(true); closeContextMenu() }}>Release All...</button>
+              <button className="context-menu-item" onClick={handleRenew}>Renew All</button>
+              <button className="context-menu-item danger" onClick={handleCloseAll}>Close All</button>
+              <div className="context-menu-separator" />
+              <button className="context-menu-item danger" onClick={handleRemove}>Hide Project</button>
+            </div>
+          </>,
+          document.body
+        )}
+
+        {showCreateTask && (
+          <CreateTaskModal projectId={folder.id} onClose={() => setShowCreateTask(false)} />
+        )}
+
+        {confirmOrchestrate && createPortal(
+          <div className="modal-overlay" onClick={() => setConfirmOrchestrate(false)}>
+            <div className="modal-panel orchestrate-confirm-modal" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <span className="modal-title">Hand Over Control?</span>
+                <button className="modal-close" onClick={() => setConfirmOrchestrate(false)}>x</button>
+              </div>
+              <div className="modal-body">
+                <p className="orchestrate-confirm-text">
+                  The Orc will claim all tagged agent sessions and direct their every move.
+                </p>
+                <p className="orchestrate-confirm-subtext">
+                  You can watch — you just can't interfere.
+                  <br />
+                  <em>The agents will be fine. Probably.</em>
+                </p>
+              </div>
+              <div className="modal-footer">
+                <button className="btn" onClick={() => setConfirmOrchestrate(false)}>
+                  Actually, Never Mind
+                </button>
+                <button className="btn btn-primary" onClick={handleConfirmActivate}>
+                  Feed Them to The Orc
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {showLaunchTeam && (
+          <LaunchTeamModal
+            folder={folder}
+            onClose={() => setShowLaunchTeam(false)}
+          />
+        )}
+
+        {showReleaseConfirm && createPortal(
+          <div className="modal-overlay" onClick={() => setShowReleaseConfirm(false)}>
+            <div className="modal-panel release-confirm-modal" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <span className="modal-title">Release All Sessions</span>
+                <button className="modal-close" onClick={() => setShowReleaseConfirm(false)}>×</button>
+              </div>
+              <div className="modal-body">
+                <p>This will close {instances.length} session{instances.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
+                {instances.length > 0 && (
+                  <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13, color: 'var(--text-secondary)' }}>
+                    {instances.map(i => <li key={i.id}>{i.name}</li>)}
+                  </ul>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-ghost" onClick={() => setShowReleaseConfirm(false)}>Cancel</button>
+                <button className="btn btn-danger-solid" onClick={handleReleaseAll}>Release All</button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {pipelineGate.showLockedModal && pipelineGate.gate && (
+          <FeatureLockedModal gate={pipelineGate.gate} onClose={pipelineGate.dismissModal} />
+        )}
+        {orcGate.showLockedModal && orcGate.gate && (
+          <FeatureLockedModal gate={orcGate.gate} onClose={orcGate.dismissModal} />
+        )}
+        {teamsGate.showLockedModal && teamsGate.gate && (
+          <FeatureLockedModal gate={teamsGate.gate} onClose={teamsGate.dismissModal} />
+        )}
+      </>
+    )
+  }
+
   return (
     <div className={`folder-group${folder.stealthMode ? ' stealth' : ''}`}>
       <div
@@ -309,100 +535,92 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
 
         {/* Folder action buttons */}
         <div className="folder-action-group">
-          <button
-            className="pipeline-board-btn"
-            data-tour-id="tour-pipeline"
-            title="Open pipeline board"
-            onClick={(e) => { e.stopPropagation(); if (pipelineGate.check()) handlePipeline() }}
-          >
-            ▤
-          </button>
+          <div className="folder-btn-wrap">
+            <button
+              className="pipeline-board-btn"
+              data-tour-id="tour-pipeline"
+              onClick={(e) => { e.stopPropagation(); if (pipelineGate.check()) handlePipeline() }}
+            >▤</button>
+            <span className="folder-btn-tip">Pipeline board</span>
+          </div>
           {cloudConfigured && (
-            <button
-              className={`cloud-sync-btn ${isCloudSynced ? 'active' : ''}`}
-              title={isCloudSynced ? 'Synced to Cloud' : 'Sync to Cloud'}
-              onClick={handleCloudSyncToggle}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                padding: '2px 4px',
-                fontSize: 14,
-                opacity: isCloudSynced ? 1 : 0.4,
-                color: isCloudSynced ? 'var(--accent)' : 'var(--text-tertiary)',
-                transition: 'opacity 0.2s, color 0.2s',
-              }}
-            >
-              {isCloudSynced ? '\u2601' : '\u2601'}
-            </button>
+            <div className="folder-btn-wrap">
+              <button
+                className={`cloud-sync-btn ${isCloudSynced ? 'active' : ''}`}
+                onClick={handleCloudSyncToggle}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  padding: '2px 4px', fontSize: 14,
+                  opacity: isCloudSynced ? 1 : 0.4,
+                  color: isCloudSynced ? 'var(--accent)' : 'var(--text-tertiary)',
+                  transition: 'opacity 0.2s, color 0.2s',
+                }}
+              >{'\u2601'}</button>
+              <span className="folder-btn-tip">{isCloudSynced ? 'Cloud synced' : 'Sync to cloud'}</span>
+            </div>
           )}
-          <button
-            className={`orchestrator-toggle-btn ${isOrchestratorActive ? 'active' : ''}`}
-            title={isOrchestratorActive ? 'The Orc is active — click to stop' : 'Activate The Orc'}
-            onClick={(e) => { if (orcGate.check()) handleOrchestrateClick(e) }}
-          >
-            {isOrchestratorActive ? (
-              <span className="orch-pulse">{'\uD83D\uDD04'}</span>
-            ) : (
-              '\uD83D\uDD04'
-            )}
-          </button>
-          <div
-            className="folder-add-dropdown"
-            onMouseEnter={() => setShowAddMenu(true)}
-            onMouseLeave={() => setShowAddMenu(false)}
-          >
+          <div className="folder-btn-wrap">
             <button
-              className="folder-add-btn"
-              onClick={(e) => { e.stopPropagation(); setShowAddMenu(v => !v) }}
+              className={`orchestrator-toggle-btn ${isOrchestratorActive ? 'active' : ''}`}
+              onClick={(e) => { if (orcGate.check()) handleOrchestrateClick(e) }}
             >
-              +
+              {isOrchestratorActive ? <span className="orch-pulse">{'\uD83D\uDD04'}</span> : '\uD83D\uDD04'}
             </button>
-            {showAddMenu && (
-              <div className="folder-add-menu" onClick={e => e.stopPropagation()}>
-                <button
-                  className="folder-add-menu-item"
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}
-                  onClick={() => { setShowAddMenu(false); setShowCreateTask(true) }}
-                >
-                  New Task
-                </button>
-                <button
-                  className="folder-add-menu-item"
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}
-                  onClick={() => { setShowAddMenu(false); handleAddInstance() }}
-                >
-                  New Instance
-                </button>
-              </div>
-            )}
+            <span className="folder-btn-tip">{isOrchestratorActive ? 'Stop The Orc' : 'Activate The Orc'}</span>
+          </div>
+          <div className="folder-btn-wrap">
+            <button
+              className="pipeline-board-btn"
+              onClick={(e) => { e.stopPropagation(); setShowCreateTask(true) }}
+            >+</button>
+            <span className="folder-btn-tip">New task</span>
+          </div>
+          <div className="folder-btn-wrap">
+            <button
+              className="pipeline-board-btn new-instance-btn"
+              onClick={(e) => { e.stopPropagation(); handleAddInstance() }}
+            >💬</button>
+            <span className="folder-btn-tip">New chat</span>
           </div>
         </div>
         <span className={`folder-chevron ${expanded ? 'expanded' : ''}`}>&#9654;</span>
       </div>
 
       {expanded && (
-        <div className="folder-instances">
-          <DndContext sensors={instanceSensors} collisionDetection={closestCenter} onDragEnd={handleInstanceDragEnd}>
-            <SortableContext items={instances.map(i => i.id)} strategy={verticalListSortingStrategy}>
-              {instances.map(inst => (
-                <SortableInstanceItem
-                  key={inst.id}
-                  instance={inst}
-                  folderOrchestratorActive={isOrchestratorActive}
-                  extraClass={dyingIds.has(inst.id) ? 'anim-remove' : undefined}
-                />
-              ))}
-            </SortableContext>
-          </DndContext>
-          {instances.length === 0 && (
-            <div className="instance-item" style={{ cursor: 'default' }}>
-              <span className="instance-info">
-                <span className="instance-preview" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>No instances</span>
-              </span>
+        <>
+          <div className="folder-instances">
+            <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleInstanceDragEnd}>
+              <SortableContext items={instances.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                {instances.map(inst => (
+                  <SortableInstanceItem
+                    key={inst.id}
+                    instance={inst}
+                    folderOrchestratorActive={isOrchestratorActive}
+                    extraClass={dyingIds.has(inst.id) ? 'anim-remove' : undefined}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+            {instances.length === 0 && childNodes.length === 0 && (
+              <div className="instance-item" style={{ cursor: 'default' }}>
+                <span className="instance-info">
+                  <span className="instance-preview" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>No chats</span>
+                </span>
+              </div>
+            )}
+          </div>
+          {sortedChildNodes.length > 0 && (
+            <div className="folder-children">
+              <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleChildFolderDragEnd}>
+                <SortableContext items={sortedChildNodes.map(n => n.folder.id)} strategy={verticalListSortingStrategy}>
+                  {sortedChildNodes.map(child => (
+                    <SortableChildFolder key={child.folder.id} node={child} depth={(depth || 0) + 1} />
+                  ))}
+                </SortableContext>
+              </DndContext>
             </div>
           )}
-        </div>
+        </>
       )}
 
       {contextMenu && createPortal(
@@ -421,7 +639,7 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
               Edit Project
             </button>
             <button className="context-menu-item" onClick={handleAddInstance}>
-              Add Instance
+              Add Chat
             </button>
             <button className="context-menu-item" onClick={() => { if (pipelineGate.check()) handlePipeline(); else closeContextMenu() }}>
               Pipeline Project
@@ -438,6 +656,9 @@ export function FolderGroup({ folder, dragHandleProps }: FolderGroupProps) {
             </button>
             <button className="context-menu-item" onClick={handleRenew}>
               Renew All
+            </button>
+            <button className="context-menu-item danger" onClick={handleCloseAll}>
+              Close All
             </button>
             <div className="context-menu-separator" />
             <button className="context-menu-item danger" onClick={handleRemove}>

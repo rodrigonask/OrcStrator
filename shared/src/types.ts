@@ -52,6 +52,7 @@ export interface InstanceConfig {
   lastTaskAt?: number
   contextHealth?: 'cold' | 'fresh' | 'warm' | 'heavy' | 'stale'
   ctxTokens?: number
+  ctxModel?: string
 }
 
 // === CHAT MESSAGES ===
@@ -83,10 +84,11 @@ export type ClaudeStreamEvent =
   | { type: 'tool-start'; instanceId: string; toolId: string; toolName: string }
   | { type: 'tool-input-delta'; instanceId: string; toolId: string; input: string }
   | { type: 'tool-complete'; instanceId: string; toolId: string; output: string; isError?: boolean }
-  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number; resultText?: string }
+  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number; resultText?: string; model?: string }
   | { type: 'error'; instanceId: string; message: string }
   | { type: 'system'; instanceId: string; sessionId?: string }
   | { type: 'raw-line'; instanceId: string; line: string; isStderr?: boolean }
+  | { type: 'assistant-message'; instanceId: string; message: ChatMessage }
 
 export interface ClaudeProcessExitEvent {
   instanceId: string
@@ -326,7 +328,8 @@ export interface McpServerInfo {
 
 // === SETTINGS ===
 
-export type PermissionMode = 'bypass' | 'plan' | 'default'
+export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'dontAsk' | 'auto' | 'bypassPermissions'
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
 export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'default'
 export type AgentRole = 'planner' | 'builder' | 'tester' | 'promoter' | 'scheduler'
 
@@ -345,6 +348,10 @@ export interface AppSettings {
   orchestratorModels?: Record<AgentRole, AgentModel>
   orchestratorTools?: Record<AgentRole, string[]>
   permissionMode?: PermissionMode
+  effortLevel?: EffortLevel
+  maxBudgetUsd?: number
+  fallbackModel?: AgentModel
+  orchestratorEffort?: Record<AgentRole, EffortLevel>
   disableCache?: boolean
   maxTokens?: number
   userName?: string
@@ -354,7 +361,8 @@ export interface AppSettings {
   soundsEnabled?: boolean
   animationTier?: 0 | 1 | 2 | 3 | 4
   soundTier?: 0 | 1 | 2 | 3 | 4
-  namingTheme?: 'fruits' | 'rpg' | 'wow' | 'memes'
+  namingTheme?: string  // deprecated — use namingThemes
+  namingThemes?: string[]
   maxConcurrentProcesses?: number
   verbosity?: VerbosityLevel
   // Cloud Sync (Supabase)
@@ -363,6 +371,8 @@ export interface AppSettings {
   machineName?: string
   machineId?: string
   customCommands?: Array<{ name: string; command: string; description: string }>
+  defaultModel?: AgentModel
+  defaultEffort?: EffortLevel
 }
 
 // === CLOUD SYNC ===

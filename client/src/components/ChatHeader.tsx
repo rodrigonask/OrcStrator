@@ -15,9 +15,7 @@ const QUICK_COMMANDS = [
   { cmd: '/compact', label: 'Compact', desc: 'Compress conversation context' },
   { cmd: '/clear', label: 'Clear', desc: 'Clear conversation history' },
   { cmd: '/cost', label: 'Cost', desc: 'Show token usage & cost' },
-  { cmd: '/memory', label: 'Memory', desc: 'View CLAUDE.md memory' },
-  { cmd: '/status', label: 'Status', desc: 'Show session status' },
-  { cmd: '/help', label: 'Help', desc: 'Show available commands' },
+  { cmd: '/context', label: 'Context', desc: 'Show context window breakdown' },
 ] as const
 
 export function ChatHeader() {
@@ -47,16 +45,20 @@ export function ChatHeader() {
   }, [messages])
 
   const contextWindow = useMemo(() => {
-    const MAX = 200_000
+    const model = instance?.ctxModel ?? ''
+    const MAX = model.includes('opus-4') ? 1_000_000 : 200_000
+    const maxLabel = MAX === 1_000_000 ? '1M' : '200K'
     const used = instance?.ctxTokens ?? 0
     if (used > 0) {
       const pct = Math.min((used / MAX) * 100, 100)
       const color = pct >= 80 ? '#ef4444' : pct >= 50 ? '#eab308' : '#22c55e'
-      const label = used >= 1000 ? `${Math.round(used / 1000)}K` : String(used)
-      return { used, pct, color, label }
+      // If ctxTokens somehow exceeds MAX (can happen with char-count drift), cap the display label
+      const displayUsed = Math.min(used, MAX)
+      const label = displayUsed >= 1000 ? `${Math.round(displayUsed / 1000)}K` : String(displayUsed)
+      return { used, pct, color, label, maxLabel }
     }
-    return { used: 0, pct: 0, color: '#22c55e', label: '—' }
-  }, [instance?.ctxTokens])
+    return { used: 0, pct: 0, color: '#22c55e', label: '—', maxLabel }
+  }, [instance?.ctxTokens, instance?.ctxModel])
 
   const handlePause = useCallback(() => {
     if (instanceId) api.pauseInstance(instanceId)
@@ -78,47 +80,48 @@ export function ChatHeader() {
 
   const handleClear = useCallback(async () => {
     if (!instanceId) return
-    const ok = await confirm('Clear chat history for this instance?')
+    const ok = await confirm('Clear chat history for this chat?')
     if (!ok) return
     api.clearHistory(instanceId)
     dispatch({ type: 'CLEAR_MESSAGES', payload: instanceId })
   }, [instanceId, dispatch, confirm])
 
-  const [cmdMenuOpen, setCmdMenuOpen] = useState(false)
-  const cmdMenuRef = useRef<HTMLDivElement>(null)
-  const [verbMenuOpen, setVerbMenuOpen] = useState(false)
-  const verbMenuRef = useRef<HTMLDivElement>(null)
-  const [skillMenuOpen, setSkillMenuOpen] = useState(false)
+  const [burgerOpen, setBurgerOpen] = useState(false)
+  const burgerRef = useRef<HTMLDivElement>(null)
   const [skills, setSkills] = useState<SkillConfig[]>([])
-  const skillMenuRef = useRef<HTMLDivElement>(null)
+  const [skillsLoaded, setSkillsLoaded] = useState(false)
   const effectiveVerbosity = useVerbosity(instanceId)
 
-  // Close on outside click
+  // Close burger on outside click
   useEffect(() => {
-    if (!cmdMenuOpen && !verbMenuOpen && !skillMenuOpen) return
+    if (!burgerOpen) return
     const handler = (e: MouseEvent) => {
-      if (cmdMenuOpen && cmdMenuRef.current && !cmdMenuRef.current.contains(e.target as Node)) {
-        setCmdMenuOpen(false)
-      }
-      if (verbMenuOpen && verbMenuRef.current && !verbMenuRef.current.contains(e.target as Node)) {
-        setVerbMenuOpen(false)
-      }
-      if (skillMenuOpen && skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
-        setSkillMenuOpen(false)
+      if (burgerRef.current && !burgerRef.current.contains(e.target as Node)) {
+        setBurgerOpen(false)
       }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [cmdMenuOpen, verbMenuOpen, skillMenuOpen])
+  }, [burgerOpen])
+
+  const handleBurgerOpen = useCallback(() => {
+    if (!skillsLoaded) {
+      api.getSkills().then(s => { setSkills(s); setSkillsLoaded(true) })
+    }
+    setBurgerOpen(o => !o)
+  }, [skillsLoaded])
 
   const handleQuickCommand = useCallback((cmd: string) => {
-    setCmdMenuOpen(false)
+    setBurgerOpen(false)
     if (!instanceId) return
+
+    // /clear is local-only — clears client state + server history
     if (cmd === '/clear') {
       handleClear()
       return
     }
-    // Add visual confirmation in the chat as a user message
+
+    // Show user message in chat immediately
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       instanceId,
@@ -127,18 +130,38 @@ export function ChatHeader() {
       createdAt: Date.now(),
     }
     dispatch({ type: 'ADD_MESSAGE', payload: userMsg })
+
+    // Check if this is a CLI slash command (starts with /)
+    if (cmd.startsWith('/')) {
+      // Send to CLI via --resume -p '<command>'
+      api.sendCommand(instanceId, cmd).then(res => {
+        const msg: ChatMessage = {
+          id: crypto.randomUUID(),
+          instanceId: instanceId!,
+          role: 'assistant',
+          content: [{ type: 'text', text: res.result }],
+          createdAt: Date.now(),
+        }
+        dispatch({ type: 'ADD_MESSAGE', payload: msg })
+      }).catch(() => {
+        const msg: ChatMessage = {
+          id: crypto.randomUUID(),
+          instanceId: instanceId!,
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Command failed — no active session.' }],
+          createdAt: Date.now(),
+        }
+        dispatch({ type: 'ADD_MESSAGE', payload: msg })
+      })
+      return
+    }
+
+    // Non-slash commands: send as regular messages
     api.sendMessage(instanceId, { text: cmd })
   }, [instanceId, handleClear, dispatch])
 
-  const handleSkillMenuOpen = useCallback(() => {
-    setSkillMenuOpen(o => {
-      if (!o) api.getSkills().then(setSkills)
-      return !o
-    })
-  }, [])
-
   const handleLoadSkill = useCallback(async (skill: SkillConfig) => {
-    setSkillMenuOpen(false)
+    setBurgerOpen(false)
     if (!instanceId) return
     const ok = await confirm(`Load skill: ${skill.name}?`)
     if (!ok) return
@@ -198,146 +221,104 @@ export function ChatHeader() {
           {instance.state}
         </span>
       </div>
-      <div className="chat-header-right">
+      <div className="chat-header-right" ref={burgerRef}>
         <span className="chat-token-count" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
           {totalTokens.input.toLocaleString()}in / {totalTokens.output.toLocaleString()}out
         </span>
         <span className="chat-context-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: contextWindow.color }}>
-          CTX {contextWindow.label}/200K
+          CTX {contextWindow.label}/{contextWindow.maxLabel}
         </span>
-        {instance.state === 'running' && (
-          <button className="chat-header-btn" onClick={handlePause}>
-            Pause
-          </button>
-        )}
-        {instance.state === 'paused' && (
-          <button className="chat-header-btn primary" onClick={handleResume}>
-            Resume
-          </button>
-        )}
-        <div className="verbosity-menu-wrap" ref={verbMenuRef}>
-          <button
-            className={`chat-header-btn verbosity-trigger${verbMenuOpen ? ' active' : ''}`}
-            onClick={() => setVerbMenuOpen(o => !o)}
-            title="Chat verbosity level"
-          >
-            {VERBOSITY_TIERS[effectiveVerbosity - 1]?.icon} {VERBOSITY_TIERS[effectiveVerbosity - 1]?.name}
-          </button>
-          {verbMenuOpen && (
-            <div className="verbosity-dropdown">
-              {VERBOSITY_TIERS.map(tier => (
-                <button
-                  key={tier.level}
-                  className={`verbosity-option${effectiveVerbosity === tier.level ? ' active' : ''}`}
-                  onClick={() => {
-                    if (instanceId) {
-                      dispatch({ type: 'SET_INSTANCE_VERBOSITY', payload: { instanceId, level: tier.level } })
-                    }
-                    setVerbMenuOpen(false)
-                  }}
-                >
-                  <span className="verbosity-option-icon">{tier.icon}</span>
-                  <span className="verbosity-option-name">{tier.name}</span>
-                  <span className="verbosity-option-desc">{tier.description}</span>
-                  {effectiveVerbosity === tier.level && <span className="verbosity-option-dot" />}
-                </button>
-              ))}
-              {instanceId && settings.verbosity !== undefined && (
-                <button
-                  className="verbosity-option reset"
-                  onClick={() => {
-                    dispatch({ type: 'SET_INSTANCE_VERBOSITY', payload: { instanceId, level: null } })
-                    setVerbMenuOpen(false)
-                  }}
-                >
-                  Reset to default (Lv.{settings.verbosity ?? 3})
-                </button>
-              )}
-            </div>
-          )}
-        </div>
         <button
-          className={`chat-header-btn ${terminalPanelOpen ? 'active' : ''}`}
-          onClick={() => dispatch({ type: 'TOGGLE_TERMINAL' })}
-          title="Toggle the Black Box"
-          data-tour-id="tour-blackbox"
+          className={`chat-header-btn chat-burger-btn${burgerOpen ? ' active' : ''}`}
+          onClick={handleBurgerOpen}
+          title="Chat options"
         >
-          Black Box
+          ☰
         </button>
-        <button className="chat-header-btn" onClick={handleCopyLast} title="Copy last response">
-          Copy
-        </button>
-        <div className="cmd-menu-wrap" ref={skillMenuRef}>
-          <button
-            className={`chat-header-btn${skillMenuOpen ? ' active' : ''}`}
-            onClick={handleSkillMenuOpen}
-            title="Load a skill into this chat"
-          >
-            Skills
-          </button>
-          {skillMenuOpen && (
-            <div className="cmd-menu-dropdown">
-              {skills.length === 0 ? (
-                <div className="cmd-menu-item" style={{ opacity: 0.5, cursor: 'default' }}>
-                  <span className="cmd-menu-cmd">No skills yet</span>
-                </div>
-              ) : skills.map(s => (
-                <button
-                  key={s.id}
-                  className="cmd-menu-item"
-                  onClick={() => handleLoadSkill(s)}
-                >
-                  <span className="cmd-menu-cmd">{s.name}</span>
-                  <span className="cmd-menu-desc">{s.description}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="cmd-menu-wrap" ref={cmdMenuRef}>
-          <button
-            className={`chat-header-btn cmd-trigger${cmdMenuOpen ? ' active' : ''}`}
-            onClick={() => setCmdMenuOpen(o => !o)}
-            title="Quick commands"
-          >
-            &lt;/&gt;
-          </button>
-          {cmdMenuOpen && (
-            <div className="cmd-menu-dropdown">
-              {QUICK_COMMANDS.map(c => (
-                <button
-                  key={c.cmd}
-                  className="cmd-menu-item"
-                  onClick={() => handleQuickCommand(c.cmd)}
-                >
-                  <span className="cmd-menu-cmd">{c.cmd}</span>
-                  <span className="cmd-menu-desc">{c.desc}</span>
-                </button>
-              ))}
-              {(settings.customCommands ?? []).length > 0 && (
-                <div className="cmd-menu-separator" />
-              )}
-              {(settings.customCommands ?? []).map((cc, i) => (
-                <button
-                  key={`custom-${i}`}
-                  className="cmd-menu-item"
-                  onClick={() => handleQuickCommand(cc.command)}
-                >
-                  <span className="cmd-menu-cmd">{cc.name}</span>
-                  <span className="cmd-menu-desc">{cc.description}</span>
-                </button>
-              ))}
-              <div className="cmd-menu-separator" />
-              <button
-                className="cmd-menu-item cmd-menu-add"
-                onClick={() => { setCmdMenuOpen(false); dispatch({ type: 'OPEN_SETTINGS' }) }}
-              >
-                <span className="cmd-menu-cmd">+ Add command</span>
-                <span className="cmd-menu-desc">Manage in Settings</span>
+        {burgerOpen && (
+          <div className="chat-burger-menu">
+            {/* Pause / Resume */}
+            {instance.state === 'running' && (
+              <button className="chat-burger-item" onClick={() => { handlePause(); setBurgerOpen(false) }}>
+                <span className="chat-burger-item-label">Pause</span>
               </button>
-            </div>
-          )}
-        </div>
+            )}
+            {instance.state === 'paused' && (
+              <button className="chat-burger-item primary" onClick={() => { handleResume(); setBurgerOpen(false) }}>
+                <span className="chat-burger-item-label">Resume</span>
+              </button>
+            )}
+            {/* Verbosity */}
+            <div className="chat-burger-sub-label">Verbosity</div>
+            {VERBOSITY_TIERS.map(tier => (
+              <button
+                key={tier.level}
+                className={`chat-burger-item${effectiveVerbosity === tier.level ? ' active' : ''}`}
+                onClick={() => {
+                  if (instanceId) dispatch({ type: 'SET_INSTANCE_VERBOSITY', payload: { instanceId, level: tier.level } })
+                  setBurgerOpen(false)
+                }}
+              >
+                <span className="chat-burger-item-icon">{tier.icon}</span>
+                <span className="chat-burger-item-label">{tier.name}</span>
+                <span className="chat-burger-item-desc">{tier.description}</span>
+                {effectiveVerbosity === tier.level && <span className="chat-burger-check">✓</span>}
+              </button>
+            ))}
+            {instanceId && settings.verbosity !== undefined && (
+              <button
+                className="chat-burger-item dim"
+                onClick={() => { dispatch({ type: 'SET_INSTANCE_VERBOSITY', payload: { instanceId, level: null } }); setBurgerOpen(false) }}
+              >
+                <span className="chat-burger-item-label">Reset to default (Lv.{settings.verbosity ?? 3})</span>
+              </button>
+            )}
+            <div className="chat-burger-separator" />
+            {/* Actions */}
+            <button
+              className={`chat-burger-item${terminalPanelOpen ? ' active' : ''}`}
+              onClick={() => { dispatch({ type: 'TOGGLE_TERMINAL' }); setBurgerOpen(false) }}
+              data-tour-id="tour-blackbox"
+            >
+              <span className="chat-burger-item-label">Black Box</span>
+              <span className="chat-burger-item-desc">Terminal panel</span>
+            </button>
+            <button className="chat-burger-item" onClick={() => { handleCopyLast(); setBurgerOpen(false) }}>
+              <span className="chat-burger-item-label">Copy last reply</span>
+            </button>
+            {/* Skills */}
+            {skills.length > 0 && (
+              <>
+                <div className="chat-burger-separator" />
+                <div className="chat-burger-sub-label">Skills</div>
+                {skills.map(s => (
+                  <button key={s.id} className="chat-burger-item" onClick={() => handleLoadSkill(s)}>
+                    <span className="chat-burger-item-label">{s.name}</span>
+                    <span className="chat-burger-item-desc">{s.description}</span>
+                  </button>
+                ))}
+              </>
+            )}
+            {/* Commands */}
+            <div className="chat-burger-separator" />
+            <div className="chat-burger-sub-label">Commands</div>
+            {QUICK_COMMANDS.map(c => (
+              <button key={c.cmd} className="chat-burger-item" onClick={() => handleQuickCommand(c.cmd)}>
+                <span className="chat-burger-item-label" style={{ fontFamily: 'var(--font-mono)' }}>{c.cmd}</span>
+                <span className="chat-burger-item-desc">{c.desc}</span>
+              </button>
+            ))}
+            {(settings.customCommands ?? []).length > 0 && (settings.customCommands ?? []).map((cc, i) => (
+              <button key={`custom-${i}`} className="chat-burger-item" onClick={() => handleQuickCommand(cc.command)}>
+                <span className="chat-burger-item-label" style={{ fontFamily: 'var(--font-mono)' }}>{cc.name}</span>
+                <span className="chat-burger-item-desc">{cc.description}</span>
+              </button>
+            ))}
+            <button className="chat-burger-item dim" onClick={() => { setBurgerOpen(false); dispatch({ type: 'OPEN_SETTINGS' }) }}>
+              <span className="chat-burger-item-label">+ Add command</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

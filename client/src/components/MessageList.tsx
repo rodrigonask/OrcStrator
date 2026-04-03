@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, useEffect } from 'react'
 import type { ChatMessage } from '@shared/types'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
@@ -84,8 +84,11 @@ export function MessageList() {
 
     const flushTools = () => {
       if (pendingTools.length > 0) {
-        // Level 1: strip all tools after execution
-        if (verbosity >= 2) {
+        // Always include groups that contain AskUser/Plan so the interactive UI is visible
+        const hasSpecial = pendingTools.some(tc =>
+          tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode'
+        )
+        if (verbosity >= 2 || hasSpecial) {
           result.push({ kind: 'tools', calls: pendingTools, key: pendingKey + '-tools' })
         }
         pendingTools = []
@@ -159,8 +162,11 @@ export function MessageList() {
       {items.map(item => {
         if (item.kind === 'message') return <MessageBubble key={item.msg.id} message={item.msg} toolResults={toolResults} verbosity={verbosity} />
         if (item.kind === 'tools') {
-          // Level 2: collapsed summary only (no individual tool groups)
-          if (verbosity === 2) {
+          // Level 2: collapsed summary, UNLESS the group contains AskUser/Plan
+          const hasSpecial = item.calls.some(tc =>
+            tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode'
+          )
+          if (verbosity <= 2 && !hasSpecial) {
             return <SessionSummary key={item.key} toolCount={item.calls.length} />
           }
           return <ToolCallGroup key={item.key} calls={item.calls} toolResults={toolResults} verbosity={verbosity} />
@@ -171,12 +177,33 @@ export function MessageList() {
         <div className="message-bubble assistant">
           {/* Levels 1-2: ThinkingIndicator, Levels 3+: existing ActivityBubble + streaming */}
           {verbosity <= 2 ? (
-            <ThinkingIndicator
-              toolCalls={liveToolCalls}
-              isRunning={isAgentRunning}
-              liveText={liveText}
-              verbosity={verbosity}
-            />
+            <>
+              <ThinkingIndicator
+                toolCalls={liveToolCalls}
+                isRunning={isAgentRunning}
+                liveText={liveText}
+                verbosity={verbosity}
+              />
+              {/* Always show AskUser/Plan blocks even at low verbosity */}
+              {liveToolCalls.some(tc => tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode') && (
+                <div className="live-tool-blocks">
+                  {liveToolCalls
+                    .filter(tc => tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode')
+                    .map(tc => (
+                      <ToolCallBlock
+                        key={tc.toolId}
+                        toolName={tc.toolName}
+                        input={tc.input || '{}'}
+                        output={tc.output}
+                        isError={tc.isError}
+                        isRunning={tc.isRunning}
+                        defaultExpanded={false}
+                        verbosity={verbosity}
+                      />
+                    ))}
+                </div>
+              )}
+            </>
           ) : (
             <>
               {liveToolCalls.length > 0 && (() => {
@@ -194,6 +221,37 @@ export function MessageList() {
                       isRunning={isAgentRunning}
                       activityLabel={activityLabel}
                     />
+                    {/* Show live AskUser/Plan tool blocks inline at any verbosity so their UI is visible */}
+                    {verbosity < 4 && liveToolCalls.some(tc =>
+                      tc.toolName === 'AskUserQuestion' ||
+                      tc.toolName === 'ExitPlanMode' ||
+                      (tc.toolName === 'Write' && (() => {
+                        try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
+                      })())
+                    ) && (
+                      <div className="live-tool-blocks">
+                        {liveToolCalls
+                          .filter(tc =>
+                            tc.toolName === 'AskUserQuestion' ||
+                            tc.toolName === 'ExitPlanMode' ||
+                            (tc.toolName === 'Write' && (() => {
+                              try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
+                            })())
+                          )
+                          .map(tc => (
+                            <ToolCallBlock
+                              key={tc.toolId}
+                              toolName={tc.toolName}
+                              input={tc.input || '{}'}
+                              output={tc.output}
+                              isError={tc.isError}
+                              isRunning={tc.isRunning}
+                              defaultExpanded={false}
+                              verbosity={verbosity}
+                            />
+                          ))}
+                      </div>
+                    )}
                     {/* Levels 4-5: show live tool blocks inline */}
                     {verbosity >= 4 && (
                       <div className="live-tool-blocks">
@@ -252,8 +310,20 @@ interface ToolCallGroupProps {
 }
 
 function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
-  // Levels 4-5: expanded by default
-  const [expanded, setExpanded] = useState(verbosity >= 4)
+  // Auto-expand if group contains AskUser or plan tools so their UI is immediately visible
+  const hasSpecialTool = calls.some(tc =>
+    tc.toolName === 'AskUserQuestion' ||
+    tc.toolName === 'ExitPlanMode' ||
+    (tc.toolName === 'Write' && (() => {
+      try { return JSON.parse(tc.input)?.file_path?.includes('.claude/plans/') } catch { return false }
+    })())
+  )
+  const [expanded, setExpanded] = useState(hasSpecialTool || verbosity >= 4)
+
+  // Auto-expand when a special tool (AskUser/Plan) is added to an already-mounted group
+  useEffect(() => {
+    if (hasSpecialTool) setExpanded(true)
+  }, [hasSpecialTool])
 
   return (
     <div className="tool-call-group">

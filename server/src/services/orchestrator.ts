@@ -4,7 +4,7 @@ import { processRegistry } from './process-registry.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { updateOverdriveOnComplete, resetOverdriveIfExpired } from './overdrive.js'
 import { markScheduleRunning, appendExecution, updateScheduleAfterRun, safeJsonParse } from './task-manager.js'
-import { emitOrcLog, getRoleModels, getRoleTools, getPermissionFlag, serverStartTime } from './orchestrator-utils.js'
+import { emitOrcLog, getRoleModels, getRoleTools, getRoleEffort, getPermissionFlag, serverStartTime } from './orchestrator-utils.js'
 import { getMcpConfigPath, AGENTS_DIR } from './mcp-config.js'
 import { cloudSync } from './cloud-sync.js'
 import type { PipelineTask, ScheduleExecution, OrcLogEntry } from '@orcstrator/shared'
@@ -75,9 +75,13 @@ class OrchestratorService {
 
   start(): void {
     if (this.tickTimer) return
-    this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS)
+    this.tickTimer = setInterval(() => {
+      this.tick().catch(err => console.error('[orchestrator] tick error:', err))
+    }, TICK_INTERVAL_MS)
     // Run archive once after short delay
-    setTimeout(() => this.archiveSweep(), 10_000)
+    setTimeout(() => {
+      try { this.archiveSweep() } catch (err) { console.error('[orchestrator] archiveSweep startup error:', err) }
+    }, 10_000)
     console.log('[orchestrator] Started — unified tick (10s)')
   }
 
@@ -134,108 +138,119 @@ class OrchestratorService {
     this.pendingFolders.add(folderId)
     if (!this.tickRunning) {
       this.tickRunning = true
-      this.assignmentSweep().finally(() => { this.tickRunning = false })
+      this.assignmentSweep()
+        .catch(err => console.error('[orchestrator] assignmentSweep error:', err))
+        .finally(() => { this.tickRunning = false })
     }
   }
 
   // ── Primary: Process Exit Handler ──
 
   onProcessExit(instanceId: string, tokens?: ProcessExitTokens): void {
-    console.log(`[orchestrator] onProcessExit: instance ${instanceId} | tokens=${tokens ? `in=${tokens.inputTokens} out=${tokens.outputTokens} cost=$${tokens.costUsd}` : 'none'}`)
-    const exitInst = db.prepare('SELECT name, is_scheduler_run, scheduler_context, assigned_task_ids, folder_id, agent_role FROM instances WHERE id = ?')
-      .get(instanceId) as { name: string; is_scheduler_run: number; scheduler_context: string | null; assigned_task_ids: string | null; folder_id: string; agent_role: string | null } | undefined
+    try {
+      console.log(`[orchestrator] onProcessExit: instance ${instanceId} | tokens=${tokens ? `in=${tokens.inputTokens} out=${tokens.outputTokens} cost=$${tokens.costUsd}` : 'none'}`)
+      const exitInst = db.prepare('SELECT name, is_scheduler_run, scheduler_context, assigned_task_ids, folder_id, agent_role FROM instances WHERE id = ?')
+        .get(instanceId) as { name: string; is_scheduler_run: number; scheduler_context: string | null; assigned_task_ids: string | null; folder_id: string; agent_role: string | null } | undefined
 
-    // Scheduler instance: handle via scheduler exit path
-    if (exitInst?.is_scheduler_run) {
-      const ctx = exitInst.scheduler_context ? safeJsonParse<{ taskId: string; runId: string; startedAt: number } | null>(exitInst.scheduler_context, null) : null
-      if (ctx) {
-        this.onSchedulerExit(instanceId, ctx.taskId, ctx.runId, ctx.startedAt)
+      // Scheduler instance: handle via scheduler exit path
+      if (exitInst?.is_scheduler_run) {
+        const ctx = exitInst.scheduler_context ? safeJsonParse<{ taskId: string; runId: string; startedAt: number } | null>(exitInst.scheduler_context, null) : null
+        if (ctx) {
+          this.onSchedulerExit(instanceId, ctx.taskId, ctx.runId, ctx.startedAt)
+        }
+        // Reset scheduler state
+        db.prepare(
+          `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL,
+           assigned_task_ids = NULL, is_scheduler_run = 0, scheduler_context = NULL, version = version + 1
+           WHERE id = ?`
+        ).run(instanceId)
+        broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+        this.pruneMessages(instanceId)
+        return
       }
-      // Reset scheduler state
+
+      // Read assigned task IDs from DB (not in-memory Map)
+      const taskIds: string[] = exitInst?.assigned_task_ids ? safeJsonParse(exitInst.assigned_task_ids, []) : []
+
+      // Auto-post the agent's last message as a comment and move the task to the next column
+      // MUST run before accumulateTaskTokens
+      if (taskIds.length > 0 && exitInst?.agent_role) {
+        this.autoCommentAndMove(instanceId, taskIds, exitInst.agent_role)
+      }
+
+      // Accumulate tokens on the locked task + post spend comment
+      if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0) && taskIds.length > 0) {
+        this.accumulateTaskTokens(instanceId, tokens, taskIds)
+      }
+
+      // Release all task locks held by this instance — catches tasks where auto-move failed
+      try {
+        const lockedTasks = db.prepare(
+          'SELECT id, title, retry_count, labels, history, project_id FROM pipeline_tasks WHERE locked_by = ?'
+        ).all(instanceId) as Array<{ id: string; title: string; retry_count: number; labels: string; history: string; project_id: string }>
+
+        for (const task of lockedTasks) {
+          const newRetry = ((task.retry_count) || 0) + 1
+          const now = Date.now()
+          const history = safeJsonParse<Record<string, unknown>[]>(task.history, [])
+          history.push({ action: 'lock_released', timestamp: now, agent: instanceId, note: 'process exited without moving task' })
+
+          if (newRetry >= MAX_RETRIES) {
+            let labels: string[]
+            try { labels = JSON.parse(task.labels || '[]') } catch { labels = [] }
+            if (!labels.includes('stuck')) labels.push('stuck')
+            history.push({ action: 'moved', timestamp: now, from: 'current', to: 'in_review', note: `${MAX_RETRIES} failures - stuck, needs human` })
+            db.prepare(
+              `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, "column" = 'in_review',
+               labels = ?, history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
+            ).run(newRetry, JSON.stringify(labels), JSON.stringify(history), now, task.id)
+            console.warn(`[orchestrator] Task "${task.title}" failed ${newRetry}x — moved to in_review as stuck`)
+            emitOrcLog({ type: 'task_stuck', instanceId, instanceName: exitInst?.name, agentRole: exitInst?.agent_role || undefined, taskId: task.id, taskTitle: task.title, detail: `${newRetry} failures — moved to in_review` })
+            broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: task.id, reason: 'max-retries-stuck' } })
+            broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
+          } else {
+            db.prepare(
+              `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?,
+               history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
+            ).run(newRetry, JSON.stringify(history), now, task.id)
+            console.log(`[orchestrator] Released lock on "${task.title}" (retry ${newRetry}/${MAX_RETRIES})`)
+          }
+        }
+      } catch (err) {
+        console.error('[orchestrator] lock release error:', err)
+      }
+
+      // Transition instance to idle (final state)
       db.prepare(
         `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL,
          assigned_task_ids = NULL, is_scheduler_run = 0, scheduler_context = NULL, version = version + 1
          WHERE id = ?`
       ).run(instanceId)
       broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+
+      // Trigger re-assignment
+      try {
+        if (exitInst?.agent_role) {
+          const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(exitInst.folder_id) as { orchestrator_active: number } | undefined
+          if (folder?.orchestrator_active) {
+            this.triggerFolder(exitInst.folder_id)
+          }
+        }
+      } catch (err) {
+        console.error('[orchestrator] onProcessExit trigger error:', err)
+      }
+
       this.pruneMessages(instanceId)
-      return
-    }
-
-    // Read assigned task IDs from DB (not in-memory Map)
-    const taskIds: string[] = exitInst?.assigned_task_ids ? safeJsonParse(exitInst.assigned_task_ids, []) : []
-
-    // Auto-post the agent's last message as a comment and move the task to the next column
-    // MUST run before accumulateTaskTokens
-    if (taskIds.length > 0 && exitInst?.agent_role) {
-      this.autoCommentAndMove(instanceId, taskIds, exitInst.agent_role)
-    }
-
-    // Accumulate tokens on the locked task + post spend comment
-    if (tokens && (tokens.inputTokens > 0 || tokens.outputTokens > 0) && taskIds.length > 0) {
-      this.accumulateTaskTokens(instanceId, tokens, taskIds)
-    }
-
-    // Release all task locks held by this instance — catches tasks where auto-move failed
-    try {
-      const lockedTasks = db.prepare(
-        'SELECT id, title, retry_count, labels, history, project_id FROM pipeline_tasks WHERE locked_by = ?'
-      ).all(instanceId) as Array<{ id: string; title: string; retry_count: number; labels: string; history: string; project_id: string }>
-
-      for (const task of lockedTasks) {
-        const newRetry = ((task.retry_count) || 0) + 1
-        const now = Date.now()
-        const history = safeJsonParse<Record<string, unknown>[]>(task.history, [])
-        history.push({ action: 'lock_released', timestamp: now, agent: instanceId, note: 'process exited without moving task' })
-
-        if (newRetry >= MAX_RETRIES) {
-          let labels: string[]
-          try { labels = JSON.parse(task.labels || '[]') } catch { labels = [] }
-          if (!labels.includes('stuck')) labels.push('stuck')
-          history.push({ action: 'moved', timestamp: now, from: 'current', to: 'in_review', note: `${MAX_RETRIES} failures - stuck, needs human` })
-          db.prepare(
-            `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?, "column" = 'in_review',
-             labels = ?, history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
-          ).run(newRetry, JSON.stringify(labels), JSON.stringify(history), now, task.id)
-          console.warn(`[orchestrator] Task "${task.title}" failed ${newRetry}x — moved to in_review as stuck`)
-          emitOrcLog({ type: 'task_stuck', instanceId, instanceName: exitInst?.name, agentRole: exitInst?.agent_role || undefined, taskId: task.id, taskTitle: task.title, detail: `${newRetry} failures — moved to in_review` })
-          broadcastEvent({ type: 'orchestrator:lock-released', payload: { taskId: task.id, reason: 'max-retries-stuck' } })
-          broadcastEvent({ type: 'pipeline:updated', payload: { projectId: task.project_id } })
-        } else {
-          db.prepare(
-            `UPDATE pipeline_tasks SET locked_by = NULL, locked_at = NULL, retry_count = ?,
-             history = ?, lock_version = lock_version + 1, version = version + 1, updated_at = ? WHERE id = ?`
-          ).run(newRetry, JSON.stringify(history), now, task.id)
-          console.log(`[orchestrator] Released lock on "${task.title}" (retry ${newRetry}/${MAX_RETRIES})`)
-        }
-      }
+      updateOverdriveOnComplete(instanceId)
+      updateDevLock()
     } catch (err) {
-      console.error('[orchestrator] lock release error:', err)
+      console.error(`[orchestrator] onProcessExit FATAL error for ${instanceId}:`, err)
+      // Last-resort: ensure instance goes idle even if everything else failed
+      try {
+        db.prepare("UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?").run(instanceId)
+        broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+      } catch { /* truly nothing we can do */ }
     }
-
-    // Transition instance to idle (final state)
-    db.prepare(
-      `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL,
-       assigned_task_ids = NULL, is_scheduler_run = 0, scheduler_context = NULL, version = version + 1
-       WHERE id = ?`
-    ).run(instanceId)
-    broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
-
-    // Trigger re-assignment
-    try {
-      if (exitInst?.agent_role) {
-        const folder = db.prepare('SELECT orchestrator_active FROM folders WHERE id = ?').get(exitInst.folder_id) as { orchestrator_active: number } | undefined
-        if (folder?.orchestrator_active) {
-          this.triggerFolder(exitInst.folder_id)
-        }
-      }
-    } catch (err) {
-      console.error('[orchestrator] onProcessExit trigger error:', err)
-    }
-
-    this.pruneMessages(instanceId)
-    updateOverdriveOnComplete(instanceId)
-    updateDevLock()
   }
 
   // ── Auto Comment & Move ──
@@ -405,7 +420,11 @@ class OrchestratorService {
     if (folderIds.size === 0) return
 
     for (const folderId of folderIds) {
-      await this.assignWork(folderId)
+      try {
+        await this.assignWork(folderId)
+      } catch (err) {
+        console.error(`[orchestrator] assignWork error for folder ${folderId}:`, err)
+      }
     }
   }
 
@@ -762,7 +781,11 @@ class OrchestratorService {
     console.log(`[orchestrator] Reserved: ${instanceId.slice(0, 8)} → tasks [${taskIds.map(id => id.slice(0, 8)).join(', ')}]`)
 
     // Build prompt
-    const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown>
+    const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId) as Record<string, unknown> | undefined
+    if (!folder) {
+      console.error(`[orchestrator] assignTaskToInstance: folder not found: ${folderId}`)
+      return
+    }
     const prompt = this.buildPrompt(tasksToLock, task, instance, folder)
 
     const cwd = (instance.cwd as string) || (folder.path as string)
@@ -772,6 +795,12 @@ class OrchestratorService {
     const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
 
     const retryCount = (task.retry_count as number) || 0
+
+    // Permission mode — strip any existing dangerously-skip-permissions from globalFlags and apply from settings
+    if (!globalFlags.some(f => f.startsWith('--permission-mode') || f === '--dangerously-skip-permissions')) {
+      globalFlags.push(getPermissionFlag())
+    }
+
     const roleModels = getRoleModels()
     const model = retryCount > 0 ? 'opus' : roleModels[role]
     const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
@@ -780,6 +809,11 @@ class OrchestratorService {
     const roleTools = getRoleTools()
     const tools = roleTools[role]
     if (tools && !globalFlags.some(f => f.startsWith('--tools'))) globalFlags.push('--tools', tools)
+
+    // Effort level per role
+    const roleEffort = getRoleEffort()
+    const effort = roleEffort[role]
+    if (effort && !globalFlags.some(f => f.startsWith('--effort'))) globalFlags.push(`--effort=${effort}`)
 
     try {
       const cacheRow = db.prepare("SELECT value FROM settings WHERE key = 'disableCache'").get() as { value: string } | undefined
@@ -791,6 +825,22 @@ class OrchestratorService {
       if (maxRow) {
         const maxTokens = JSON.parse(maxRow.value) as number
         if (maxTokens > 0 && !globalFlags.some(f => f.startsWith('--max-tokens'))) globalFlags.push(`--max-tokens=${maxTokens}`)
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const budgetRow = db.prepare("SELECT value FROM settings WHERE key = 'maxBudgetUsd'").get() as { value: string } | undefined
+      if (budgetRow) {
+        const budget = JSON.parse(budgetRow.value) as number
+        if (budget > 0 && !globalFlags.some(f => f.startsWith('--max-budget-usd'))) globalFlags.push(`--max-budget-usd=${budget}`)
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const fallbackRow = db.prepare("SELECT value FROM settings WHERE key = 'fallbackModel'").get() as { value: string } | undefined
+      if (fallbackRow) {
+        const fm = JSON.parse(fallbackRow.value) as string
+        if (fm && fm !== 'default' && !globalFlags.some(f => f.startsWith('--fallback-model'))) globalFlags.push(`--fallback-model=${fm}`)
       }
     } catch { /* ignore */ }
 
