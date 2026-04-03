@@ -16,8 +16,45 @@ import { FeatureLockedModal } from './tour/FeatureLockedModal'
 
 import type { FolderConfig } from '@shared/types'
 
-function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id })
+interface FolderTreeNode {
+  folder: FolderConfig
+  children: FolderTreeNode[]
+}
+
+function buildFolderTree(folders: FolderConfig[]): FolderTreeNode[] {
+  const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '')
+
+  // Sort by path length so parents come before children
+  const sorted = [...folders].sort((a, b) => a.path.length - b.path.length)
+
+  const nodes: FolderTreeNode[] = []
+
+  const findParent = (roots: FolderTreeNode[], normalPath: string): FolderTreeNode | null => {
+    for (const node of roots) {
+      const nodePath = normalize(node.folder.path)
+      if (normalPath.startsWith(nodePath + '/') && normalPath !== nodePath) {
+        const deeper = findParent(node.children, normalPath)
+        return deeper || node
+      }
+    }
+    return null
+  }
+
+  for (const folder of sorted) {
+    const newNode: FolderTreeNode = { folder, children: [] }
+    const parent = findParent(nodes, normalize(folder.path))
+    if (parent) {
+      parent.children.push(newNode)
+    } else {
+      nodes.push(newNode)
+    }
+  }
+
+  return nodes
+}
+
+function SortableFolderGroup({ node }: { node: FolderTreeNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.folder.id })
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -25,14 +62,14 @@ function SortableFolderGroup({ folder }: { folder: FolderConfig }) {
   }
   return (
     <div ref={setNodeRef} style={style}>
-      <FolderGroup folder={folder} dragHandleProps={{ ...attributes, ...listeners }} />
+      <FolderGroup folder={node.folder} childNodes={node.children} depth={0} dragHandleProps={{ ...attributes, ...listeners }} />
     </div>
   )
 }
 
 export function Sidebar() {
   const { folders } = useInstances()
-  const { editingFolderId, showFolderBrowser, settings, view, activePipelineId, showSettings } = useUI()
+  const { editingFolderId, showFolderBrowser, settings } = useUI()
   const { dispatch } = useAppDispatch()
   const multiProjectGate = useFeatureGate('multi-project')
   const createProjectGate = useFeatureGate('create-project')
@@ -45,6 +82,8 @@ export function Sidebar() {
     if (!a.stealthMode && b.stealthMode) return 1
     return a.sortOrder - b.sortOrder
   })
+
+  const folderTree = buildFolderTree(sortedFolders)
 
   const handleFolderDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event
@@ -86,62 +125,14 @@ export function Sidebar() {
 
         <div className="sidebar-folders" data-tour-id="tour-projects">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleFolderDragEnd}>
-            <SortableContext items={sortedFolders.map(f => f.id)} strategy={verticalListSortingStrategy}>
-              {sortedFolders.map(folder => (
-                <SortableFolderGroup key={folder.id} folder={folder} />
+            <SortableContext items={folderTree.map(n => n.folder.id)} strategy={verticalListSortingStrategy}>
+              {folderTree.map(node => (
+                <SortableFolderGroup key={node.folder.id} node={node} />
               ))}
             </SortableContext>
           </DndContext>
         </div>
 
-        <div className="sidebar-nav-links" style={{ padding: '4px 8px', borderTop: '1px solid var(--border)' }}>
-          <button
-            className={`sidebar-nav-btn${view === 'pipeline' ? ' active' : ''}`}
-            onClick={() => {
-              const pipelineId = activePipelineId || folders[0]?.id || null
-              if (pipelineId) {
-                dispatch({ type: 'SET_PIPELINE_PROJECT', projectId: pipelineId })
-              }
-              dispatch({ type: 'SELECT_INSTANCE', payload: null })
-              dispatch({ type: 'SET_VIEW', payload: 'pipeline' })
-            }}
-          >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Pipeline</span>
-          </button>
-          <button
-            className={`sidebar-nav-btn${view === 'agents' ? ' active' : ''}`}
-            onClick={() => {
-              dispatch({ type: 'SELECT_INSTANCE', payload: null })
-              dispatch({ type: 'SET_VIEW', payload: 'agents' })
-            }}
-          >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Agents</span>
-          </button>
-          <button
-            className={`sidebar-nav-btn${view === 'sessions' ? ' active' : ''}`}
-            onClick={() => {
-              dispatch({ type: 'SELECT_INSTANCE', payload: null })
-              dispatch({ type: 'SET_VIEW', payload: 'sessions' })
-            }}
-          >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Sessions</span>
-          </button>
-          <button
-            className={`sidebar-nav-btn${view === 'usage' ? ' active' : ''}`}
-            onClick={() => {
-              dispatch({ type: 'SELECT_INSTANCE', payload: null })
-              dispatch({ type: 'SET_VIEW', payload: 'usage' })
-            }}
-          >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Usage</span>
-          </button>
-          <button
-            className={`sidebar-nav-btn${showSettings ? ' active' : ''}`}
-            onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
-          >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Settings</span>
-          </button>
-        </div>
 
         <div className="sidebar-add-folder" style={{ display: 'flex', gap: 4, padding: '8px 8px' }}>
           <button
@@ -150,7 +141,7 @@ export function Sidebar() {
             onClick={() => { if (multiProjectGate.check()) dispatch({ type: 'OPEN_FOLDER_BROWSER' }) }}
             style={{ flex: 1 }}
           >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Add Project</span>
+            <span className="font-mono" style={{ fontSize: '11px' }}>Add Existing</span>
           </button>
           <button
             className="add-folder-btn"
@@ -161,7 +152,6 @@ export function Sidebar() {
                 dispatch({ type: 'OPEN_FOLDER_BROWSER' })
                 return
               }
-              // Find or use first folder as parent context
               const parentFolderId = folders[0]?.id
               if (!parentFolderId) {
                 dispatch({ type: 'OPEN_FOLDER_BROWSER' })
@@ -176,7 +166,6 @@ export function Sidebar() {
                 dispatch({ type: 'ADD_INSTANCE', payload: inst })
                 dispatch({ type: 'SELECT_INSTANCE', payload: inst.id })
                 dispatch({ type: 'SET_VIEW', payload: 'chat' })
-                // Auto-send scaffolding prompt
                 api.sendMessage(inst.id, {
                   text: 'I want to create a new project in this directory. Ask me what kind of project I want to build, help me pick a name, then create the folder and scaffold it step by step.',
                   flags: ['--model=claude-opus-4-6'],
@@ -187,7 +176,7 @@ export function Sidebar() {
             }}
             style={{ flex: 1 }}
           >
-            <span className="font-mono" style={{ fontSize: '11px' }}>Create New</span>
+            <span className="font-mono" style={{ fontSize: '11px' }}>Scaffold New</span>
           </button>
         </div>
 

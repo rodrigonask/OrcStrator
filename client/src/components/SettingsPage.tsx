@@ -6,9 +6,9 @@ import { useGame } from '../context/GameContext'
 import { api } from '../api'
 import { rest } from '../api/rest'
 import { useConfirm } from './ConfirmModal'
-import { ALLOWED_FLAG_PREFIXES, AVAILABLE_TOOLS, DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS, DEFAULT_AGENT_NAMES, ANIMATION_TIERS, SOUND_TIERS, VERBOSITY_TIERS } from '@shared/constants'
-import type { McpServerInfo, AgentModel, AgentRole, PermissionMode, VerbosityLevel } from '@shared/types'
-import type { NamingTheme } from '../utils/naming'
+import { ALLOWED_FLAG_PREFIXES, AVAILABLE_TOOLS, DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS, DEFAULT_ROLE_EFFORT, DEFAULT_AGENT_NAMES, ANIMATION_TIERS, SOUND_TIERS, VERBOSITY_TIERS } from '@shared/constants'
+import type { McpServerInfo, AgentModel, AgentRole, PermissionMode, EffortLevel, VerbosityLevel } from '@shared/types'
+import { type NamingTheme, THEME_LABELS } from '../utils/naming'
 
 const ROLES: AgentRole[] = ['planner', 'builder', 'tester', 'promoter']
 const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
@@ -40,7 +40,9 @@ export function SettingsPage() {
   const [allowSpawn, setAllowSpawn] = useState(settings.orchestratorAllowSpawn || false)
   const [animationTier, setAnimationTier] = useState<number>(settings.animationTier ?? (settings.animationsEnabled === false ? 0 : 2))
   const [soundTier, setSoundTier] = useState<number>(settings.soundTier ?? (settings.soundsEnabled === false ? 0 : 2))
-  const [namingTheme, setNamingTheme] = useState<NamingTheme>(settings.namingTheme || 'fruits')
+  const [namingThemes, setNamingThemes] = useState<NamingTheme[]>(
+    settings.namingThemes as NamingTheme[] ?? (settings.namingTheme ? [settings.namingTheme as NamingTheme] : ['memes'])
+  )
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpLoaded, setMcpLoaded] = useState(false)
   const [roleMcp, setRoleMcp] = useState<Record<string, string[]>>(
@@ -61,11 +63,21 @@ export function SettingsPage() {
       promoter: [...DEFAULT_ROLE_TOOLS.promoter],
     }
   )
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.permissionMode ?? 'bypass')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.permissionMode ?? 'bypassPermissions')
+  const [effortLevel, setEffortLevel] = useState<EffortLevel>(settings.effortLevel ?? 'high')
+  const [maxBudgetUsd, setMaxBudgetUsd] = useState(settings.maxBudgetUsd ?? 0)
+  const [fallbackModel, setFallbackModel] = useState<AgentModel>(settings.fallbackModel ?? 'default')
+  const [roleEffort, setRoleEffort] = useState<Record<AgentRole, EffortLevel>>(
+    (settings.orchestratorEffort as Record<AgentRole, EffortLevel> | undefined) ?? {
+      planner: 'high', builder: 'high', tester: 'medium', promoter: 'medium', scheduler: 'medium',
+    }
+  )
   const [disableCache, setDisableCache] = useState(settings.disableCache ?? false)
   const [maxTokens, setMaxTokens] = useState(settings.maxTokens ?? 0)
   const [maxConcurrent, setMaxConcurrent] = useState(settings.maxConcurrentProcesses ?? 8)
   const [verbosity, setVerbosity] = useState<number>(settings.verbosity ?? 3)
+  const [defaultModel, setDefaultModel] = useState<AgentModel>(settings.defaultModel ?? 'default')
+  const [defaultEffort, setDefaultEffort] = useState<EffortLevel>(settings.defaultEffort ?? 'high')
   const [customCommands, setCustomCommands] = useState<Array<{ name: string; command: string; description: string }>>(
     settings.customCommands ?? []
   )
@@ -140,8 +152,8 @@ export function SettingsPage() {
       !f.startsWith('--dangerously-skip-permissions') &&
       !f.startsWith('--permission-mode')
     )
-    if (permissionMode === 'bypass') cleanFlags.push('--dangerously-skip-permissions')
-    else if (permissionMode !== 'default') cleanFlags.push(`--permission-mode=${permissionMode}`)
+    if (permissionMode === 'bypassPermissions') cleanFlags.push('--dangerously-skip-permissions')
+    else cleanFlags.push(`--permission-mode=${permissionMode}`)
 
     const payload = {
       globalFlags: cleanFlags,
@@ -156,6 +168,10 @@ export function SettingsPage() {
       orchestratorModels: roleModels,
       orchestratorTools: roleTools,
       permissionMode,
+      effortLevel,
+      maxBudgetUsd: maxBudgetUsd > 0 ? maxBudgetUsd : undefined,
+      fallbackModel: fallbackModel !== 'default' ? fallbackModel : undefined,
+      orchestratorEffort: roleEffort,
       disableCache,
       maxTokens: maxTokens > 0 ? maxTokens : undefined,
       maxConcurrentProcesses: maxConcurrent,
@@ -163,18 +179,20 @@ export function SettingsPage() {
       soundTier: soundTier as 0 | 1 | 2 | 3 | 4,
       animationsEnabled: animationTier > 0,
       soundsEnabled: soundTier > 0,
-      namingTheme,
+      namingThemes,
       verbosity: verbosity as VerbosityLevel,
       cloudSyncUrl: cloudSyncUrl || undefined,
       cloudSyncKey: cloudSyncKey || undefined,
       machineName: machineName || undefined,
       customCommands: customCommands.filter(cc => cc.name.trim() && cc.command.trim()),
+      defaultModel: defaultModel !== 'default' ? defaultModel : undefined,
+      defaultEffort: defaultEffort !== 'high' ? defaultEffort : undefined,
     }
     dispatch({ type: 'UPDATE_SETTINGS', payload })
     api.updateSettings(payload)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, permissionMode, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingTheme, verbosity, cloudSyncUrl, cloudSyncKey, machineName, customCommands])
+  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, roleEffort, permissionMode, effortLevel, maxBudgetUsd, fallbackModel, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingThemes, verbosity, cloudSyncUrl, cloudSyncKey, machineName, customCommands, defaultModel, defaultEffort])
 
   const handleBack = useCallback(() => {
     dispatch({ type: 'CLOSE_SETTINGS' })
@@ -250,8 +268,11 @@ export function SettingsPage() {
                     value={permissionMode}
                     onChange={e => setPermissionMode(e.target.value as PermissionMode)}
                   >
-                    <option value="bypass">Bypass (auto-approve all)</option>
+                    <option value="bypassPermissions">Bypass (auto-approve all)</option>
+                    <option value="acceptEdits">Accept Edits (auto-approve file writes)</option>
+                    <option value="auto">Auto (Claude decides)</option>
                     <option value="plan">Plan (read-only)</option>
+                    <option value="dontAsk">Don't Ask (skip confirmations)</option>
                     <option value="default">Default (ask every action)</option>
                   </select>
                 </div>
@@ -288,19 +309,58 @@ export function SettingsPage() {
                   </div>
                 </div>
 
+                {/* Default AI Model */}
+                <div className="settings-card">
+                  {sectionTitle('Default AI Model')}
+                  <select
+                    className="form-select"
+                    value={defaultModel}
+                    onChange={e => setDefaultModel(e.target.value as AgentModel)}
+                  >
+                    {MODEL_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Default Effort */}
+                <div className="settings-card">
+                  {sectionTitle('Default Effort')}
+                  <select
+                    className="form-select"
+                    value={defaultEffort}
+                    onChange={e => setDefaultEffort(e.target.value as EffortLevel)}
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="max">Max</option>
+                  </select>
+                </div>
+
                 {/* Session Naming */}
                 <div className="settings-card">
                   {sectionTitle('Session Naming')}
-                  <select
-                    className="form-select"
-                    value={namingTheme}
-                    onChange={e => setNamingTheme(e.target.value as NamingTheme)}
-                  >
-                    <option value="fruits">Fruits</option>
-                    <option value="rpg">RPG Characters</option>
-                    <option value="wow">World of Warcraft</option>
-                    <option value="memes">Meme Names</option>
-                  </select>
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                    Pick one or more. Names are drawn from the combined pool.
+                  </p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {(Object.keys(THEME_LABELS) as NamingTheme[]).map(t => {
+                      const active = namingThemes.includes(t)
+                      return (
+                        <button
+                          key={t}
+                          onClick={() => setNamingThemes(prev => {
+                            if (active && prev.length <= 1) return prev
+                            return active ? prev.filter(x => x !== t) : [...prev, t]
+                          })}
+                          className={`settings-tool-btn ${active ? 'active' : ''}`}
+                        >
+                          {THEME_LABELS[t]}
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
 
                 {/* Font Size */}
@@ -479,6 +539,31 @@ export function SettingsPage() {
                     </div>
                   ))}
                 </div>
+                {/* Effort per Role */}
+                <div className="settings-card">
+                  {sectionTitle('Effort per Role')}
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                    Controls reasoning depth. Higher effort uses more tokens.
+                  </p>
+                  {ROLES.map(role => (
+                    <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, width: 70, textTransform: 'capitalize' }}>
+                        {role}
+                      </span>
+                      <select
+                        className="form-select"
+                        style={{ flex: 1 }}
+                        value={roleEffort[role]}
+                        onChange={e => setRoleEffort(m => ({ ...m, [role]: e.target.value as EffortLevel }))}
+                      >
+                        <option value="low">Low (fast, cheap)</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High (default)</option>
+                        <option value="max">Max (extended thinking)</option>
+                      </select>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div className="settings-col">
@@ -573,6 +658,40 @@ export function SettingsPage() {
                       placeholder="0"
                     />
                   </div>
+                </div>
+
+                {/* Max Budget USD */}
+                <div className="settings-card">
+                  {sectionTitle('Max Budget per Session (USD)')}
+                  <div className="form-group">
+                    <label className="form-label">0 = unlimited. Applies to pipeline tasks.</label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      value={maxBudgetUsd}
+                      onChange={e => setMaxBudgetUsd(Number(e.target.value))}
+                      min={0}
+                      step={0.5}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+
+                {/* Fallback Model */}
+                <div className="settings-card">
+                  {sectionTitle('Fallback Model')}
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                    Switch to this model if the primary is overloaded.
+                  </p>
+                  <select
+                    className="form-select"
+                    value={fallbackModel}
+                    onChange={e => setFallbackModel(e.target.value as AgentModel)}
+                  >
+                    {MODEL_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Max Concurrent Processes */}

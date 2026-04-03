@@ -57,6 +57,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   const unread = unreadCounts?.[instance.id] || 0
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
   const [skills, setSkills] = useState<SkillConfig[]>([])
   const [showSkillsMenu, setShowSkillsMenu] = useState(false)
   const agentsGate = useFeatureGate('agents')
@@ -176,6 +177,25 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     }
   }, [contextMenu])
 
+  // Reposition context menu if it overflows the viewport
+  useEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return
+    const el = contextMenuRef.current
+    const rect = el.getBoundingClientRect()
+    const pad = 8
+    let { x, y } = contextMenu
+    if (rect.bottom > window.innerHeight - pad) {
+      y = Math.max(pad, contextMenu.y - rect.height)
+    }
+    if (rect.right > window.innerWidth - pad) {
+      x = Math.max(pad, window.innerWidth - rect.width - pad)
+    }
+    if (x !== contextMenu.x || y !== contextMenu.y) {
+      el.style.left = `${x}px`
+      el.style.top = `${y}px`
+    }
+  }, [contextMenu])
+
   const agentNames = useAgentNames()
 
   const isOrchestratorLocked = instance.orchestratorManaged && folderOrchestratorActive
@@ -186,9 +206,11 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
     // Auto-enroll in orchestrator if folder's orchestrator is active and a role is being set
     const autoManage = newRole !== undefined && folderOrchestratorActive && !instance.orchestratorManaged
     try {
+      const apiUpdates: Record<string, unknown> = { agentRole: newRole ?? null }
+      if (autoManage) apiUpdates.orchestratorManaged = true
       const updates: Partial<InstanceConfig> = { agentRole: newRole as InstanceConfig['agentRole'] }
       if (autoManage) updates.orchestratorManaged = true
-      await api.updateInstance(instance.id, updates)
+      await api.updateInstance(instance.id, apiUpdates as Partial<InstanceConfig>)
       dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instance.id, updates } })
     } catch (err) {
       console.error('Failed to update role:', err)
@@ -363,6 +385,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
             onContextMenu={(e) => { e.preventDefault(); setContextMenu(null) }}
           />
           <div
+            ref={contextMenuRef}
             className="context-menu"
             style={{ top: contextMenu.y, left: contextMenu.x }}
             onClick={e => e.stopPropagation()}

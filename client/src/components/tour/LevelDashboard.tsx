@@ -26,7 +26,7 @@ const TIER_ICONS: Record<LevelTier, string> = {
 }
 
 const LEVEL_FEATURES: Record<number, string[]> = {
-  1: ['Basic chat interface', 'Single instance'],
+  1: ['Basic chat interface', 'Single chat'],
   2: ['Multiple folders', 'Command reference'],
   3: ['Context & memory tools', 'CLAUDE.md editor'],
   4: ['Plan mode', 'Workflow guide'],

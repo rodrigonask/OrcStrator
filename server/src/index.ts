@@ -310,6 +310,9 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
+  process.on('unhandledRejection', (reason) => {
+    console.error('[server] Unhandled promise rejection:', reason)
+  })
 
   // Start listening
   const port = parseInt(process.env.PORT || String(DEFAULT_PORT), 10)

@@ -55,10 +55,16 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     }
 
     const boolFields = new Set(['orchestratorManaged'])
+    const nullableFields = new Set(['agentRole', 'specialization'])
     for (const [jsKey, dbKey] of Object.entries(fieldMap)) {
       if (body[jsKey] !== undefined) {
         sets.push(`${dbKey} = ?`)
-        params.push(boolFields.has(jsKey) ? (body[jsKey] ? 1 : 0) : body[jsKey])
+        const val = body[jsKey]
+        if (nullableFields.has(jsKey) && val === null) {
+          params.push(null)
+        } else {
+          params.push(boolFields.has(jsKey) ? (val ? 1 : 0) : val)
+        }
       }
     }
 
@@ -110,6 +116,15 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
     const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
 
+    // Load defaultModel setting and inject --model flag if needed
+    const defaultModelRow = db.prepare("SELECT value FROM settings WHERE key = 'defaultModel'").get() as { value: string } | undefined
+    const defaultModel = defaultModelRow?.value?.replace(/^"|"$/g, '') || 'default'
+    const allFlags = [...globalFlags, ...(body.flags || [])]
+    const hasModelFlag = allFlags.some(f => f.startsWith('--model'))
+    if (defaultModel && defaultModel !== 'default' && !hasModelFlag) {
+      globalFlags.push(`--model=${defaultModel}`)
+    }
+
     // Load agent prompt if assigned
     let agentPrompt: string | undefined
     if (instance.agent_id) {
@@ -139,12 +154,14 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     // Save user message to DB (original images for display)
     const msgId = crypto.randomUUID()
     const now = Date.now()
-    const content = [{ type: 'text', text: body.text }]
+    const content: Array<Record<string, unknown>> = []
+    if (body.text) content.push({ type: 'text', text: body.text })
     if (body.images) {
       for (const img of body.images) {
-        content.push({ type: 'image', base64: img, mediaType: detectMediaType(img) } as unknown as { type: string; text: string })
+        content.push({ type: 'image', base64: img, mediaType: detectMediaType(img) })
       }
     }
+    if (content.length === 0) content.push({ type: 'text', text: '' })
 
     db.prepare(`
       INSERT INTO messages (id, instance_id, role, content, created_at)
@@ -153,7 +170,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
 
     const result = await sendMessage({
       instanceId: id,
-      text: imageTextPrefix + body.text,
+      text: (imageTextPrefix + body.text) || (processedImages?.length ? '[Attached image(s)]' : body.text),
       images: processedImages,
       cwd: instance.cwd as string,
       sessionId: instance.session_id as string | undefined,
@@ -162,6 +179,46 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     })
 
     return { sessionId: result.sessionId }
+  })
+
+  // Send a CLI slash command (e.g. /status, /compact, /cost, /help, /memory)
+  // Spawns: claude --resume <session> -p '<command>' --output-format stream-json
+  app.post('/instances/:id/command', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { command } = request.body as { command: string }
+    if (!command) { reply.code(400); return { error: 'Missing command' } }
+
+    const instance = db.prepare('SELECT session_id, cwd FROM instances WHERE id = ?').get(id) as { session_id: string | null; cwd: string } | undefined
+    if (!instance) { reply.code(404); return { error: 'Not found' } }
+    if (!instance.session_id) { return { ok: false, result: 'No active session. Send a message first to start one.' } }
+
+    const { spawn } = await import('child_process')
+    const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
+    // Use plain text output — simpler and more reliable for slash commands
+    const args = ['--resume', instance.session_id, '-p', command]
+    const env = { ...process.env }
+    delete env['CLAUDECODE']
+
+    return new Promise((resolve) => {
+      const child = spawn(cmd, args, {
+        cwd: instance.cwd,
+        env,
+        shell: process.platform === 'win32',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+      child.once('close', (code) => {
+        const text = stdout.trim() || stderr.trim() || 'Done.'
+        resolve({ ok: code === 0, result: text })
+      })
+      child.once('error', () => {
+        resolve({ ok: false, result: 'Command failed.' })
+      })
+    })
   })
 
   // Kill instance process (stops Claude, resets to idle — does not delete instance)

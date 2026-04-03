@@ -151,6 +151,9 @@ export const ALLOWED_FLAG_PREFIXES = [
   '--tools',
   '--allowedTools',
   '--disallowedTools',
+  '--effort',
+  '--max-budget-usd',
+  '--fallback-model',
 ]
 
 export const AVAILABLE_TOOLS = [
@@ -171,6 +174,14 @@ export const DEFAULT_ROLE_TOOLS: Record<string, string[]> = {
   tester: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'],
   promoter: ['Read', 'Grep', 'Glob', 'Bash'],
   scheduler: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'],
+}
+
+export const DEFAULT_ROLE_EFFORT: Record<string, string> = {
+  planner: 'high',
+  builder: 'high',
+  tester: 'medium',
+  promoter: 'medium',
+  scheduler: 'medium',
 }
 
 export const DEFAULT_COLUMN_LABELS: Record<string, string> = {

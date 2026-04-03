@@ -205,7 +205,7 @@ export function GameDashboard({ instances, tasks, projectId }: Props) {
   const healthStats = [
     { label: 'UPTIME', value: health ? fmtUptime(health.uptime) : '—' },
     { label: 'RUNNING', value: health ? String(health.processes) : '—', color: health && health.processes > 0 ? '#10b981' : undefined },
-    { label: 'INSTANCES', value: health ? `${health.runningInstances}/${health.totalInstances}` : '—' },
+    { label: 'CHATS', value: health ? `${health.runningInstances}/${health.totalInstances}` : '—' },
     { label: 'MEMORY', value: health ? `${health.memoryMb}MB` : '—' },
   ]
 

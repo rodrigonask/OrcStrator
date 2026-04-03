@@ -45,7 +45,7 @@ export function LaunchTeamModal({ folder, onClose }: LaunchTeamModalProps) {
       for (const row of selected) {
         const instance = await api.createInstance({
           folderId: folder.id,
-          name: randomName(settings.namingTheme || 'fruits'),
+          name: randomName(settings.namingThemes ?? (settings.namingTheme ? [settings.namingTheme] : ['memes'])),
           cwd: folder.path,
         })
         // Set role, specialization, orchestratorManaged

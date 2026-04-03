@@ -1,4 +1,6 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { VerbosityLevel } from '@shared/types'
 import { formatToolCall } from '../utils/toolFormat'
 import { FormattedToolInput } from '../utils/formatToolInput'
@@ -50,6 +52,23 @@ const TOOL_ICONS: Record<string, string> = {
   EnterPlanMode: '📐',
 }
 
+function isPlanWrite(toolName: string, input: string): boolean {
+  if (toolName === 'ExitPlanMode') return true
+  if (toolName !== 'Write') return false
+  try {
+    return JSON.parse(input)?.file_path?.includes('.claude/plans/') ?? false
+  } catch { return false }
+}
+
+function extractPlanContent(toolName: string, input: string): string | null {
+  try {
+    const parsed = JSON.parse(input)
+    if (toolName === 'Write') return parsed.content ?? null
+    if (toolName === 'ExitPlanMode') return parsed.plan ?? null
+  } catch { /* input may still be streaming */ }
+  return null
+}
+
 function parseAskUserInput(input: string): AskUserInput | null {
   try {
     const parsed = JSON.parse(input)
@@ -65,7 +84,27 @@ function parseAskUserInput(input: string): AskUserInput | null {
 
 export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunning, defaultExpanded = false, verbosity = 3 }: ToolCallBlockProps) {
   const isAskUserTool = toolName === 'AskUserQuestion'
-  const [expanded, setExpanded] = useState(isAskUserTool ? false : (verbosity >= 4 ? true : defaultExpanded))
+  const isPlanTool = isPlanWrite(toolName, input)
+  const planContent = isPlanTool ? extractPlanContent(toolName, input) : null
+  const renderedPlanHtml = useMemo(() => {
+    if (!planContent) return ''
+    const raw = marked.parse(planContent) as string
+    return DOMPurify.sanitize(raw, {
+      ALLOWED_TAGS: [
+        'p', 'br', 'strong', 'em', 'b', 'i', 'u', 's', 'del',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+        'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+        'hr', 'div', 'span',
+      ],
+      ALLOWED_ATTR: ['href', 'title', 'class'],
+    })
+  }, [planContent])
+  const [expanded, setExpanded] = useState(
+    isAskUserTool ? false :
+    isPlanTool ? false :
+    (verbosity >= 4 ? true : defaultExpanded)
+  )
   const MAX_OUTPUT_PREVIEW = verbosity >= 5 ? Infinity : 400
   const [showFullOutput, setShowFullOutput] = useState(false)
   const [responded, setResponded] = useState<string | null>(null)
@@ -251,6 +290,12 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
               {output ? '' : 'Waiting...'}
             </div>
           )}
+        </div>
+      )}
+      {/* Plan content — rendered as markdown outside collapsible */}
+      {isPlanTool && planContent && (
+        <div className="plan-content-block">
+          <div className="plan-content-body" dangerouslySetInnerHTML={{ __html: renderedPlanHtml }} />
         </div>
       )}
       {expanded && (

@@ -8,6 +8,12 @@ import { useAppDispatch } from '../context/AppDispatchContext'
 
 // Configure marked once at module level
 marked.setOptions({ breaks: true })
+const renderer = new marked.Renderer()
+renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
+  const titleAttr = title ? ` title="${title}"` : ''
+  return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`
+}
+marked.use({ renderer })
 
 interface MessageBubbleProps {
   message: ChatMessage
