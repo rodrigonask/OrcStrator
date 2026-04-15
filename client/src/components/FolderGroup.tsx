@@ -245,6 +245,12 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
     }
   }, [folder.id, dispatch])
 
+  const handleOpenFolder = useCallback((e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    closeContextMenu()
+    rest.openFolder(folder.id).catch(console.error)
+  }, [folder.id, closeContextMenu])
+
   const handleCloseAll = useCallback(async () => {
     closeContextMenu()
     const ok = await confirm(`Close all ${instances.length} chat${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will kill all processes and remove all chats.`)
@@ -341,6 +347,10 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
           <div className={`folder-status ${statusClass}`} />
           <div className="folder-child-actions">
             <div className="folder-btn-wrap">
+              <button className="pipeline-board-btn" onClick={handleOpenFolder} title="Open in Explorer">📂</button>
+              <span className="folder-btn-tip">Open folder</span>
+            </div>
+            <div className="folder-btn-wrap">
               <button className="pipeline-board-btn" onClick={(e) => { e.stopPropagation(); if (pipelineGate.check()) handlePipeline() }}>▤</button>
               <span className="folder-btn-tip">Pipeline board</span>
             </div>
@@ -407,6 +417,7 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
               style={{ top: contextMenu.y, left: contextMenu.x }}
               onClick={e => e.stopPropagation()}
             >
+              <button className="context-menu-item" onClick={handleOpenFolder}>Open in Explorer</button>
               <button className="context-menu-item" onClick={handleEdit}>Edit Project</button>
               <button className="context-menu-item" onClick={handleAddInstance}>Add Chat</button>
               <button className="context-menu-item" onClick={() => { if (pipelineGate.check()) handlePipeline(); else closeContextMenu() }}>Pipeline</button>
@@ -538,6 +549,14 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
           <div className="folder-btn-wrap">
             <button
               className="pipeline-board-btn"
+              onClick={handleOpenFolder}
+              title="Open in Explorer"
+            >📂</button>
+            <span className="folder-btn-tip">Open folder</span>
+          </div>
+          <div className="folder-btn-wrap">
+            <button
+              className="pipeline-board-btn"
               data-tour-id="tour-pipeline"
               onClick={(e) => { e.stopPropagation(); if (pipelineGate.check()) handlePipeline() }}
             >▤</button>
@@ -635,6 +654,9 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
             style={{ top: contextMenu.y, left: contextMenu.x }}
             onClick={e => e.stopPropagation()}
           >
+            <button className="context-menu-item" onClick={handleOpenFolder}>
+              Open in Explorer
+            </button>
             <button className="context-menu-item" onClick={handleEdit}>
               Edit Project
             </button>

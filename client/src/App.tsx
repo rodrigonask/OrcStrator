@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useFontSize } from './hooks/useFontSize'
 import { AppProvider } from './context/AppContext'
 import { useInstances } from './context/InstancesContext'
 import { useMessages } from './context/MessagesContext'
 import { useUI } from './context/UIContext'
+import { useAppDispatch } from './context/AppDispatchContext'
 import { GameProvider, useGame } from './context/GameContext'
 import { PipelineProvider } from './context/PipelineContext'
 import { Sidebar } from './components/Sidebar'
@@ -19,17 +20,59 @@ import { AgentsPage } from './components/AgentsPage'
 import { UsageReportPage } from './components/UsageReportPage'
 import { SessionsPage } from './components/SessionsPage'
 import { VFXOverlay } from './components/VFXOverlay'
+import { CommandMenu } from './components/CommandMenu'
 import { ConfirmProvider } from './components/ConfirmModal'
 import { resolveAnimTier } from './hooks/useVFX'
+import { UIContext } from './context/UIContext'
 import { api } from './api'
+
+function PaneProvider({ instanceId, children }: { instanceId: string; children: React.ReactNode }) {
+  const ui = useUI()
+  const overridden = useMemo(() => ({ ...ui, selectedInstanceId: instanceId }), [ui, instanceId])
+  return <UIContext.Provider value={overridden}>{children}</UIContext.Provider>
+}
 
 function AppContent() {
   const { instances, folders } = useInstances()
   const { messages } = useMessages()
   const { selectedInstanceId, view, settings, showSettings } = useUI()
+  const { dispatch: appDispatch } = useAppDispatch()
   const { zoom } = useFontSize()
   const { profile } = useGame()
   const [levelUpPopup, setLevelUpPopup] = useState<number | null>(null)
+
+  // Split view: array of instanceIds for extra panes (up to 3 more beyond selected)
+  const [splitPanes, setSplitPanes] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('orcstrator.splitPanes') || '[]') } catch { return [] }
+  })
+  useEffect(() => {
+    localStorage.setItem('orcstrator.splitPanes', JSON.stringify(splitPanes))
+  }, [splitPanes])
+
+  // Expose split controls globally so InstanceItem context menu can use them
+  useEffect(() => {
+    (window as any).__orcSplitAdd = (id: string) => {
+      setSplitPanes(prev => {
+        if (prev.includes(id) || prev.length >= 3) return prev
+        return [...prev, id]
+      })
+    };
+    (window as any).__orcSplitRemove = (id: string) => {
+      setSplitPanes(prev => prev.filter(x => x !== id))
+    };
+    (window as any).__orcSplitClear = () => setSplitPanes([])
+    return () => {
+      delete (window as any).__orcSplitAdd
+      delete (window as any).__orcSplitRemove
+      delete (window as any).__orcSplitClear
+    }
+  }, [])
+
+  // Clean up split panes that reference deleted instances
+  useEffect(() => {
+    const instanceIds = new Set(instances.map(i => i.id))
+    setSplitPanes(prev => prev.filter(id => instanceIds.has(id)))
+  }, [instances])
 
   // Resolve 'system' theme to actual dark/light based on OS preference
   const [osPrefersDark, setOsPrefersDark] = useState(
@@ -104,12 +147,31 @@ function AppContent() {
           <SettingsPage />
         ) : (
           <>
-            {view === 'chat' && selectedInstanceId && <ChatView />}
+            {view === 'chat' && selectedInstanceId && splitPanes.length === 0 && <ChatView />}
+            {view === 'chat' && selectedInstanceId && splitPanes.length > 0 && (
+              <div className={`split-grid split-${splitPanes.length + 1}`}>
+                <div className="split-pane">
+                  <ChatView />
+                </div>
+                {splitPanes.map(paneId => (
+                  <div key={paneId} className="split-pane">
+                    <PaneProvider instanceId={paneId}>
+                      <ChatView />
+                    </PaneProvider>
+                    <button
+                      className="split-pane-close"
+                      onClick={() => setSplitPanes(prev => prev.filter(x => x !== paneId))}
+                      title="Close pane"
+                    >{'\u00D7'}</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {view === 'pipeline' && <PipelineBoard />}
             {view === 'agents' && <AgentsPage />}
             {view === 'usage' && <UsageReportPage />}
             {view === 'sessions' && <SessionsPage />}
-{!selectedInstanceId && view === 'chat' && <GameScreen />}
+            {!selectedInstanceId && view === 'chat' && <GameScreen />}
           </>
         )}
       </main>

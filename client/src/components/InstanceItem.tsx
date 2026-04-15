@@ -13,6 +13,7 @@ import { sounds } from '../utils/sounds'
 import { vfxBus } from '../systems/vfx-bus'
 import { resolveAnimTier, resolveSoundTier } from '../hooks/useVFX'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
+import { usePinnedChats } from '../hooks/usePinnedChats'
 
 interface InstanceItemProps {
   instance: InstanceConfig
@@ -197,6 +198,7 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
   }, [contextMenu])
 
   const agentNames = useAgentNames()
+  const { isPinned, pin, unpin } = usePinnedChats()
 
   const isOrchestratorLocked = instance.orchestratorManaged && folderOrchestratorActive
 
@@ -405,6 +407,25 @@ export function InstanceItem({ instance, folderOrchestratorActive, dragHandlePro
               </button>
             )}
             <div className="context-menu-separator" />
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                setContextMenu(null)
+                if (isPinned(instance.id)) unpin(instance.id)
+                else pin(instance.id)
+              }}
+            >
+              {isPinned(instance.id) ? 'Unpin from Sidebar' : 'Pin to Sidebar'}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                setContextMenu(null)
+                if ((window as any).__orcSplitAdd) (window as any).__orcSplitAdd(instance.id)
+              }}
+            >
+              Open in Split View
+            </button>
             <button
               className="context-menu-item"
               onClick={() => {

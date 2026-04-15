@@ -248,9 +248,11 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
 
       for (const line of lines) {
         // Save assistant messages to DB before parsing
+        let handledAsAssistant = false
         try {
           const raw = JSON.parse(line.trim())
           if (raw.type === 'assistant' && raw.message?.content) {
+            handledAsAssistant = true
             const msgId = crypto.randomUUID()
             const content = raw.message.content.map((b: Record<string, unknown>) => {
               if (b.type === 'text') return { type: 'text', text: b.text }
@@ -281,6 +283,10 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
         if (line.trim()) {
           enqueueEvent({ type: 'raw-line', instanceId, line })
         }
+
+        // Skip stream parser for assistant messages — already handled above as complete messages.
+        // The parser would re-emit tool-start/tool-input-delta events causing duplicate UI renders.
+        if (handledAsAssistant) continue
 
         const parsed = parseLine(line)
         if (!parsed) continue

@@ -28,6 +28,8 @@ const AGENT_MODEL_TO_ID: Record<string, string> = {
 }
 
 const DRAFT_KEY = (id: string) => 'draft-' + id
+const MODEL_KEY = (id: string) => 'model-' + id
+const EFFORT_KEY = (id: string) => 'effort-' + id
 
 export function MessageInput() {
   const { selectedInstanceId: instanceId, settings } = useUI()
@@ -45,8 +47,24 @@ export function MessageInput() {
     return sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? ''
   })
   const [planMode, setPlanMode] = useState(false)
-  const [model, setModel] = useState(defaultModelId)
-  const [effort, setEffort] = useState(defaultEffortId)
+  const [model, setModelRaw] = useState(() => {
+    if (!instanceId) return defaultModelId
+    return sessionStorage.getItem(MODEL_KEY(instanceId)) ?? defaultModelId
+  })
+  const [effort, setEffortRaw] = useState(() => {
+    if (!instanceId) return defaultEffortId
+    return sessionStorage.getItem(EFFORT_KEY(instanceId)) ?? defaultEffortId
+  })
+
+  const setModel = useCallback((v: string) => {
+    setModelRaw(v)
+    if (instanceId) sessionStorage.setItem(MODEL_KEY(instanceId), v)
+  }, [instanceId])
+
+  const setEffort = useCallback((v: string) => {
+    setEffortRaw(v)
+    if (instanceId) sessionStorage.setItem(EFFORT_KEY(instanceId), v)
+  }, [instanceId])
   const [images, setImages] = useState<{ base64: string; mediaType: string }[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -100,14 +118,17 @@ export function MessageInput() {
         sessionStorage.removeItem(DRAFT_KEY(prev))
       }
     }
-    // Restore draft for new instance, reset model/effort to settings defaults
+    // Restore draft + saved model/effort for new instance
     if (instanceId) {
       setText(sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? '')
+      setModelRaw(sessionStorage.getItem(MODEL_KEY(instanceId)) ?? defaultModelId)
+      setEffortRaw(sessionStorage.getItem(EFFORT_KEY(instanceId)) ?? defaultEffortId)
     } else {
       setText('')
+      setModelRaw(defaultModelId)
+      setEffortRaw(defaultEffortId)
     }
-    setModel(defaultModelId)
-    setEffort(defaultEffortId)
+    setImages([])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId])
 

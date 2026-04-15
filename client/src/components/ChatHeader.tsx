@@ -228,6 +228,16 @@ export function ChatHeader() {
         <span className="chat-context-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: contextWindow.color }}>
           CTX {contextWindow.label}/{contextWindow.maxLabel}
         </span>
+        {instance.state === 'running' && (
+          <button className="chat-header-btn" onClick={handlePause} title="Pause">
+            ⏸
+          </button>
+        )}
+        {instance.state === 'paused' && (
+          <button className="chat-header-btn primary" onClick={handleResume} title="Resume">
+            ▶
+          </button>
+        )}
         <button
           className={`chat-header-btn chat-burger-btn${burgerOpen ? ' active' : ''}`}
           onClick={handleBurgerOpen}
@@ -237,17 +247,6 @@ export function ChatHeader() {
         </button>
         {burgerOpen && (
           <div className="chat-burger-menu">
-            {/* Pause / Resume */}
-            {instance.state === 'running' && (
-              <button className="chat-burger-item" onClick={() => { handlePause(); setBurgerOpen(false) }}>
-                <span className="chat-burger-item-label">Pause</span>
-              </button>
-            )}
-            {instance.state === 'paused' && (
-              <button className="chat-burger-item primary" onClick={() => { handleResume(); setBurgerOpen(false) }}>
-                <span className="chat-burger-item-label">Resume</span>
-              </button>
-            )}
             {/* Verbosity */}
             <div className="chat-burger-sub-label">Verbosity</div>
             {VERBOSITY_TIERS.map(tier => (
