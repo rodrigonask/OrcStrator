@@ -7,11 +7,17 @@ import { useAgentNames } from '../hooks/useAgentNames'
 import { OrcFeed } from './pipeline/OrcFeed'
 import { api } from '../api'
 import { fmtUsd, fmtTime, fmtOrcLog } from '../utils/format'
-import { ORC_LOG_FILTER_TYPES, ANIMATION_TIERS, SOUND_TIERS } from '@shared/constants'
-import { resolveAnimTier, resolveSoundTier } from '../hooks/useVFX'
-import { vfxBus } from '../systems/vfx-bus'
-import { soundEngine } from '../systems/sound-engine'
+import { ORC_LOG_FILTER_TYPES } from '@shared/constants'
 import type { SavingsSummary, OrcLogEntry, OrcLogFilter } from '@shared/types'
+
+interface ActivityEvent {
+  id: number
+  type: 'started' | 'finished' | 'ask-user' | 'error'
+  instanceName: string
+  instanceId: string
+  detail?: string
+  timestamp: number
+}
 
 export function RightSidebar() {
   const { settings, activePipelineId, view, gameActive, showSettings } = useUI()
@@ -25,10 +31,8 @@ export function RightSidebar() {
   const [orcFilter, setOrcFilter] = useState<OrcLogFilter>('all')
   const [orcHovered, setOrcHovered] = useState(false)
   const [liveMultiplier, setLiveMultiplier] = useState<number | null>(null)
-  const [showAnimTip, setShowAnimTip] = useState<string | null>(null)
-  const [showSoundTip, setShowSoundTip] = useState<string | null>(null)
-  const animTipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const soundTipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [activity, setActivity] = useState<ActivityEvent[]>([])
+  const activityIdRef = useRef(0)
   const orcPovRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -72,6 +76,43 @@ export function RightSidebar() {
     }
   }, [orcLogs, orcHovered])
 
+  // Track instance state changes for activity feed
+  const prevStatesRef = useRef<Record<string, string>>({})
+  useEffect(() => {
+    const prev = prevStatesRef.current
+    const events: ActivityEvent[] = []
+    for (const inst of instances) {
+      const prevState = prev[inst.id]
+      if (prevState && prevState !== inst.state) {
+        if (inst.state === 'running') {
+          events.push({ id: ++activityIdRef.current, type: 'started', instanceName: inst.name, instanceId: inst.id, detail: inst.activeTaskTitle || undefined, timestamp: Date.now() })
+        } else if (prevState === 'running') {
+          events.push({ id: ++activityIdRef.current, type: 'finished', instanceName: inst.name, instanceId: inst.id, timestamp: Date.now() })
+        }
+      }
+      prev[inst.id] = inst.state
+    }
+    if (events.length > 0) {
+      setActivity(a => [...events, ...a].slice(0, 30))
+    }
+  }, [instances])
+
+  // Subscribe to ask-user events
+  useEffect(() => {
+    const unsub = api.onEvent('ask-user', (payload: { instanceId: string; question: string }) => {
+      const inst = instances.find(i => i.id === payload.instanceId)
+      setActivity(a => [{
+        id: ++activityIdRef.current,
+        type: 'ask-user',
+        instanceName: inst?.name || 'Unknown',
+        instanceId: payload.instanceId,
+        detail: payload.question,
+        timestamp: Date.now(),
+      }, ...a].slice(0, 30))
+    })
+    return unsub
+  }, [instances])
+
   const orcFolderId = activePipelineId
     || folders.find(f => f.orchestratorActive)?.id
     || null
@@ -111,11 +152,10 @@ export function RightSidebar() {
     dispatch({ type: 'SET_VIEW', payload: target })
   }, [dispatch, activePipelineId, folders])
 
-  const NAV_ITEMS: { key: 'pipeline' | 'agents' | 'sessions' | 'usage'; label: string }[] = [
-    { key: 'pipeline', label: 'Pipeline' },
-    { key: 'agents', label: 'Agents' },
-    { key: 'sessions', label: 'Sessions' },
-    { key: 'usage', label: 'Usage' },
+  const NAV_ITEMS: { key: 'pipeline' | 'sessions' | 'usage'; icon: string; label: string }[] = [
+    { key: 'pipeline', icon: '\u25A4', label: 'Pipeline' },
+    { key: 'sessions', icon: '\uD83D\uDCDC', label: 'Sessions' },
+    { key: 'usage', icon: '\uD83D\uDCCA', label: 'Usage' },
   ]
 
   return (
@@ -191,6 +231,34 @@ export function RightSidebar() {
             )}
           </div>
 
+          {/* ── Activity Feed ── */}
+          {activity.length > 0 && (
+            <div className="rs-section rs-activity-section">
+              <div className="rs-section-label" style={{ fontFamily: 'var(--font-pixel)', fontSize: 8 }}>
+                Activity
+              </div>
+              <div className="rs-activity-list">
+                {activity.slice(0, 8).map(evt => (
+                  <div
+                    key={evt.id}
+                    className={`rs-activity-item rs-activity-${evt.type}`}
+                    onClick={() => {
+                      dispatch({ type: 'SELECT_INSTANCE', payload: evt.instanceId })
+                      dispatch({ type: 'SET_VIEW', payload: 'chat' })
+                    }}
+                  >
+                    <span className="rs-activity-icon">
+                      {evt.type === 'started' ? '\u25B6' : evt.type === 'finished' ? '\u2713' : evt.type === 'ask-user' ? '\u2753' : '\u26A0'}
+                    </span>
+                    <span className="rs-activity-name">{evt.instanceName}</span>
+                    <span className="rs-activity-time">{fmtTime(evt.timestamp)}</span>
+                    {evt.detail && <span className="rs-activity-detail">{evt.detail.length > 30 ? evt.detail.slice(0, 30) + '\u2026' : evt.detail}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* ── The Orc POV ── */}
           {orcLogs.length === 0 ? (
             <div className="rs-orc-empty">
@@ -240,8 +308,19 @@ export function RightSidebar() {
             </div>
           )}
 
-          {/* ── Footer ── */}
+          {/* ── Unified footer — nav icons + controls ── */}
           <div className="rs-footer">
+            {NAV_ITEMS.map(({ key, icon, label }) => (
+              <button
+                key={key}
+                className={`rs-footer-btn${view === key ? ' rs-nav-active' : ''}`}
+                onClick={() => handleNavClick(key)}
+                title={label}
+              >
+                {icon}
+              </button>
+            ))}
+            <span className="rs-footer-sep" />
             <button
               className="rs-footer-btn"
               onClick={() => dispatch({ type: 'SET_GAME_ACTIVE', payload: !gameActive })}
@@ -249,49 +328,6 @@ export function RightSidebar() {
             >
               {gameActive ? '\uD83C\uDFAE' : '\uD83D\uDCCB'}
             </button>
-            <span className={`rs-footer-tip-wrap${showAnimTip ? ' rs-tip-active' : ''}`}>
-              <span className="rs-footer-tip">Animations: {ANIMATION_TIERS[resolveAnimTier(settings)]?.name ?? 'Peaceful'}</span>
-              <button
-                className="rs-footer-btn"
-                style={{ opacity: resolveAnimTier(settings) === 0 ? 0.4 : 1 }}
-                onClick={() => {
-                  const cur = resolveAnimTier(settings)
-                  const next = (cur + 1) % 5
-                  const payload: Record<string, unknown> = { animationTier: next, animationsEnabled: next > 0 }
-                  dispatch({ type: 'UPDATE_SETTINGS', payload: payload as any })
-                  api.updateSettings(payload as any)
-                  vfxBus.fire('tier:preview' as any, { tier: next, previewType: 'animation' } as any)
-                  if (animTipTimer.current) clearTimeout(animTipTimer.current)
-                  setShowAnimTip(ANIMATION_TIERS[next]?.name ?? 'Peaceful')
-                  animTipTimer.current = setTimeout(() => setShowAnimTip(null), 1500)
-                }}
-              >
-                {ANIMATION_TIERS[resolveAnimTier(settings)]?.icon ?? '\u23F8'}
-              </button>
-            </span>
-            <span className={`rs-footer-tip-wrap${showSoundTip ? ' rs-tip-active' : ''}`}>
-              <span className="rs-footer-tip">Sound: {SOUND_TIERS[resolveSoundTier(settings)]?.name ?? 'Peaceful'}</span>
-              <button
-                className="rs-footer-btn"
-                style={{ opacity: resolveSoundTier(settings) === 0 ? 0.4 : 1 }}
-                onClick={() => {
-                  const cur = resolveSoundTier(settings)
-                  const next = (cur + 1) % 5
-                  const payload: Record<string, unknown> = { soundTier: next, soundsEnabled: next > 0 }
-                  dispatch({ type: 'UPDATE_SETTINGS', payload: payload as any })
-                  api.updateSettings(payload as any)
-                  if (next === 1) soundEngine.play('uiClick')
-                  else if (next === 2) { soundEngine.play('spawn'); setTimeout(() => soundEngine.play('taskComplete'), 300) }
-                  else if (next === 3) soundEngine.play('levelUpFanfare')
-                  else if (next === 4) { soundEngine.play('levelUpFanfare'); soundEngine.startDrone(); setTimeout(() => soundEngine.stopDrone(), 2000) }
-                  if (soundTipTimer.current) clearTimeout(soundTipTimer.current)
-                  setShowSoundTip(SOUND_TIERS[next]?.name ?? 'Peaceful')
-                  soundTipTimer.current = setTimeout(() => setShowSoundTip(null), 1500)
-                }}
-              >
-                {SOUND_TIERS[resolveSoundTier(settings)]?.icon ?? '\uD83D\uDD07'}
-              </button>
-            </span>
             <button className="rs-footer-btn" data-tour-id="tour-settings" onClick={() => dispatch({ type: 'OPEN_SETTINGS' })} title="Settings">
               {'\u2699'}
             </button>
@@ -301,25 +337,6 @@ export function RightSidebar() {
               title="Shutdown"
             >
               {'\u23FB'}
-            </button>
-          </div>
-
-          {/* ── Nav links ── */}
-          <div className="rs-nav-bar">
-            {NAV_ITEMS.map(({ key, label }) => (
-              <button
-                key={key}
-                className={`rs-nav-item${view === key ? ' active' : ''}`}
-                onClick={() => handleNavClick(key)}
-              >
-                <span className="font-mono" style={{ fontSize: 11 }}>{label}</span>
-              </button>
-            ))}
-            <button
-              className={`rs-nav-item${showSettings ? ' active' : ''}`}
-              onClick={() => dispatch({ type: 'OPEN_SETTINGS' })}
-            >
-              <span className="font-mono" style={{ fontSize: 11 }}>Settings</span>
             </button>
           </div>
         </>

@@ -205,6 +205,7 @@ export const rest = {
   pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
   closeAll: (folderId: string) => post<{ closed: number; instanceIds: string[] }>(`/api/folders/${folderId}/close-all`),
+  openFolder: (folderId: string) => post<{ ok: boolean; path: string }>(`/api/folders/${folderId}/open`),
   renewFolder: (folderId: string, body?: { newNames?: string[] }) => post<{ renewed: number; oldInstanceIds: string[]; newInstances: Record<string, unknown>[] }>(`/api/folders/${folderId}/renew`, body),
   shutdownAll: () => post<{ killed: number; instanceIds: string[] }>('/api/shutdown'),
   terminate: () => post<{ ok: true; killed: number; instanceIds: string[] }>('/api/terminate'),

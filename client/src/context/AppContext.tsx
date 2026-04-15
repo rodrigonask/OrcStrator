@@ -213,18 +213,20 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
     case 'SET_MESSAGES': {
       const MAX_CACHED_INSTANCES = 3
       const { instanceId: smId, messages: smMsgs, hasMore: smHasMore } = action.payload
+      const protectId = (action as any)._protectId as string | null
       const order = state.messageOrder.filter(id => id !== smId)
       const newOrder = [...order, smId]
       let newMessages = { ...state.messages, [smId]: smMsgs }
       let finalOrder = newOrder
       let newHasMore = smHasMore !== undefined ? { ...state.hasMore, [smId]: smHasMore } : { ...state.hasMore }
       if (newOrder.length > MAX_CACHED_INSTANCES) {
-        const evict = newOrder[0]
+        // Never evict the instance the user is currently viewing
+        const evict = newOrder.find(id => id !== protectId && id !== smId) ?? newOrder[0]
         const { [evict]: _ev, ...rest } = newMessages
         const { [evict]: _hm, ...restHM } = newHasMore
         newMessages = rest
         newHasMore = restHM
-        finalOrder = newOrder.slice(1)
+        finalOrder = newOrder.filter(id => id !== evict)
       }
       return { ...state, messages: newMessages, messageOrder: finalOrder, hasMore: newHasMore }
     }
@@ -407,6 +409,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // Messages slice
       case 'SET_MESSAGES':
+        // Attach selected instance so reducer never evicts the viewed chat
+        msgDispatch({ ...action, _protectId: uiStateRef.current.selectedInstanceId } as any)
+        break
       case 'PREPEND_MESSAGES':
       case 'ADD_MESSAGE':
       case 'APPEND_STREAMING':
@@ -506,12 +511,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(
       api.onClaudeOutputBatch((payload: { instanceId: string; events: ClaudeStreamEvent[] }) => {
         const { instanceId, events } = payload
+        // Process assistant-message first to clear streaming before any trailing text-deltas
+        // (the server parser may emit text-delta events from the same assistant line)
+        const hasAssistantMsg = events.some(e => e.type === 'assistant-message')
+        let streamingCleared = false
         for (const event of events) {
           if (event.type === 'text-delta') {
+            // Skip text-delta events that arrive after assistant-message in the same batch —
+            // these are redundant re-emissions from the parser and would re-populate streaming
+            if (streamingCleared) continue
             dispatch({ type: 'APPEND_STREAMING', payload: { instanceId, text: event.text } })
           } else if (event.type === 'tool-start') {
+            if (streamingCleared) continue
             dispatch({ type: 'TOOL_START', payload: { instanceId, toolId: event.toolId, toolName: event.toolName } })
           } else if (event.type === 'tool-input-delta') {
+            if (streamingCleared) continue
             dispatch({ type: 'TOOL_INPUT_DELTA', payload: { instanceId, toolId: event.toolId, input: event.input } })
           } else if (event.type === 'tool-complete') {
             dispatch({ type: 'TOOL_COMPLETE', payload: { instanceId, toolId: event.toolId, output: event.output, isError: event.isError } })
@@ -522,6 +536,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           } else if (event.type === 'assistant-message') {
             dispatch({ type: 'ADD_MESSAGE', payload: event.message })
             dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
+            streamingCleared = true
           } else if (event.type === 'result' && event.inputTokens !== undefined) {
             const updates: Record<string, unknown> = { ctxTokens: event.inputTokens }
             if (event.model) updates.ctxModel = event.model
@@ -744,7 +759,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         : (idx >= instances.length - 1 ? 0 : idx + 1)
       dispatch({ type: 'SELECT_INSTANCE', payload: instances[next].id })
       dispatch({ type: 'CLEAR_UNREAD', payload: instances[next].id })
-      if (!msgStateRef.current.messages[instances[next].id]) {
+      if (!msgStateRef.current.messageOrder.includes(instances[next].id)) {
         api.getHistory(instances[next].id, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
@@ -761,7 +776,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SELECT_INSTANCE', payload: id })
     if (id) {
       dispatch({ type: 'CLEAR_UNREAD', payload: id })
-      if (!msgStateRef.current.messages[id]) {
+      // Re-fetch if messages are missing OR were partially rebuilt after cache eviction
+      const inCache = msgStateRef.current.messageOrder.includes(id)
+      if (!inCache) {
         api.getHistory(id, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false

@@ -4,6 +4,7 @@ import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { processRegistry } from '../services/process-registry.js'
 import crypto from 'crypto'
+import { exec } from 'child_process'
 
 function rowToFolder(r: Record<string, unknown>): FolderConfig {
   return {
@@ -125,6 +126,25 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
     transaction()
     broadcastEvent({ type: 'folders:reordered', payload: { ids } })
     return { ok: true }
+  })
+
+  // Open folder in OS file explorer
+  app.post('/folders/:id/open', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const row = db.prepare('SELECT path FROM folders WHERE id = ?').get(id) as { path: string } | undefined
+    if (!row) return reply.code(404).send({ error: 'Folder not found' })
+
+    const folderPath = row.path
+    const platform = process.platform
+    const cmd = platform === 'win32' ? `explorer "${folderPath}"`
+      : platform === 'darwin' ? `open "${folderPath}"`
+      : `xdg-open "${folderPath}"`
+
+    exec(cmd, (err) => {
+      if (err) console.warn('Failed to open folder:', err.message)
+    })
+
+    return { ok: true, path: folderPath }
   })
 
   // Pause all running instances in a folder and deactivate orchestrator

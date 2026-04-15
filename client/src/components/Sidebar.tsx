@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -13,6 +13,8 @@ import { FolderGroup } from './FolderGroup'
 import { FolderBrowserModal } from './FolderBrowserModal'
 import { ProjectEditModal } from './ProjectEditModal'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
+import { InstanceItem } from './InstanceItem'
+import { usePinnedChats } from '../hooks/usePinnedChats'
 
 import type { FolderConfig } from '@shared/types'
 
@@ -74,6 +76,13 @@ export function Sidebar() {
   const multiProjectGate = useFeatureGate('multi-project')
   const createProjectGate = useFeatureGate('create-project')
   const [collapsed, setCollapsed] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const { instances } = useInstances()
+  const { pinnedIds } = usePinnedChats()
+  const pinnedInstances = useMemo(() =>
+    pinnedIds.map(id => instances.find(i => i.id === id)).filter(Boolean) as typeof instances,
+    [pinnedIds, instances]
+  )
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
@@ -84,6 +93,35 @@ export function Sidebar() {
   })
 
   const folderTree = buildFolderTree(sortedFolders)
+
+  const allExpanded = folders.every(f => f.expanded)
+
+  const handleCollapseAll = useCallback(() => {
+    const newExpanded = !allExpanded
+    for (const folder of folders) {
+      if (folder.expanded !== newExpanded) {
+        dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
+        api.updateFolder(folder.id, { expanded: newExpanded }).catch(console.error)
+      }
+    }
+  }, [folders, allExpanded, dispatch])
+
+  // Filter folders and instances by search query
+  const filteredTree = useMemo(() => {
+    if (!searchQuery.trim()) return folderTree
+    const q = searchQuery.toLowerCase()
+    const filterNode = (node: FolderTreeNode): FolderTreeNode | null => {
+      const folderName = (node.folder.displayName || node.folder.name).toLowerCase()
+      const folderInstances = instances.filter(i => i.folderId === node.folder.id)
+      const instanceMatch = folderInstances.some(i => i.name.toLowerCase().includes(q))
+      const filteredChildren = node.children.map(filterNode).filter(Boolean) as FolderTreeNode[]
+      if (folderName.includes(q) || instanceMatch || filteredChildren.length > 0) {
+        return { folder: node.folder, children: filteredChildren }
+      }
+      return null
+    }
+    return folderTree.map(filterNode).filter(Boolean) as FolderTreeNode[]
+  }, [folderTree, searchQuery, instances])
 
   const handleFolderDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event
@@ -116,6 +154,13 @@ export function Sidebar() {
           </div>
           <button
             className="sidebar-collapse-btn"
+            onClick={handleCollapseAll}
+            title={allExpanded ? 'Collapse all projects' : 'Expand all projects'}
+          >
+            {allExpanded ? '\u25BC' : '\u25B6'}
+          </button>
+          <button
+            className="sidebar-collapse-btn"
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
@@ -123,14 +168,41 @@ export function Sidebar() {
           </button>
         </div>
 
+        <div className="sidebar-search">
+          <input
+            type="text"
+            className="sidebar-search-input"
+            placeholder="Search projects..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button className="sidebar-search-clear" onClick={() => setSearchQuery('')}>{'\u00D7'}</button>
+          )}
+        </div>
+
+        {pinnedInstances.length > 0 && !searchQuery && (
+          <div className="sidebar-pinned">
+            <div className="sidebar-pinned-label">Pinned</div>
+            {pinnedInstances.map(inst => (
+              <InstanceItem key={inst.id} instance={inst} />
+            ))}
+          </div>
+        )}
+
         <div className="sidebar-folders" data-tour-id="tour-projects">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleFolderDragEnd}>
-            <SortableContext items={folderTree.map(n => n.folder.id)} strategy={verticalListSortingStrategy}>
-              {folderTree.map(node => (
+            <SortableContext items={filteredTree.map(n => n.folder.id)} strategy={verticalListSortingStrategy}>
+              {filteredTree.map(node => (
                 <SortableFolderGroup key={node.folder.id} node={node} />
               ))}
             </SortableContext>
           </DndContext>
+          {searchQuery && filteredTree.length === 0 && (
+            <div style={{ padding: '12px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+              No matches
+            </div>
+          )}
         </div>
 
 
