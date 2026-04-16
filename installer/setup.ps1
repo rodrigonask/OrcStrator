@@ -402,41 +402,20 @@ $btnShutdown.Add_Click({
     )
     if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
         $lblStatus.Text = "Shutting down..."
-        $lblStatus.ForeColor = $Red
+        $lblStatus.ForeColor = $script:Red
         $form.Refresh()
         [System.Windows.Forms.Application]::DoEvents()
 
-        # Kill processes on server + client ports
-        foreach ($port in @($ServerPort, $ClientPort)) {
-            try {
-                $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
-                foreach ($c in $conns) {
-                    if ($c.OwningProcess -gt 0) {
-                        # Kill the process tree (node + children)
-                        Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
-                    }
-                }
-            } catch { }
-        }
+        Stop-OrcStrator
 
-        # Kill any cmd windows we spawned (by title)
-        try {
-            Get-Process cmd -ErrorAction SilentlyContinue | Where-Object {
-                $_.MainWindowTitle -like "*OrcStrator*"
-            } | ForEach-Object {
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
-
-        $lblStatus.Text = "Shut down. Closing in 5s..."
-        $lblStatus.ForeColor = $TextDim
+        $lblStatus.Text = "Shut down. Closing in 3s..."
+        $lblStatus.ForeColor = $script:TextDim
         $btnOpen.Enabled = $false
         $btnShutdown.Enabled = $false
         $form.Refresh()
 
-        # Auto-close after 5 seconds
         $closeTimer = New-Object System.Windows.Forms.Timer
-        $closeTimer.Interval = 5000
+        $closeTimer.Interval = 3000
         $closeTimer.Add_Tick({
             $closeTimer.Stop()
             $closeTimer.Dispose()
@@ -466,6 +445,9 @@ $btnUpdate.TextAlign = "MiddleLeft"
 $btnUpdate.Padding = New-Object System.Windows.Forms.Padding(0)
 $script:UpdateAvailable = $false
 $script:CommitsBehind = 0
+$script:ServerPid = $null
+$script:ClientPid = $null
+$script:ShutdownDone = $false
 
 # Custom paint for two-line text (title + subtitle)
 $script:UpdateTitle = "Checking for updates..."
@@ -539,6 +521,44 @@ $btnUpdate.Add_Click({
     $form.Refresh()
 })
 $form.Controls.Add($btnUpdate)
+
+# ── Stop-OrcStrator (3-layer bulletproof kill) ─────────────────
+function Stop-OrcStrator {
+    if ($script:ShutdownDone) { return }
+    $script:ShutdownDone = $true
+
+    # Layer 1: Kill stored PIDs + their entire process trees
+    foreach ($pid in @($script:ServerPid, $script:ClientPid)) {
+        if ($pid) {
+            try {
+                Start-Process "taskkill" -ArgumentList "/PID $pid /T /F" -NoNewWindow -Wait -ErrorAction SilentlyContinue
+            } catch { }
+        }
+    }
+    $script:ServerPid = $null
+    $script:ClientPid = $null
+
+    # Layer 2: Kill anything still listening on our ports
+    foreach ($port in @($ServerPort, $ClientPort)) {
+        try {
+            $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            foreach ($c in $conns) {
+                if ($c.OwningProcess -gt 0) {
+                    Start-Process "taskkill" -ArgumentList "/PID $($c.OwningProcess) /T /F" -NoNewWindow -Wait -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+    }
+
+    # Layer 3: Kill any cmd.exe with OrcStrator in title (catches old runs)
+    try {
+        Get-Process cmd -ErrorAction SilentlyContinue | Where-Object {
+            $_.MainWindowTitle -like "*OrcStrator*"
+        } | ForEach-Object {
+            Start-Process "taskkill" -ArgumentList "/PID $($_.Id) /T /F" -NoNewWindow -Wait -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
 
 # ── Apply Theme Function ───────────────────────────────────────
 function Apply-Theme {
@@ -1251,9 +1271,10 @@ function Run-Setup {
     # ── Step 8: Start Server ───────────────────────────────────
     Set-StepActive 8 "Launching..."
     Log "Starting server from: $ServerDir"
-    Log "Server command: cmd /k cd /d $ServerDir && npm run dev"
-    $serverProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "title OrcStrator Server [:$ServerPort] && cd /d `"$ServerDir`" && npm run dev || (echo. && echo [ERROR] Server failed to start && pause)" -WindowStyle Normal -PassThru
-    Log "Server cmd.exe spawned, PID: $($serverProc.Id)"
+    $serverLog = Join-Path $env:TEMP "orcstrator-server.log"
+    $serverProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "cd /d `"$ServerDir`" && npm run dev > `"$serverLog`" 2>&1" -WindowStyle Hidden -PassThru
+    $script:ServerPid = $serverProc.Id
+    Log "Server started (hidden), PID: $($script:ServerPid), log: $serverLog"
 
     # Give the process a few seconds to spawn before checking
     for ($w = 0; $w -lt 6; $w++) {
@@ -1296,8 +1317,10 @@ function Run-Setup {
     # ── Step 9: Start Client ───────────────────────────────────
     Set-StepActive 9 "Launching..."
     Log "Starting client from: $ClientDir"
-    $clientProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/k", "title OrcStrator Client [:$ClientPort] && cd /d `"$ClientDir`" && npm run dev || (echo. && echo [ERROR] Client failed to start && pause)" -WindowStyle Normal -PassThru
-    Log "Client cmd.exe spawned, PID: $($clientProc.Id)"
+    $clientLog = Join-Path $env:TEMP "orcstrator-client.log"
+    $clientProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "cd /d `"$ClientDir`" && npm run dev > `"$clientLog`" 2>&1" -WindowStyle Hidden -PassThru
+    $script:ClientPid = $clientProc.Id
+    Log "Client started (hidden), PID: $($script:ClientPid), log: $clientLog"
 
     # Give Vite a few seconds to start up
     for ($w = 0; $w -lt 8; $w++) {
@@ -1351,6 +1374,11 @@ function Run-Setup {
 # ══════════════════════════════════════════════════════════════
 #  LAUNCH FORM + START SETUP IN BACKGROUND
 # ══════════════════════════════════════════════════════════════
+
+# ── Wire FormClosing to clean up processes on ANY close method ──
+$form.Add_FormClosing({
+    Stop-OrcStrator
+})
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 500
