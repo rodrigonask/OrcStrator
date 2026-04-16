@@ -154,6 +154,24 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
       }
     }
 
+    // Non-interactive events the CLI emits that should NOT surface as a prompt
+    const SILENT_EVENTS = new Set([
+      'message_start', 'message_delta', 'message_stop', 'content_block_stop', 'ping',
+      // Rate-limit & retry events — CLI auto-retries, no user action needed
+      'rate_limit_event', 'rate_limit', 'retry', 'progress',
+    ])
+
+    // Forward truly interactive event types (e.g. permission prompts, login requests)
+    // so the client can surface them — but ignore informational/auto-handled events
+    if (eventType && !SILENT_EVENTS.has(eventType)) {
+      return {
+        type: 'cli-prompt',
+        instanceId,
+        eventType,
+        data: data as Record<string, unknown>
+      }
+    }
+
     return null
   }
 }

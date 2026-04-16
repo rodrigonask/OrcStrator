@@ -6,6 +6,9 @@ import { useAppDispatch } from '../context/AppDispatchContext'
 import { useGame } from '../context/GameContext'
 import { useFeatureGate } from '../hooks/useFeatureGate'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
+import { CliPromptBanner } from './CliPromptBanner'
+import { api } from '../api'
+import type { ChatMessage } from '@shared/types'
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -132,9 +135,96 @@ export function MessageInput() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId])
 
+  const processCommandAction = useCallback((res: { ok: boolean; result: string; action?: string; value?: string; url?: string }) => {
+    if (!instanceId) return
+    if (!res.action) return
+    switch (res.action) {
+      case 'clear-history':
+        api.clearHistory(instanceId)
+        dispatch({ type: 'CLEAR_MESSAGES', payload: instanceId })
+        break
+      case 'set-model':
+        if (res.value) setModel(res.value)
+        break
+      case 'set-effort':
+        if (res.value) setEffort(res.value)
+        break
+      case 'toggle-fast':
+        // Toggle between sonnet (fast) and current
+        setModel(m => m === 'claude-sonnet-4-6' ? 'claude-opus-4-6' : 'claude-sonnet-4-6')
+        break
+      case 'toggle-plan-mode':
+        setPlanMode(p => !p)
+        break
+      case 'set-plan-mode':
+        setPlanMode(true)
+        break
+      case 'new-instance': {
+        const inst = instances.find(i => i.id === instanceId)
+        if (inst) {
+          api.createInstance({ folderId: inst.folderId }).then(newInst => {
+            dispatch({ type: 'ADD_INSTANCE', payload: newInst })
+            dispatch({ type: 'SELECT_INSTANCE', payload: newInst.id })
+          })
+        }
+        break
+      }
+      case 'kill-process':
+        api.killInstance(instanceId)
+        break
+      case 'open-settings':
+        dispatch({ type: 'OPEN_SETTINGS' })
+        break
+      case 'open-url':
+        if (res.url) window.open(res.url, '_blank')
+        break
+      case 'copy-to-clipboard':
+        if (res.value) navigator.clipboard.writeText(res.value)
+        break
+    }
+  }, [instanceId, dispatch, instances, setModel, setEffort])
+
   const handleSend = useCallback(() => {
     if (!instanceId || (!text.trim() && images.length === 0)) return
-    const messageText = planMode ? 'Use plan mode. ' + text.trim() : text.trim()
+    const trimmed = text.trim()
+
+    // Intercept slash commands — route through command API instead of sendMessage
+    if (trimmed.startsWith('/') && !trimmed.startsWith('//') && images.length === 0) {
+      const userMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        instanceId,
+        role: 'user',
+        content: [{ type: 'text', text: trimmed }],
+        createdAt: Date.now(),
+      }
+      dispatch({ type: 'ADD_MESSAGE', payload: userMsg })
+
+      api.sendCommand(instanceId, trimmed).then(res => {
+        const assistantMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          instanceId,
+          role: 'assistant',
+          content: [{ type: 'text', text: res.result }],
+          createdAt: Date.now(),
+        }
+        dispatch({ type: 'ADD_MESSAGE', payload: assistantMsg })
+        processCommandAction(res)
+      }).catch(() => {
+        dispatch({ type: 'ADD_MESSAGE', payload: {
+          id: crypto.randomUUID(), instanceId, role: 'assistant',
+          content: [{ type: 'text', text: 'Command failed.' }], createdAt: Date.now(),
+        }})
+      })
+
+      // Clear input
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      sessionStorage.removeItem(DRAFT_KEY(instanceId))
+      setText('')
+      addXp('message-sent')
+      return
+    }
+
+    const messageText = planMode ? 'Use plan mode. ' + trimmed : trimmed
     sendMessage(instanceId, messageText, images.map(i => i.base64), [`--model=${model}`, `--effort=${effort}`])
     addXp('message-sent')
     // Clear draft from sessionStorage
@@ -143,7 +233,7 @@ export function MessageInput() {
     setText('')
     setImages([])
     setPlanMode(false)
-  }, [instanceId, text, planMode, model, images, sendMessage])
+  }, [instanceId, text, planMode, model, images, sendMessage, dispatch, processCommandAction, addXp, effort])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -247,6 +337,7 @@ export function MessageInput() {
           </button>
         </div>
       )}
+      {instanceId && <CliPromptBanner instanceId={instanceId} />}
       <div
         className="message-input-wrapper"
         onDrop={handleDrop}

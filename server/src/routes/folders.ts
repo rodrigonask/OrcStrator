@@ -4,7 +4,7 @@ import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { processRegistry } from '../services/process-registry.js'
 import crypto from 'crypto'
-import { exec } from 'child_process'
+import { spawn } from 'child_process'
 
 function rowToFolder(r: Record<string, unknown>): FolderConfig {
   return {
@@ -136,13 +136,11 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
 
     const folderPath = row.path
     const platform = process.platform
-    const cmd = platform === 'win32' ? `explorer "${folderPath}"`
-      : platform === 'darwin' ? `open "${folderPath}"`
-      : `xdg-open "${folderPath}"`
+    const bin = platform === 'win32' ? 'explorer'
+      : platform === 'darwin' ? 'open'
+      : 'xdg-open'
 
-    exec(cmd, (err) => {
-      if (err) console.warn('Failed to open folder:', err.message)
-    })
+    spawn(bin, [folderPath], { detached: true, stdio: 'ignore', shell: false }).unref()
 
     return { ok: true, path: folderPath }
   })

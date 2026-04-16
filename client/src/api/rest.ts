@@ -92,7 +92,9 @@ export const rest = {
   syncSession: (instanceId: string) =>
     post<{ ok: true }>(`/api/instances/${instanceId}/sync`),
   sendCommand: (instanceId: string, command: string) =>
-    post<{ ok: boolean; result: string }>(`/api/instances/${instanceId}/command`, { command }),
+    post<{ ok: boolean; result: string; action?: string; value?: string; url?: string }>(`/api/instances/${instanceId}/command`, { command }),
+  writeStdin: (instanceId: string, data: string) =>
+    post<{ ok: boolean }>(`/api/instances/${instanceId}/stdin`, { data }),
 
   // History
   getHistory: (instanceId: string, params?: { before?: number; limit?: number }) => {

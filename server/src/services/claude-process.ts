@@ -325,6 +325,9 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
                 instanceId
               )
             } catch { /* non-critical — exit handler will retry */ }
+
+            // Turn is done — close stdin so the CLI exits cleanly
+            closeStdin()
           }
 
           enqueueEvent(event)
@@ -353,7 +356,8 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     }
   })
 
-  // Write user message to stdin as NDJSON, then close
+  // Write user message to stdin as NDJSON — keep stdin OPEN for interactive prompts
+  // (permissions, AskUser, etc.). Closed when `result` event signals the turn is done.
   // stream-json format: { type: "user", message: { role: "user", content: "..." }, session_id, parent_tool_use_id }
   const messageContent: unknown[] = []
   // Only include text block if non-empty — API rejects { type: 'text', text: '' }
@@ -374,11 +378,21 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   const stdinPayload = JSON.stringify(inputMessage)
   console.log(`[claude-process] STDIN → ${instanceId}: ${stdinPayload.length} chars (text: ${text.slice(0, 100)}...)`)
   // Guard against unhandled 'error' on stdin (e.g. process dies before write completes)
+  let stdinEnded = false
   child.stdin?.on('error', (err) => {
     console.warn(`[claude-process] stdin write error [${instanceId.slice(0, 8)}]:`, err.message)
   })
   child.stdin?.write(stdinPayload + '\n')
-  child.stdin?.end()
+  // DO NOT call child.stdin.end() here — stdin stays open so the process can receive
+  // interactive input (permission responses, AskUser answers) via processRegistry.writeStdin().
+  // stdin is closed when the `result` event arrives (see closeStdin below).
+
+  // Close stdin to signal the CLI that no more input is coming → triggers clean exit
+  function closeStdin() {
+    if (stdinEnded) return
+    stdinEnded = true
+    try { child.stdin?.end() } catch { /* already closed */ }
+  }
 
   // Activity-based timeout: resets on every stdout chunk so long-running but active processes aren't killed
   let activityTimeout: ReturnType<typeof setTimeout> | null = null

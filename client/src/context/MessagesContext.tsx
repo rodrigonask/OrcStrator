@@ -10,6 +10,13 @@ export interface StreamingToolCall {
   isRunning: boolean
 }
 
+export interface CliPromptData {
+  instanceId: string
+  eventType: string
+  data: Record<string, unknown>
+  receivedAt: number
+}
+
 export interface MessagesContextValue {
   messages: Record<string, ChatMessage[]>
   hasMore: Record<string, boolean>
@@ -17,6 +24,7 @@ export interface MessagesContextValue {
   streamingToolCalls: Record<string, StreamingToolCall[]>
   unreadCounts: Record<string, number>
   rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
+  cliPrompts: Record<string, CliPromptData>
 }
 
 const defaultValue: MessagesContextValue = {
@@ -26,6 +34,7 @@ const defaultValue: MessagesContextValue = {
   streamingToolCalls: {},
   unreadCounts: {},
   rawOutput: {},
+  cliPrompts: {},
 }
 
 export const MessagesContext = createContext<MessagesContextValue>(defaultValue)

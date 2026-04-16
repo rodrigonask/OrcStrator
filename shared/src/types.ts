@@ -89,6 +89,7 @@ export type ClaudeStreamEvent =
   | { type: 'system'; instanceId: string; sessionId?: string }
   | { type: 'raw-line'; instanceId: string; line: string; isStderr?: boolean }
   | { type: 'assistant-message'; instanceId: string; message: ChatMessage }
+  | { type: 'cli-prompt'; instanceId: string; eventType: string; data: Record<string, unknown> }
 
 export interface ClaudeProcessExitEvent {
   instanceId: string
