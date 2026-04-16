@@ -233,16 +233,16 @@ $form.Controls.Add($panelSteps)
 $stepLabels = @()
 $stepIcons  = @()
 $stepNames = @(
-    "winget"
-    "Git"
-    "Node.js + npm"
-    "C++ Build Tools"
-    "Claude CLI"
-    "Authentication"
-    "npm packages"
-    "Build"
-    "Server"
-    "Client"
+    "System requirements"
+    "Version control"
+    "App engine"
+    "Build tools"
+    "Claude AI"
+    "Account"
+    "Packages"
+    "App setup"
+    "Backend"
+    "OrcStrator"
 )
 
 for ($i = 0; $i -lt $stepNames.Count; $i++) {
@@ -938,53 +938,52 @@ function Run-Setup {
     Log "OrcStrator setup started - $(Get-Date)"
     Log "Repo root: $RepoRoot"
 
-    # ── Step 0: winget ─────────────────────────────────────────
-    Set-StepActive 0
+    # ── Step 0: System requirements ──────────────────────────────
+    Set-StepActive 0 "Checking system requirements..."
     $winget = Find-Exe "winget"
     if ($winget) {
         Log "winget found: $winget"
-        Set-StepOk 0
+        Set-StepOk 0 "System ready"
     } else {
-        Set-StepFail 0 "Not found"
-        Show-Error "winget Required" "winget is not installed.`n`nOpen the Microsoft Store, search for 'App Installer', and install it.`nThen run OrcStrator again."
+        Set-StepFail 0 "Missing requirements"
+        Show-Error "System Requirements" "Your system is missing a component called 'App Installer'.`n`nOpen the Microsoft Store, search for 'App Installer', and install it.`nThen run OrcStrator again."
         return
     }
 
-    # ── Step 1: Git ────────────────────────────────────────────
-    Set-StepActive 1
+    # ── Step 1: Version control (Git) ─────────────────────────
+    Set-StepActive 1 "Checking version control..."
     $git = Find-Exe "git"
     if ($git) {
-        try { $ver = (& $git --version 2>&1) -join " " } catch { $ver = "found" }
+        try { $ver = (& $git --version 2>&1) -join " " } catch { $ver = "" }
         Log "Git: $ver"
-        Set-StepOk 1 $ver
+        Set-StepOk 1 "Version control ready"
     } else {
-        Set-StepActive 1 "Installing via winget..."
+        Set-StepActive 1 "Installing version control..."
         Log "Git not found, installing..."
         $r = Run-Cmd $winget "install Git.Git --accept-source-agreements --accept-package-agreements" -TimeoutSec 300
         Refresh-EnvPath
         $git = Find-Exe "git"
         if ($git) {
-            Set-StepOk 1 "Installed"
+            Set-StepOk 1 "Version control installed"
             $needsRestart = $true
         } else {
-            Set-StepFail 1 "Install failed"
-            Show-Error "Git Installation Failed" "Could not install Git automatically.`nPlease install Git from https://git-scm.com and try again."
+            Set-StepFail 1 "Could not install"
+            Show-Error "Installation Failed" "Could not install version control automatically.`nPlease visit https://git-scm.com to install it manually, then try again."
             return
         }
     }
 
-    # ── Step 2: Node.js + npm ──────────────────────────────────
-    Set-StepActive 2
+    # ── Step 2: App engine (Node.js) ──────────────────────────
+    Set-StepActive 2 "Checking app engine..."
     $node = Find-Exe "node"
     $npm  = Find-Exe "npm.cmd"
     if (-not $npm) { $npm = Find-Exe "npm" }
     if ($node -and $npm) {
-        try { $nodeVer = (& $node -v 2>&1) -join " " } catch { $nodeVer = "?" }
-        try { $npmVer  = (& $npm -v 2>&1) -join " " } catch { $npmVer = "?" }
-        Log "Node $nodeVer, npm $npmVer"
-        Set-StepOk 2 "Node $nodeVer / npm $npmVer"
+        try { $nodeVer = (& $node -v 2>&1) -join " " } catch { $nodeVer = "" }
+        Log "Node $nodeVer"
+        Set-StepOk 2 "App engine ready"
     } else {
-        Set-StepActive 2 "Installing Node.js 22 via winget..."
+        Set-StepActive 2 "Installing app engine..."
         Log "Node/npm not found, installing..."
         $r = Run-Cmd $winget "install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements" -TimeoutSec 300
         if ($r.ExitCode -ne 0) {
@@ -994,17 +993,17 @@ function Run-Setup {
         $node = Find-Exe "node"
         $npm  = Find-Exe "npm"
         if ($node -and $npm) {
-            Set-StepOk 2 "Installed"
+            Set-StepOk 2 "App engine installed"
             $needsRestart = $true
         } else {
-            Set-StepFail 2 "Install failed"
-            Show-Error "Node.js Installation Failed" "Could not install Node.js automatically.`nPlease install Node.js from https://nodejs.org and try again."
+            Set-StepFail 2 "Could not install"
+            Show-Error "Installation Failed" "Could not install the app engine automatically.`nPlease visit https://nodejs.org to install it manually, then try again."
             return
         }
     }
 
     # ── Step 3: C++ Build Tools ────────────────────────────────
-    Set-StepActive 3
+    Set-StepActive 3 "Checking build tools..."
     $hasVcTools = $false
     # Check vswhere
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -1028,18 +1027,18 @@ function Run-Setup {
 
     if ($hasVcTools) {
         Log "C++ Build Tools found"
-        Set-StepOk 3
+        Set-StepOk 3 "Build tools ready"
     } else {
-        Set-StepActive 3 "Installing... (this takes a few minutes)"
+        Set-StepActive 3 "Installing build tools... (this may take a few minutes)"
         Log "C++ Build Tools not found, installing..."
         $r = Run-Cmd $winget 'install Microsoft.VisualStudio.2022.BuildTools --accept-source-agreements --accept-package-agreements --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"' -TimeoutSec 600
         if ($r.ExitCode -eq 0) {
-            Set-StepOk 3 "Installed (restart recommended)"
+            Set-StepOk 3 "Build tools installed (restart recommended)"
             Log "C++ Build Tools installed - restart may be needed"
             $needsRestart = $true
         } else {
             # Not fatal - try to continue, npm install will fail if truly needed
-            Set-StepFail 3 "Install may have failed"
+            Set-StepFail 3 "Could not install build tools"
             Log "C++ Build Tools install returned non-zero: $($r.ExitCode)"
             Log "Continuing anyway - npm install will reveal if this is needed"
         }
@@ -1052,7 +1051,7 @@ function Run-Setup {
         # Check if the critical tools work now
         $canContinue = (Find-Exe "node") -and (Find-Exe "npm") -and (Find-Exe "git")
         if (-not $canContinue) {
-            $lblStatus.Text = "Dependencies installed - please restart and run again"
+            $lblStatus.Text = "New components were installed. Please close and re-open OrcStrator."
             $lblStatus.ForeColor = $Yellow
             [System.Windows.Forms.MessageBox]::Show(
                 "Some dependencies were just installed and need a fresh terminal session.`n`nPlease close this window and double-click orcstrator.bat again.",
@@ -1065,7 +1064,7 @@ function Run-Setup {
     }
 
     # ── Step 4: Claude CLI ─────────────────────────────────────
-    Set-StepActive 4
+    Set-StepActive 4 "Checking Claude AI..."
     # Prefer claude.cmd on Windows (the .exe can hang trying interactive setup)
     $claude = Find-Exe "claude.cmd"
     if (-not $claude) { $claude = Find-Exe "claude" }
@@ -1080,9 +1079,9 @@ function Run-Setup {
             } catch { }
         }
         Log "Claude CLI found at: $claude (v$ver)"
-        Set-StepOk 4 "v$ver"
+        Set-StepOk 4 "Claude AI ready"
     } else {
-        Set-StepActive 4 "Installing via npm..."
+        Set-StepActive 4 "Installing Claude AI..."
         Log "Claude CLI not found, installing..."
         $npmExe = Find-Exe "npm.cmd"
         if (-not $npmExe) { $npmExe = Find-Exe "npm" }
@@ -1091,10 +1090,10 @@ function Run-Setup {
         $claude = Find-Exe "claude"
         if (-not $claude) { $claude = Find-Exe "claude.cmd" }
         if ($claude) {
-            Set-StepOk 4 "Installed"
+            Set-StepOk 4 "Claude AI installed"
         } else {
-            Set-StepFail 4 "Install failed"
-            Show-Error "Claude CLI Failed" "Could not install Claude CLI.`nTry manually: npm install -g @anthropic-ai/claude-code"
+            Set-StepFail 4 "Could not install"
+            Show-Error "Claude AI Installation Failed" "Could not install Claude AI automatically.`nPlease try again or ask for help."
             return
         }
     }
@@ -1116,7 +1115,7 @@ function Run-Setup {
     }
 
     # ── Step 5: Claude Auth ────────────────────────────────────
-    Set-StepActive 5
+    Set-StepActive 5 "Checking account..."
     # Use the credentials file check instead of spawning claude (which can hang)
     $credPath = Join-Path $env:USERPROFILE ".claude\.credentials.json"
     Log "Checking credentials at: $credPath"
@@ -1138,11 +1137,11 @@ function Run-Setup {
     }
     if ($isAuthed) {
         Log "Claude is authenticated (credentials found)"
-        Set-StepOk 5
+        Set-StepOk 5 "Logged in"
     } else {
-        Set-StepActive 5 "Login required..."
+        Set-StepActive 5 "Please log in (browser will open)..."
         Log "Claude not authenticated, prompting login"
-        $lblStatus.Text = "A browser window will open - please log in to Claude"
+        $lblStatus.Text = "A browser window will open - please log in to your account"
         $lblStatus.ForeColor = $Yellow
         $form.Refresh()
         [System.Windows.Forms.Application]::DoEvents()
@@ -1168,27 +1167,27 @@ function Run-Setup {
             } catch { }
         }
         if ($isAuthed) {
-            Set-StepOk 5
+            Set-StepOk 5 "Logged in"
         } else {
-            Set-StepFail 5 "Not authenticated"
+            Set-StepFail 5 "Not logged in (you can log in later)"
             Log "Auth failed - continuing anyway"
             # Don't block - user can login later
         }
     }
 
     # ── Step 6: Repository + npm install ───────────────────────
-    Set-StepActive 6
+    Set-StepActive 6 "Downloading packages..."
 
     # Check if we're in a valid repo
     $hasRepo = (Test-Path (Join-Path $RepoRoot "package.json")) -and (Test-Path $ServerDir)
     if (-not $hasRepo) {
-        Set-StepActive 6 "Cloning repository..."
+        Set-StepActive 6 "Downloading OrcStrator..."
         Log "Repository not found at $RepoRoot, cloning..."
         $cloneTarget = Join-Path (Split-Path $RepoRoot) "orcstrator"
         $r = Run-Cmd $git "clone $RepoUrl `"$cloneTarget`"" -TimeoutSec 120
         if ($r.ExitCode -ne 0) {
-            Set-StepFail 6 "Clone failed"
-            Show-Error "Git Clone Failed" "Could not clone the repository.`nCheck your internet connection."
+            Set-StepFail 6 "Download failed"
+            Show-Error "Download Failed" "Could not download OrcStrator.`nPlease check your internet connection and try again."
             return
         }
         # Update paths
@@ -1199,7 +1198,7 @@ function Run-Setup {
 
     # Git pull
     if (-not $SkipUpdates) {
-        Set-StepActive 6 "Checking for updates..."
+        Set-StepActive 6 "Checking for latest version..."
         $r = Run-Cmd $git "pull --ff-only" -WorkDir $RepoRoot -TimeoutSec 30
         Log "git pull: $($r.Output)"
     }
@@ -1208,35 +1207,35 @@ function Run-Setup {
     $hasModules = Test-Path (Join-Path $RepoRoot "node_modules\.package-lock.json")
     if ($hasModules) {
         Log "node_modules present"
-        Set-StepOk 6
+        Set-StepOk 6 "Packages ready"
     } else {
-        Set-StepActive 6 "Installing npm packages... (this may take a few minutes)"
+        Set-StepActive 6 "Installing packages... (this may take a few minutes)"
         Log "Running npm install..."
         $r = Run-Cmd $npm "install" -WorkDir $RepoRoot -TimeoutSec 600
         if ($r.ExitCode -ne 0) {
-            Set-StepFail 6 "npm install failed"
-            Show-Error "npm install Failed" "npm install failed.`n`nThis is often caused by missing C++ Build Tools.`n`nError: $($r.Error)`n`nTry:`n1. Install Visual Studio Build Tools with 'Desktop C++' workload`n2. Open a new terminal and run: cd `"$RepoRoot`" && npm install"
+            Set-StepFail 6 "Package installation failed"
+            Show-Error "Installation Failed" "Could not install required packages.`n`nThis sometimes happens on first install. Please close this window and try again.`nIf it keeps failing, ask for help."
             return
         }
-        Set-StepOk 6
+        Set-StepOk 6 "Packages ready"
     }
 
     # ── Step 7: Build shared ───────────────────────────────────
-    Set-StepActive 7
+    Set-StepActive 7 "Preparing app..."
     $sharedDist = Join-Path $RepoRoot "shared\dist\index.js"
     if (Test-Path $sharedDist) {
         Log "shared/dist already built"
-        Set-StepOk 7
+        Set-StepOk 7 "App prepared"
     } else {
-        Set-StepActive 7 "Compiling..."
+        Set-StepActive 7 "Building app..."
         Log "Building shared types..."
         $r = Run-Cmd $npm "run build -w shared" -WorkDir $RepoRoot -TimeoutSec 60
         if ($r.ExitCode -ne 0) {
             Set-StepFail 7 "Build failed"
-            Show-Error "Build Failed" "Could not build shared types package.`n`nError: $($r.Error)"
+            Show-Error "Build Failed" "Could not prepare the app.`nPlease close and try again."
             return
         }
-        Set-StepOk 7
+        Set-StepOk 7 "App prepared"
     }
 
     # ══════════════════════════════════════════════════════════
@@ -1269,7 +1268,7 @@ function Run-Setup {
     }
 
     # ── Step 8: Start Server ───────────────────────────────────
-    Set-StepActive 8 "Launching..."
+    Set-StepActive 8 "Starting backend..."
     Log "Starting server from: $ServerDir"
     $serverLog = Join-Path $env:TEMP "orcstrator-server.log"
     $serverProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "cd /d `"$ServerDir`" && npm run dev > `"$serverLog`" 2>&1" -WindowStyle Hidden -PassThru
@@ -1296,7 +1295,7 @@ function Run-Setup {
             if (Test-TcpPort $ServerPort) { $found = $true; break }
         }
         $seconds++
-        Set-StepActive 8 "Waiting... (${seconds}s)"
+        Set-StepActive 8 "Starting backend... (${seconds}s)"
         # Sleep ~1s in small chunks to keep UI alive
         for ($w = 0; $w -lt 4; $w++) {
             [System.Windows.Forms.Application]::DoEvents()
@@ -1305,17 +1304,16 @@ function Run-Setup {
     }
     if ($found) {
         Log "Server is running on port $ServerPort"
-        Set-StepOk 8 "port $ServerPort"
+        Set-StepOk 8 "Backend running"
     } else {
-        # One last verbose check for the log
         Test-TcpPort $ServerPort -Verbose | Out-Null
-        Set-StepFail 8 "no response after ${maxSeconds}s"
-        Show-Error "Server Start Failed" "The server didn't respond within ${maxSeconds} seconds.`nCheck the Server window for errors."
+        Set-StepFail 8 "Backend did not start"
+        Show-Error "Start Failed" "The backend could not start.`nPlease close and try again. If the problem persists, check the log file."
         return
     }
 
     # ── Step 9: Start Client ───────────────────────────────────
-    Set-StepActive 9 "Launching..."
+    Set-StepActive 9 "Starting OrcStrator..."
     Log "Starting client from: $ClientDir"
     $clientLog = Join-Path $env:TEMP "orcstrator-client.log"
     $clientProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "cd /d `"$ClientDir`" && npm run dev > `"$clientLog`" 2>&1" -WindowStyle Hidden -PassThru
@@ -1341,7 +1339,7 @@ function Run-Setup {
             if (Test-TcpPort $ClientPort) { $found = $true; break }
         }
         $seconds++
-        Set-StepActive 9 "Waiting... (${seconds}s)"
+        Set-StepActive 9 "Starting OrcStrator... (${seconds}s)"
         for ($w = 0; $w -lt 4; $w++) {
             [System.Windows.Forms.Application]::DoEvents()
             Start-Sleep -Milliseconds 250
@@ -1349,10 +1347,10 @@ function Run-Setup {
     }
     if ($found) {
         Log "Client is running on port $ClientPort"
-        Set-StepOk 9 "port $ClientPort"
+        Set-StepOk 9 "OrcStrator is running!"
     } else {
         Test-TcpPort $ClientPort -Verbose | Out-Null
-        Set-StepFail 9 "no response after ${maxSeconds}s"
+        Set-StepFail 9 "OrcStrator did not start"
         Log "Client may still be starting..."
     }
 
