@@ -13,6 +13,7 @@ import type {
 import { vfxBus } from '../systems/vfx-bus'
 import { InstancesContext } from './InstancesContext'
 import { MessagesContext } from './MessagesContext'
+import type { CliPromptData } from './MessagesContext'
 import { UIContext } from './UIContext'
 import { AppDispatchContext } from './AppDispatchContext'
 import { useInstances } from './InstancesContext'
@@ -36,6 +37,7 @@ interface MessagesSlice {
   streamingToolCalls: Record<string, StreamingToolCall[]>
   unreadCounts: Record<string, number>
   rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
+  cliPrompts: Record<string, CliPromptData>
 }
 
 interface UISlice {
@@ -113,6 +115,8 @@ export type Action =
   | { type: 'OPEN_SETTINGS' }
   | { type: 'CLOSE_SETTINGS' }
   | { type: 'APPEND_RAW_LINE'; payload: { instanceId: string; line: string; isStderr?: boolean } }
+  | { type: 'SET_CLI_PROMPT'; payload: CliPromptData }
+  | { type: 'CLEAR_CLI_PROMPT'; payload: string }
   | { type: 'SET_GAME_ACTIVE'; payload: boolean }
   | { type: 'SET_INSTANCE_VERBOSITY'; payload: { instanceId: string; level: VerbosityLevel | null } }
 
@@ -141,6 +145,7 @@ const initialMessages: MessagesSlice = {
   streamingToolCalls: {},
   unreadCounts: {},
   rawOutput: {},
+  cliPrompts: {},
 }
 
 const initialUI: UISlice = {
@@ -294,6 +299,13 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
       const next = current.length >= 2000 ? [...current.slice(-1999), entry] : [...current, entry]
       return { ...state, rawOutput: { ...state.rawOutput, [instanceId]: next } }
     }
+    case 'SET_CLI_PROMPT': {
+      return { ...state, cliPrompts: { ...state.cliPrompts, [action.payload.instanceId]: action.payload } }
+    }
+    case 'CLEAR_CLI_PROMPT': {
+      const { [action.payload]: _, ...rest } = state.cliPrompts
+      return { ...state, cliPrompts: rest }
+    }
     default:
       return state
   }
@@ -423,6 +435,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'CLEAR_MESSAGES':
       case 'APPEND_RAW_LINE':
       case 'CLEAR_UNREAD':
+      case 'SET_CLI_PROMPT':
+      case 'CLEAR_CLI_PROMPT':
         msgDispatch(action)
         break
 
@@ -537,6 +551,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             dispatch({ type: 'ADD_MESSAGE', payload: event.message })
             dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
             streamingCleared = true
+          } else if (event.type === 'cli-prompt') {
+            dispatch({ type: 'SET_CLI_PROMPT', payload: { instanceId, eventType: event.eventType, data: event.data, receivedAt: Date.now() } })
           } else if (event.type === 'result' && event.inputTokens !== undefined) {
             const updates: Record<string, unknown> = { ctxTokens: event.inputTokens }
             if (event.model) updates.ctxModel = event.model
@@ -550,6 +566,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       api.onClaudeProcessExit((payload: ClaudeProcessExitEvent) => {
         const { instanceId } = payload
         dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
+        dispatch({ type: 'CLEAR_CLI_PROMPT', payload: instanceId })
         dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle', activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
         api.getHistory(instanceId, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
@@ -789,16 +806,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = useCallback(async (instanceId: string, text: string, images?: string[], flags?: string[]) => {
+    const contentBlocks: ChatMessage['content'] = []
+    if (text) contentBlocks.push({ type: 'text', text })
+    if (images && images.length > 0) {
+      for (const b64 of images) {
+        contentBlocks.push({ type: 'image', base64: b64, mediaType: b64.startsWith('/9j/') ? 'image/jpeg' : 'image/png' } as any)
+      }
+    }
+    if (contentBlocks.length === 0) contentBlocks.push({ type: 'text', text })
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       instanceId,
       role: 'user',
-      content: [{ type: 'text', text }],
+      content: contentBlocks,
       createdAt: Date.now(),
     }
     dispatch({ type: 'ADD_MESSAGE', payload: userMessage })
     dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'running' } } })
-    await api.sendMessage(instanceId, { text, images, flags })
+    try {
+      await api.sendMessage(instanceId, { text, images, flags })
+    } catch {
+      // API rejected (409 already running, network error, etc.) — reset state so the UI isn't stuck
+      dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle' } } })
+      dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const deleteInstance = useCallback(async (id: string) => {
@@ -830,8 +861,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       streamingToolCalls: msgState.streamingToolCalls,
       unreadCounts: msgState.unreadCounts,
       rawOutput: msgState.rawOutput,
+      cliPrompts: msgState.cliPrompts,
     }),
-    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput]
+    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts]
   )
 
   const uiValue = useMemo(

@@ -133,7 +133,7 @@ export function ChatHeader() {
 
     // Check if this is a CLI slash command (starts with /)
     if (cmd.startsWith('/')) {
-      // Send to CLI via --resume -p '<command>'
+      // Send to CLI via command dispatcher
       api.sendCommand(instanceId, cmd).then(res => {
         const msg: ChatMessage = {
           id: crypto.randomUUID(),
@@ -143,6 +143,10 @@ export function ChatHeader() {
           createdAt: Date.now(),
         }
         dispatch({ type: 'ADD_MESSAGE', payload: msg })
+        // Process client-side actions from command response
+        if (res.action === 'open-url' && res.url) window.open(res.url, '_blank')
+        if (res.action === 'open-settings') dispatch({ type: 'OPEN_SETTINGS' })
+        if (res.action === 'copy-to-clipboard' && res.value) navigator.clipboard.writeText(res.value)
       }).catch(() => {
         const msg: ChatMessage = {
           id: crypto.randomUUID(),

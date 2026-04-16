@@ -6,6 +6,7 @@ import { processRegistry } from '../services/process-registry.js'
 import { preprocessImages, detectMediaType } from '../services/image-processor.js'
 import { getLastAssistantMessage } from '../services/session-sync.js'
 import { orchestrator } from '../services/orchestrator.js'
+import { dispatchCommand, isValidCommand, getAllCommands } from '../services/command-registry.js'
 import crypto from 'crypto'
 
 export default async function instanceRoutes(app: FastifyInstance): Promise<void> {
@@ -181,44 +182,43 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     return { sessionId: result.sessionId }
   })
 
-  // Send a CLI slash command (e.g. /status, /compact, /cost, /help, /memory)
-  // Spawns: claude --resume <session> -p '<command>' --output-format stream-json
+  // Send a CLI slash command — dispatched through the command registry
+  // Each command is routed to the appropriate strategy handler (skill, native, client-only, etc.)
   app.post('/instances/:id/command', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { command } = request.body as { command: string }
-    if (!command) { reply.code(400); return { error: 'Missing command' } }
+    const { command: rawCommand } = request.body as { command: string }
+    if (!rawCommand) { reply.code(400); return { error: 'Missing command' } }
+
+    const baseCmd = rawCommand.split(/\s/)[0].toLowerCase()
+    if (!isValidCommand(baseCmd)) {
+      reply.code(400)
+      return { error: `Unknown command: ${baseCmd}. Type /help to see available commands.` }
+    }
 
     const instance = db.prepare('SELECT session_id, cwd FROM instances WHERE id = ?').get(id) as { session_id: string | null; cwd: string } | undefined
     if (!instance) { reply.code(404); return { error: 'Not found' } }
-    if (!instance.session_id) { return { ok: false, result: 'No active session. Send a message first to start one.' } }
 
-    const { spawn } = await import('child_process')
-    const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
-    // Use plain text output — simpler and more reliable for slash commands
-    const args = ['--resume', instance.session_id, '-p', command]
-    const env = { ...process.env }
-    delete env['CLAUDECODE']
-
-    return new Promise((resolve) => {
-      const child = spawn(cmd, args, {
-        cwd: instance.cwd,
-        env,
-        shell: process.platform === 'win32',
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-      let stdout = ''
-      let stderr = ''
-      child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-      child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-      child.once('close', (code) => {
-        const text = stdout.trim() || stderr.trim() || 'Done.'
-        resolve({ ok: code === 0, result: text })
-      })
-      child.once('error', () => {
-        resolve({ ok: false, result: 'Command failed.' })
-      })
+    return dispatchCommand(rawCommand, {
+      instanceId: id,
+      sessionId: instance.session_id,
+      cwd: instance.cwd,
+      args: '',
     })
+  })
+
+  // List all available commands (for client command palette)
+  app.get('/instances/commands', async () => {
+    return { commands: getAllCommands() }
+  })
+
+  // Write data to a running process's stdin (for responding to CLI prompts like login/permissions)
+  app.post('/instances/:id/stdin', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { data } = request.body as { data: string }
+    if (typeof data !== 'string') { reply.code(400); return { error: 'Missing data' } }
+    if (!processRegistry.isTracked(id)) { reply.code(404); return { error: 'No running process for this instance' } }
+    const ok = processRegistry.writeStdin(id, data)
+    return { ok }
   })
 
   // Kill instance process (stops Claude, resets to idle — does not delete instance)

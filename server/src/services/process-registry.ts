@@ -93,6 +93,19 @@ class ProcessRegistry {
     if (tracked) tracked.timeoutTimer = timer
   }
 
+  /** Write data to a running process's stdin (for interactive prompts like login/permissions) */
+  writeStdin(instanceId: string, data: string): boolean {
+    const tracked = this.registry.get(instanceId)
+    if (!tracked || tracked.state === 'killing') return false
+    try {
+      tracked.child.stdin?.write(data)
+      return true
+    } catch (err) {
+      console.warn(`[process-registry] writeStdin error [${instanceId.slice(0, 8)}]:`, (err as Error).message)
+      return false
+    }
+  }
+
   async killProcess(instanceId: string): Promise<void> {
     const tracked = this.registry.get(instanceId)
     if (!tracked) {

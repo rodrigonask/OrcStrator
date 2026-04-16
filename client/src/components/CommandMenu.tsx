@@ -6,6 +6,7 @@ import { useFeatureGate } from '../hooks/useFeatureGate'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { api } from '../api'
 import { rest } from '../api/rest'
+import type { ChatMessage } from '@shared/types'
 
 interface Command {
   name: string
@@ -70,12 +71,125 @@ export function CommandMenu() {
       { name: 'Resume All', description: 'Resume all paused chats', category: 'Actions', action: () => instances.forEach(i => api.resumeInstance(i.id)) },
       { name: 'Refresh Usage', description: 'Force refresh usage data', category: 'Actions', action: () => api.refreshUsage() },
     ]
-    // CLI commands for selected instance
+    // CLI slash commands for selected instance — full registry
     if (selectedInstanceId) {
+      const cli = (name: string, desc: string, category: string) => ({
+        name, description: desc, category,
+        action: () => {
+          const userMsg: ChatMessage = {
+            id: crypto.randomUUID(),
+            instanceId: selectedInstanceId,
+            role: 'user',
+            content: [{ type: 'text', text: name }],
+            createdAt: Date.now(),
+          }
+          dispatch({ type: 'ADD_MESSAGE', payload: userMsg })
+          api.sendCommand(selectedInstanceId, name).then(res => {
+            const assistantMsg: ChatMessage = {
+              id: crypto.randomUUID(),
+              instanceId: selectedInstanceId,
+              role: 'assistant',
+              content: [{ type: 'text', text: res.result }],
+              createdAt: Date.now(),
+            }
+            dispatch({ type: 'ADD_MESSAGE', payload: assistantMsg })
+            // Process client-side actions
+            if (res.action === 'clear-history') {
+              rest.clearHistory(selectedInstanceId)
+              dispatch({ type: 'CLEAR_MESSAGES', payload: selectedInstanceId })
+            }
+            if (res.action === 'open-url' && res.url) window.open(res.url, '_blank')
+            if (res.action === 'open-settings') dispatch({ type: 'OPEN_SETTINGS' })
+            if (res.action === 'copy-to-clipboard' && res.value) navigator.clipboard.writeText(res.value)
+            if (res.action === 'kill-process') rest.killInstance(selectedInstanceId)
+            if (res.action === 'new-instance') {
+              const inst = instances.find(i => i.id === selectedInstanceId)
+              if (inst) {
+                rest.createInstance({ folderId: inst.folderId }).then(newInst => {
+                  dispatch({ type: 'ADD_INSTANCE', payload: newInst })
+                  dispatch({ type: 'SELECT_INSTANCE', payload: newInst.id })
+                })
+              }
+            }
+          }).catch(() => {
+            dispatch({ type: 'ADD_MESSAGE', payload: {
+              id: crypto.randomUUID(), instanceId: selectedInstanceId, role: 'assistant',
+              content: [{ type: 'text', text: 'Command failed.' }], createdAt: Date.now(),
+            } as ChatMessage })
+          })
+        },
+      })
       cmds.push(
-        { name: '/compact', description: 'Compress conversation context', category: 'CLI', action: () => { api.sendCommand(selectedInstanceId, '/compact').catch(console.error) } },
-        { name: '/cost', description: 'Show token usage & cost', category: 'CLI', action: () => { api.sendCommand(selectedInstanceId, '/cost').catch(console.error) } },
-        { name: '/context', description: 'Show context window breakdown', category: 'CLI', action: () => { api.sendCommand(selectedInstanceId, '/context').catch(console.error) } },
+        // Context & Cost
+        cli('/compact', 'Compress conversation context', 'Context & Cost'),
+        cli('/context', 'Show context window usage breakdown', 'Context & Cost'),
+        cli('/cost', 'Show token usage & cost for session', 'Context & Cost'),
+        cli('/usage', 'Show plan usage & rate limits', 'Context & Cost'),
+        cli('/stats', 'Daily usage statistics', 'Context & Cost'),
+        // Session
+        cli('/clear', 'Clear conversation history', 'Session'),
+        cli('/reset', 'Reset session (kill + clear)', 'Session'),
+        cli('/new', 'Create new chat instance', 'Session'),
+        cli('/rename', 'Rename this chat', 'Session'),
+        cli('/branch', 'Fork session into new branch', 'Session'),
+        cli('/exit', 'Kill process', 'Session'),
+        // Model & Effort
+        cli('/model', 'Change AI model', 'Model & Effort'),
+        cli('/effort', 'Set effort level (low/medium/high/max)', 'Model & Effort'),
+        cli('/fast', 'Toggle fast mode', 'Model & Effort'),
+        // Code Review
+        cli('/diff', 'Show uncommitted git changes', 'Code Review'),
+        cli('/review', 'Code review current changes', 'Code Review'),
+        cli('/simplify', 'Review changed code for quality & reuse', 'Code Review'),
+        cli('/security-review', 'Analyze branch for security vulnerabilities', 'Code Review'),
+        // Project & Memory
+        cli('/memory', 'Show CLAUDE.md memory files', 'Project & Memory'),
+        cli('/init', 'Initialize CLAUDE.md for project', 'Project & Memory'),
+        cli('/add-dir', 'Add directory to context', 'Project & Memory'),
+        // Planning
+        cli('/plan', 'Toggle plan mode', 'Planning'),
+        cli('/ultraplan', 'Enable ultra plan mode', 'Planning'),
+        cli('/tasks', 'Show pipeline tasks', 'Planning'),
+        cli('/bashes', 'Show running processes', 'Planning'),
+        // Skills
+        cli('/batch', 'Batch edit files', 'Skills'),
+        cli('/debug', 'Debug current issue', 'Skills'),
+        cli('/loop', 'Run a command on interval', 'Skills'),
+        cli('/claude-api', 'Build with the Claude API', 'Skills'),
+        cli('/schedule', 'Manage scheduled remote agents', 'Skills'),
+        // Diagnostics
+        cli('/status', 'Show version, auth & account info', 'Diagnostics'),
+        cli('/doctor', 'Diagnose installation & settings', 'Diagnostics'),
+        cli('/help', 'Show all available commands', 'Diagnostics'),
+        cli('/release-notes', 'Show release notes', 'Diagnostics'),
+        cli('/insights', 'Generate usage insights report', 'Diagnostics'),
+        cli('/feedback', 'Submit feedback to Anthropic', 'Diagnostics'),
+        cli('/bug', 'Report a bug', 'Diagnostics'),
+        // Configuration
+        cli('/config', 'Show Claude Code settings', 'Configuration'),
+        cli('/settings', 'Open settings', 'Configuration'),
+        cli('/permissions', 'Show permission rules', 'Configuration'),
+        cli('/allowed-tools', 'Show allowed tools', 'Configuration'),
+        cli('/hooks', 'Show configured hooks', 'Configuration'),
+        cli('/skills', 'List available skills', 'Configuration'),
+        cli('/mcp', 'List MCP server status', 'Configuration'),
+        cli('/agents', 'List configured agents', 'Configuration'),
+        cli('/plugin', 'Show installed plugins', 'Configuration'),
+        // Clipboard & Export
+        cli('/copy', 'Copy last assistant reply', 'Clipboard & Export'),
+        cli('/export', 'Export session transcript', 'Clipboard & Export'),
+        // Authentication
+        cli('/upgrade', 'Show version & upgrade info', 'Authentication'),
+        cli('/passes', 'Open billing & passes', 'Authentication'),
+        cli('/extra-usage', 'Open usage management', 'Authentication'),
+        // Integrations
+        cli('/install-github-app', 'Install Claude GitHub App', 'Integrations'),
+        cli('/install-slack-app', 'Install Claude Slack App', 'Integrations'),
+        cli('/web-setup', 'Open Claude Code web interface', 'Integrations'),
+        // Onboarding
+        cli('/team-onboarding', 'Open team onboarding docs', 'Onboarding'),
+        cli('/stickers', 'Get Claude stickers', 'Onboarding'),
+        cli('/powerup', 'Upgrade plan & billing', 'Onboarding'),
       )
     }
     return cmds
