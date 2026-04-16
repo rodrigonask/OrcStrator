@@ -447,28 +447,65 @@ $btnShutdown.Add_Click({
 })
 $form.Controls.Add($btnShutdown)
 
-# ── Update Button (full width, below action buttons) ──────────
+# ── Update Banner (full width, below action buttons) ──────────
+$FontUpdateTitle = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$FontUpdateSub   = New-Object System.Drawing.Font("Segoe UI", 8.5)
+
 $btnUpdate = New-Object System.Windows.Forms.Button
-$btnUpdate.Text = "Checking for updates..."
-$btnUpdate.Font = $FontSub
-$btnUpdate.Size = New-Object System.Drawing.Size(505, 32)
+$btnUpdate.Size = New-Object System.Drawing.Size(505, 52)
 $btnUpdate.Location = New-Object System.Drawing.Point(20, 596)
 $btnUpdate.FlatStyle = "Flat"
 $btnUpdate.FlatAppearance.BorderColor = $TextDim
 $btnUpdate.FlatAppearance.BorderSize = 1
 $btnUpdate.BackColor = $BgPanel
 $btnUpdate.ForeColor = $TextDim
-$btnUpdate.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnUpdate.Cursor = [System.Windows.Forms.Cursors]::Default
 $btnUpdate.Enabled = $false
 $btnUpdate.Visible = $true
+$btnUpdate.TextAlign = "MiddleLeft"
+$btnUpdate.Padding = New-Object System.Windows.Forms.Padding(0)
 $script:UpdateAvailable = $false
 $script:CommitsBehind = 0
+
+# Custom paint for two-line text (title + subtitle)
+$script:UpdateTitle = "Checking for updates..."
+$script:UpdateSub = ""
+
+$btnUpdate.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+    $rect = $s.ClientRectangle
+    $pad = 14
+
+    # Title line
+    $titleBrush = New-Object System.Drawing.SolidBrush($s.ForeColor)
+    $g.DrawString($script:UpdateTitle, $FontUpdateTitle, $titleBrush, $pad, 6)
+    $titleBrush.Dispose()
+
+    # Subtitle line
+    if ($script:UpdateSub) {
+        $subColor = if ($script:IsDarkMode) {
+            [System.Drawing.Color]::FromArgb(160, 160, 175)
+        } else {
+            [System.Drawing.Color]::FromArgb(100, 100, 115)
+        }
+        $subBrush = New-Object System.Drawing.SolidBrush($subColor)
+        $g.DrawString($script:UpdateSub, $FontUpdateSub, $subBrush, $pad, 28)
+        $subBrush.Dispose()
+    }
+})
 
 $btnUpdate.Add_Click({
     if (-not $script:UpdateAvailable) { return }
     $btnUpdate.Enabled = $false
-    $btnUpdate.Text = "Updating..."
+    $btnUpdate.Cursor = [System.Windows.Forms.Cursors]::Default
+    $script:UpdateTitle = "Updating..."
+    $script:UpdateSub = "Pulling latest changes from GitHub..."
     $btnUpdate.ForeColor = $script:Yellow
+    $btnUpdate.FlatAppearance.BorderColor = $script:Yellow
+    $btnUpdate.Invalidate()
     $form.Refresh()
     [System.Windows.Forms.Application]::DoEvents()
 
@@ -477,24 +514,28 @@ $btnUpdate.Add_Click({
     [System.Windows.Forms.Application]::DoEvents()
 
     if ($r.ExitCode -eq 0) {
-        # Rebuild shared types after update
         $npm = Find-Exe "npm.cmd"
         if (-not $npm) { $npm = Find-Exe "npm" }
-        $btnUpdate.Text = "Rebuilding..."
+        $script:UpdateTitle = "Rebuilding..."
+        $script:UpdateSub = "Compiling updated packages..."
+        $btnUpdate.Invalidate()
         $form.Refresh()
         [System.Windows.Forms.Application]::DoEvents()
         Run-Cmd $npm "run build -w shared" -WorkDir $RepoRoot -TimeoutSec 60
         [System.Windows.Forms.Application]::DoEvents()
 
         $script:UpdateAvailable = $false
-        $btnUpdate.Text = "Updated! Restart OrcStrator to apply changes."
+        $script:UpdateTitle = "Updated successfully!"
+        $script:UpdateSub = "Restart OrcStrator to apply changes."
         $btnUpdate.ForeColor = $script:Green
         $btnUpdate.FlatAppearance.BorderColor = $script:Green
     } else {
-        $btnUpdate.Text = "Update failed - try 'git pull' manually"
+        $script:UpdateTitle = "Update failed"
+        $script:UpdateSub = "Try running 'git pull' manually in the project folder."
         $btnUpdate.ForeColor = $script:Red
         $btnUpdate.FlatAppearance.BorderColor = $script:Red
     }
+    $btnUpdate.Invalidate()
     $form.Refresh()
 })
 $form.Controls.Add($btnUpdate)
@@ -714,17 +755,21 @@ function Find-Exe {
 }
 
 function Run-Cmd {
-    param([string]$Cmd, [string]$Args, [string]$WorkDir, [int]$TimeoutSec = 300)
-    Log "Running: $Cmd $Args"
+    param([string]$Cmd, [string]$CmdArgs, [string]$WorkDir, [int]$TimeoutSec = 300)
+    Log "Running: $Cmd $CmdArgs"
 
-    # Use temp files for output — most reliable on Windows PS 5.1
-    $outFile = Join-Path $env:TEMP "orc_out_$([guid]::NewGuid().ToString('N').Substring(0,8)).tmp"
-    $errFile = Join-Path $env:TEMP "orc_err_$([guid]::NewGuid().ToString('N').Substring(0,8)).tmp"
+    # Use a temp .bat to reliably handle paths with spaces + capture output
+    $uid = [guid]::NewGuid().ToString('N').Substring(0,8)
+    $outFile = Join-Path $env:TEMP "orc_out_$uid.tmp"
+    $errFile = Join-Path $env:TEMP "orc_err_$uid.tmp"
+    $batFile = Join-Path $env:TEMP "orc_run_$uid.bat"
+
+    # Write a one-line bat that runs the command with proper quoting
+    Set-Content -Path $batFile -Value "@`"$Cmd`" $CmdArgs > `"$outFile`" 2> `"$errFile`"" -Encoding ASCII
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "cmd.exe"
-    # Properly escape: cmd /c "exe" args > out 2> err
-    $psi.Arguments = "/c `"`"$Cmd`" $Args > `"$outFile`" 2> `"$errFile`"`""
+    $psi.Arguments = "/c `"$batFile`""
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     if ($WorkDir) { $psi.WorkingDirectory = $WorkDir }
@@ -753,6 +798,7 @@ function Run-Cmd {
     try { if (Test-Path $errFile) { $stderr = [System.IO.File]::ReadAllText($errFile).Trim() } } catch { }
     Remove-Item $outFile -Force -ErrorAction SilentlyContinue
     Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+    Remove-Item $batFile -Force -ErrorAction SilentlyContinue
 
     if ($stdout) { Log $stdout.Substring(0, [Math]::Min($stdout.Length, 500)) }
     if ($stderr) { Log "STDERR: $($stderr.Substring(0, [Math]::Min($stderr.Length, 500)))" }
@@ -798,13 +844,17 @@ function Test-TcpPort {
 
 function Check-ForUpdates {
     Log "Checking for OrcStrator updates..."
-    $btnUpdate.Text = "Checking for updates..."
+    $script:UpdateTitle = "Checking for updates..."
+    $script:UpdateSub = ""
+    $btnUpdate.Invalidate()
     $form.Refresh()
     [System.Windows.Forms.Application]::DoEvents()
 
     $git = Find-Exe "git"
     if (-not $git) {
-        $btnUpdate.Text = "Updates unavailable (git not found)"
+        $script:UpdateTitle = "Updates unavailable"
+        $script:UpdateSub = "Git not found."
+        $btnUpdate.Invalidate()
         return
     }
 
@@ -831,23 +881,30 @@ function Check-ForUpdates {
         Log "Could not check commits behind: $_"
     }
 
+    $daysText = if ($daysOld -le 0) { "today" } elseif ($daysOld -eq 1) { "yesterday" } else { "$daysOld days ago" }
     Log "Update check: $($script:CommitsBehind) commits behind, local is ${daysOld} days old"
 
     if ($script:CommitsBehind -gt 0) {
         $script:UpdateAvailable = $true
         $btnUpdate.Enabled = $true
-        $daysText = if ($daysOld -le 0) { "today" } elseif ($daysOld -eq 1) { "1 day ago" } else { "$daysOld days ago" }
-        $btnUpdate.Text = "Update OrcStrator ($($script:CommitsBehind) new commits) - last updated $daysText"
+        $btnUpdate.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $updatesWord = if ($script:CommitsBehind -eq 1) { "update" } else { "updates" }
+        $script:UpdateTitle = "Update available"
+        $script:UpdateSub = "Click to update. Last updated $daysText - $($script:CommitsBehind) new $updatesWord"
         $btnUpdate.ForeColor = $script:Yellow
         $btnUpdate.FlatAppearance.BorderColor = $script:Yellow
+        $btnUpdate.FlatAppearance.BorderSize = 2
     } else {
         $script:UpdateAvailable = $false
         $btnUpdate.Enabled = $false
-        $daysText = if ($daysOld -le 0) { "today" } elseif ($daysOld -eq 1) { "1 day ago" } else { "$daysOld days ago" }
-        $btnUpdate.Text = "OrcStrator is up to date - last updated $daysText"
+        $btnUpdate.Cursor = [System.Windows.Forms.Cursors]::Default
+        $script:UpdateTitle = "Up to date"
+        $script:UpdateSub = "Last updated $daysText"
         $btnUpdate.ForeColor = $script:Green
         $btnUpdate.FlatAppearance.BorderColor = $script:Green
+        $btnUpdate.FlatAppearance.BorderSize = 1
     }
+    $btnUpdate.Invalidate()
     $form.Refresh()
 }
 
