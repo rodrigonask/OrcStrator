@@ -317,10 +317,11 @@ $btnToggleLog.Add_Click({
         $form.Size = New-Object System.Drawing.Size(560, 700)
     } else {
         $txtLog.Visible = $true
-        $txtLog.Location = New-Object System.Drawing.Point(20, 462)
+        $txtLog.Location = New-Object System.Drawing.Point(20, 660)
+        $txtLog.Size = New-Object System.Drawing.Size(505, 120)
         $btnToggleLog.Text = "Hide log"
         $btnToggleLog.Location = New-Object System.Drawing.Point(20, 442)
-        $form.Size = New-Object System.Drawing.Size(560, 820)
+        $form.Size = New-Object System.Drawing.Size(560, 840)
     }
 })
 $form.Controls.Add($btnToggleLog)
