@@ -678,7 +678,7 @@ function Set-StepActive {
         $stepIcons[$Index].Text = [char]0x25B6  # right triangle
         $stepIcons[$Index].ForeColor = $script:Yellow
         $stepLabels[$Index].ForeColor = $script:TextPrimary
-        if ($Msg) { $stepLabels[$Index].Text = "$($stepNames[$Index]) - $Msg" }
+        if ($Msg) { $stepLabels[$Index].Text = $Msg }
     }
     $lblStatus.Text = $(if ($Msg) { $Msg } else { $stepNames[$Index] })
     $lblStatus.ForeColor = $script:Yellow
@@ -692,9 +692,7 @@ function Set-StepOk {
         $stepIcons[$Index].Text = [char]0x2714  # checkmark
         $stepIcons[$Index].ForeColor = $script:Green
         $stepLabels[$Index].ForeColor = $script:Green
-        if ($Detail) {
-            $stepLabels[$Index].Text = "$($stepNames[$Index]) - $Detail"
-        }
+        if ($Detail) { $stepLabels[$Index].Text = $Detail }
     }
     $progress.Value = [Math]::Min($Index + 1, $progress.Maximum)
     $form.Refresh()
@@ -707,9 +705,7 @@ function Set-StepFail {
         $stepIcons[$Index].Text = [char]0x2718  # X mark
         $stepIcons[$Index].ForeColor = $script:Red
         $stepLabels[$Index].ForeColor = $script:Red
-        if ($Msg) {
-            $stepLabels[$Index].Text = "$($stepNames[$Index]) - $Msg"
-        }
+        if ($Msg) { $stepLabels[$Index].Text = $Msg }
     }
     $lblStatus.Text = $Msg
     $lblStatus.ForeColor = $script:Red
@@ -723,9 +719,7 @@ function Set-StepSkip {
         $stepIcons[$Index].Text = [char]0x2013  # en dash
         $stepIcons[$Index].ForeColor = $script:TextDim
         $stepLabels[$Index].ForeColor = $script:TextDim
-        if ($Msg) {
-            $stepLabels[$Index].Text = "$($stepNames[$Index]) - $Msg"
-        }
+        if ($Msg) { $stepLabels[$Index].Text = $Msg }
     }
     $progress.Value = [Math]::Min($Index + 1, $progress.Maximum)
     $form.Refresh()
