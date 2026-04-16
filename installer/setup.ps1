@@ -1377,6 +1377,12 @@ function Run-Setup {
 
 # ── Wire FormClosing to clean up processes on ANY close method ──
 $form.Add_FormClosing({
+    $lblStatus.Text = "Shutting down safely..."
+    $lblStatus.ForeColor = $script:Yellow
+    $btnOpen.Enabled = $false
+    $btnShutdown.Enabled = $false
+    $form.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
     Stop-OrcStrator
 })
 
