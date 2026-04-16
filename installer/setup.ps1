@@ -527,37 +527,37 @@ function Stop-OrcStrator {
     if ($script:ShutdownDone) { return }
     $script:ShutdownDone = $true
 
-    # Layer 1: Kill stored PIDs + their entire process trees
-    foreach ($pid in @($script:ServerPid, $script:ClientPid)) {
-        if ($pid) {
-            try {
-                Start-Process "taskkill" -ArgumentList "/PID $pid /T /F" -NoNewWindow -Wait -ErrorAction SilentlyContinue
-            } catch { }
-        }
-    }
-    $script:ServerPid = $null
-    $script:ClientPid = $null
+    # Collect all PIDs to kill at once
+    $pidsToKill = @()
 
-    # Layer 2: Kill anything still listening on our ports
+    # Layer 1: Stored PIDs
+    foreach ($pid in @($script:ServerPid, $script:ClientPid)) {
+        if ($pid) { $pidsToKill += $pid }
+    }
+
+    # Layer 2: Anything listening on our ports
     foreach ($port in @($ServerPort, $ClientPort)) {
         try {
-            $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
-            foreach ($c in $conns) {
-                if ($c.OwningProcess -gt 0) {
-                    Start-Process "taskkill" -ArgumentList "/PID $($c.OwningProcess) /T /F" -NoNewWindow -Wait -ErrorAction SilentlyContinue
-                }
+            @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) | ForEach-Object {
+                if ($_.OwningProcess -gt 0) { $pidsToKill += $_.OwningProcess }
             }
         } catch { }
     }
 
-    # Layer 3: Kill any cmd.exe with OrcStrator in title (catches old runs)
+    # Layer 3: cmd.exe windows with OrcStrator title
     try {
         Get-Process cmd -ErrorAction SilentlyContinue | Where-Object {
             $_.MainWindowTitle -like "*OrcStrator*"
-        } | ForEach-Object {
-            Start-Process "taskkill" -ArgumentList "/PID $($_.Id) /T /F" -NoNewWindow -Wait -ErrorAction SilentlyContinue
-        }
+        } | ForEach-Object { $pidsToKill += $_.Id }
     } catch { }
+
+    # Kill all unique PIDs with process tree, fire-and-forget (fast)
+    $pidsToKill | Sort-Object -Unique | ForEach-Object {
+        try { & taskkill /PID $_ /T /F 2>$null } catch { }
+    }
+
+    $script:ServerPid = $null
+    $script:ClientPid = $null
 }
 
 # ── Apply Theme Function ───────────────────────────────────────
@@ -1242,30 +1242,29 @@ function Run-Setup {
     #  LAUNCH
     # ══════════════════════════════════════════════════════════
 
-    # Kill existing processes on our ports
+    # Kill existing processes on our ports (with tree kill)
     Log "Checking for existing processes on ports $ServerPort and $ClientPort..."
-    try {
-        $conns = Get-NetTCPConnection -LocalPort $ServerPort -State Listen -ErrorAction SilentlyContinue
-        foreach ($c in $conns) {
-            if ($c.OwningProcess -gt 0) {
-                Log "Killing PID $($c.OwningProcess) on port $ServerPort"
-                Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+    foreach ($port in @($ServerPort, $ClientPort)) {
+        try {
+            @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) | ForEach-Object {
+                if ($_.OwningProcess -gt 0) {
+                    Log "Killing PID $($_.OwningProcess) on port $port (tree kill)"
+                    & taskkill /PID $($_.OwningProcess) /T /F 2>$null
+                }
             }
-        }
-        $conns = Get-NetTCPConnection -LocalPort $ClientPort -State Listen -ErrorAction SilentlyContinue
-        foreach ($c in $conns) {
-            if ($c.OwningProcess -gt 0) {
-                Log "Killing PID $($c.OwningProcess) on port $ClientPort"
-                Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch {
-        Log "Port cleanup skipped: $_"
+        } catch { }
     }
-    # Brief pause for ports to release, keep UI alive
-    for ($w = 0; $w -lt 5; $w++) {
+
+    # Wait until ports are actually free before spawning new processes
+    $portWait = 0
+    while ($portWait -lt 15) {
         [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 200
+        $s = @(Get-NetTCPConnection -LocalPort $ServerPort -State Listen -ErrorAction SilentlyContinue)
+        $c = @(Get-NetTCPConnection -LocalPort $ClientPort -State Listen -ErrorAction SilentlyContinue)
+        if ($s.Count -eq 0 -and $c.Count -eq 0) { break }
+        $portWait++
+        Log "Waiting for ports to free... ($portWait)"
+        Start-Sleep -Milliseconds 500
     }
 
     # ── Step 8: Start Server ───────────────────────────────────
