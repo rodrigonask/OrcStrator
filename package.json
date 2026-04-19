@@ -7,7 +7,7 @@
     "client"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev": "npm run build -w shared && concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
     "kill": "npx kill-port 3333 5173",
     "restart": "npm run kill; npm run dev",
     "build": "npm run build -w shared && npm run build -w client && npm run build -w server",
