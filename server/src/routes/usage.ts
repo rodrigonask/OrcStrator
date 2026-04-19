@@ -464,4 +464,93 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.post('/usage/refresh', async () => {
     return fetchUsage()
   })
+
+  // === PER-TURN COST TRACKING ENDPOINTS ===
+
+  // Per-folder cost aggregation (hierarchical project costs)
+  app.get('/usage/by-folder', async (request) => {
+    const { days = '14' } = request.query as Record<string, string>
+    const n = Math.min(Math.max(parseInt(days) || 14, 1), 90)
+    const since = Date.now() - n * 86_400_000
+
+    const rows = db.prepare(`
+      SELECT
+        tc.folder_id,
+        COALESCE(f.display_name, f.name) AS folder_name,
+        f.path AS folder_path,
+        f.emoji,
+        COALESCE(SUM(tc.cost_usd), 0) AS total_cost_usd,
+        COALESCE(SUM(tc.input_tokens), 0) AS total_input_tokens,
+        COALESCE(SUM(tc.output_tokens), 0) AS total_output_tokens,
+        COALESCE(SUM(tc.cache_read_tokens), 0) AS total_cache_read,
+        COALESCE(SUM(tc.cache_creation_tokens), 0) AS total_cache_creation,
+        COUNT(*) AS turn_count,
+        COUNT(DISTINCT tc.session_id) AS session_count
+      FROM turn_costs tc
+      LEFT JOIN folders f ON tc.folder_id = f.id
+      WHERE tc.created_at >= ?
+      GROUP BY tc.folder_id
+      ORDER BY total_cost_usd DESC
+    `).all(since) as Array<Record<string, unknown>>
+
+    return rows.map(r => {
+      const totalInput = Number(r.total_input_tokens) || 0
+      const cacheRead = Number(r.total_cache_read) || 0
+      return {
+        folderId: r.folder_id as string,
+        folderName: (r.folder_name || 'Unknown') as string,
+        folderPath: (r.folder_path || '') as string,
+        emoji: (r.emoji || null) as string | null,
+        totalCostUsd: Number(r.total_cost_usd) || 0,
+        totalInputTokens: totalInput,
+        totalOutputTokens: Number(r.total_output_tokens) || 0,
+        totalCacheRead: cacheRead,
+        totalCacheCreation: Number(r.total_cache_creation) || 0,
+        turnCount: Number(r.turn_count) || 0,
+        sessionCount: Number(r.session_count) || 0,
+        cacheHitRatio: totalInput > 0 ? +((cacheRead / totalInput) * 100).toFixed(1) : 0,
+      }
+    })
+  })
+
+  // Session cost summary for live display hydration
+  app.get('/usage/session-summary/:instanceId', async (request) => {
+    const { instanceId } = request.params as { instanceId: string }
+
+    // Get the current session_id for this instance
+    const inst = db.prepare('SELECT session_id FROM instances WHERE id = ?').get(instanceId) as { session_id: string | null } | undefined
+    if (!inst?.session_id) {
+      return { totalCost: 0, totalInput: 0, totalOutput: 0, totalCacheRead: 0, totalCacheCreation: 0, turns: 0 }
+    }
+
+    const row = db.prepare(`
+      SELECT
+        COALESCE(SUM(cost_usd), 0) AS total_cost,
+        COALESCE(SUM(input_tokens), 0) AS total_input,
+        COALESCE(SUM(output_tokens), 0) AS total_output,
+        COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read,
+        COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_creation,
+        COUNT(*) AS turns
+      FROM turn_costs
+      WHERE instance_id = ? AND session_id = ?
+    `).get(instanceId, inst.session_id) as Record<string, number>
+
+    // Cache rate for the last 10 turns
+    const recent = db.prepare(`
+      SELECT COALESCE(SUM(input_tokens), 0) AS inp, COALESCE(SUM(cache_read_tokens), 0) AS cr
+      FROM (SELECT input_tokens, cache_read_tokens FROM turn_costs
+            WHERE instance_id = ? AND session_id = ? ORDER BY created_at DESC LIMIT 10)
+    `).get(instanceId, inst.session_id) as { inp: number; cr: number }
+    const recentCacheRate = recent.inp > 0 ? recent.cr / recent.inp : 0
+
+    return {
+      totalCost: Number(row.total_cost) || 0,
+      totalInput: Number(row.total_input) || 0,
+      totalOutput: Number(row.total_output) || 0,
+      totalCacheRead: Number(row.total_cache_read) || 0,
+      totalCacheCreation: Number(row.total_cache_creation) || 0,
+      turns: Number(row.turns) || 0,
+      recentCacheRate,
+    }
+  })
 }

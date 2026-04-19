@@ -57,6 +57,31 @@ interface ProjectUsage {
   session_count: number
 }
 
+interface FolderCostRow {
+  folderId: string
+  folderName: string
+  folderPath: string
+  emoji: string | null
+  totalCostUsd: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCacheRead: number
+  totalCacheCreation: number
+  turnCount: number
+  sessionCount: number
+  cacheHitRatio: number
+}
+
+interface FolderCostNode {
+  data: FolderCostRow
+  children: FolderCostNode[]
+  aggregatedCost: number
+  aggregatedInput: number
+  aggregatedOutput: number
+  aggregatedCacheRead: number
+  aggregatedTurns: number
+}
+
 export function UsageReportPage() {
   const [days, setDays] = useState<TimeRange>(14)
   const [trend, setTrend] = useState<UsageTrendDay[]>([])
@@ -67,6 +92,7 @@ export function UsageReportPage() {
   const [stats, setStats] = useState<UsageStats | null>(null)
   const [priorStats, setPriorStats] = useState<UsageStats | null>(null)
   const [byProject, setByProject] = useState<ProjectUsage[]>([])
+  const [byFolder, setByFolder] = useState<FolderCostRow[]>([])
   const [weekdays, setWeekdays] = useState<WeekdayData[]>([])
   const [sessionLog, setSessionLog] = useState<SessionLogRow[]>([])
   const [logSortCol, setLogSortCol] = useState<string>('created_at')
@@ -93,7 +119,8 @@ export function UsageReportPage() {
       api.getUsageStats(days * 2),
       api.getUsageByProject(days),
       api.getUsageLog(200, days),
-    ]).then(([t, c, f, a, e, s, s2, p, log]) => {
+      api.getUsageByFolder(days),
+    ]).then(([t, c, f, a, e, s, s2, p, log, bf]) => {
       setTrend(t)
       setByColumn(c)
       setForecast(f)
@@ -104,6 +131,7 @@ export function UsageReportPage() {
       setByProject(p as unknown as ProjectUsage[])
       setWeekdays((s as UsageStats).byWeekday as unknown as WeekdayData[] ?? [])
       setSessionLog(log as unknown as SessionLogRow[])
+      setByFolder(bf as unknown as FolderCostRow[])
     }).catch(err => console.error('Usage fetch error:', err))
       .finally(() => setLoading(false))
   }
@@ -202,12 +230,20 @@ export function UsageReportPage() {
           <RoleTable roles={stats?.byRole ?? []} />
         </div>
 
-        {/* Project Attribution */}
+        {/* Project Attribution (legacy) */}
         <div className="usage-section">
           <h3 className="usage-section-title font-pixel">By Project</h3>
           <ProjectBars projects={byProject} totalCost={totalCost} />
         </div>
       </div>
+
+      {/* Hierarchical Project Costs */}
+      {byFolder.length > 0 && (
+        <div className="usage-section">
+          <h3 className="usage-section-title font-pixel">Project Cost Breakdown</h3>
+          <FolderCostTree rows={byFolder} />
+        </div>
+      )}
 
       {/* Weekday Breakdown */}
       {weekdays.length > 0 && (
@@ -633,6 +669,125 @@ function SessionLogTable({ rows, sortCol, sortAsc, onSort, onInstanceClick }: {
         </tbody>
       </table>
     </div>
+  )
+}
+
+// === Hierarchical Folder Cost Tree ===
+
+function buildFolderCostTree(rows: FolderCostRow[]): FolderCostNode[] {
+  const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '')
+
+  // Sort by path length so parents come before children
+  const sorted = [...rows].sort((a, b) => a.folderPath.length - b.folderPath.length)
+  const nodes: FolderCostNode[] = []
+
+  const makeNode = (row: FolderCostRow): FolderCostNode => ({
+    data: row,
+    children: [],
+    aggregatedCost: row.totalCostUsd,
+    aggregatedInput: row.totalInputTokens,
+    aggregatedOutput: row.totalOutputTokens,
+    aggregatedCacheRead: row.totalCacheRead,
+    aggregatedTurns: row.turnCount,
+  })
+
+  const findParent = (roots: FolderCostNode[], normalPath: string): FolderCostNode | null => {
+    for (const node of roots) {
+      const nodePath = normalize(node.data.folderPath)
+      if (normalPath.startsWith(nodePath + '/') && normalPath !== nodePath) {
+        const deeper = findParent(node.children, normalPath)
+        return deeper || node
+      }
+    }
+    return null
+  }
+
+  for (const row of sorted) {
+    const newNode = makeNode(row)
+    const parent = findParent(nodes, normalize(row.folderPath))
+    if (parent) {
+      parent.children.push(newNode)
+    } else {
+      nodes.push(newNode)
+    }
+  }
+
+  // Aggregate costs up the tree
+  const aggregate = (node: FolderCostNode): void => {
+    for (const child of node.children) {
+      aggregate(child)
+      node.aggregatedCost += child.aggregatedCost
+      node.aggregatedInput += child.aggregatedInput
+      node.aggregatedOutput += child.aggregatedOutput
+      node.aggregatedCacheRead += child.aggregatedCacheRead
+      node.aggregatedTurns += child.aggregatedTurns
+    }
+  }
+  for (const root of nodes) aggregate(root)
+
+  return nodes
+}
+
+function FolderCostTree({ rows }: { rows: FolderCostRow[] }) {
+  const tree = useMemo(() => buildFolderCostTree(rows), [rows])
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  const toggle = useCallback((id: string) => {
+    setExpanded(prev => ({ ...prev, [id]: !prev[id] }))
+  }, [])
+
+  if (tree.length === 0) return <p className="font-mono" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>No per-turn cost data yet</p>
+
+  return (
+    <div className="usage-folder-tree">
+      {tree.map(node => (
+        <FolderCostNodeRow key={node.data.folderId} node={node} depth={0} expanded={expanded} onToggle={toggle} />
+      ))}
+    </div>
+  )
+}
+
+function FolderCostNodeRow({ node, depth, expanded, onToggle }: {
+  node: FolderCostNode; depth: number;
+  expanded: Record<string, boolean>; onToggle: (id: string) => void
+}) {
+  const hasChildren = node.children.length > 0
+  const isOpen = expanded[node.data.folderId] ?? (depth === 0)
+  const cacheRatio = node.aggregatedInput > 0 ? node.aggregatedCacheRead / node.aggregatedInput : 0
+  const cacheColor = cacheRatio >= 0.7 ? '#22c55e' : cacheRatio >= 0.4 ? '#eab308' : '#ef4444'
+
+  return (
+    <>
+      <div
+        className="usage-folder-row"
+        style={{ paddingLeft: depth * 20 + 8, cursor: hasChildren ? 'pointer' : 'default' }}
+        onClick={() => hasChildren && onToggle(node.data.folderId)}
+      >
+        <span className="usage-folder-toggle" style={{ width: 16, display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+          {hasChildren ? (isOpen ? '▾' : '▸') : ' '}
+        </span>
+        <span style={{ marginRight: 6 }}>{node.data.emoji || '📁'}</span>
+        <span className="font-mono" style={{ flex: 1, fontSize: 12 }}>{node.data.folderName}</span>
+        <span className="font-mono" style={{ color: '#22c55e', fontSize: 12, minWidth: 70, textAlign: 'right' }}>
+          ${node.aggregatedCost.toFixed(4)}
+        </span>
+        <span className="font-mono" style={{ opacity: 0.6, fontSize: 11, minWidth: 90, textAlign: 'right' }}>
+          {fmtTokens(node.aggregatedInput)}in / {fmtTokens(node.aggregatedOutput)}out
+        </span>
+        <span className="font-mono" style={{ color: cacheColor, fontSize: 11, minWidth: 50, textAlign: 'right' }}>
+          {Math.round(cacheRatio * 100)}%$
+        </span>
+        <span className="font-mono" style={{ opacity: 0.4, fontSize: 11, minWidth: 30, textAlign: 'right' }}>
+          {node.aggregatedTurns}t
+        </span>
+      </div>
+      {hasChildren && isOpen && node.children
+        .sort((a, b) => b.aggregatedCost - a.aggregatedCost)
+        .map(child => (
+          <FolderCostNodeRow key={child.data.folderId} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} />
+        ))
+      }
+    </>
   )
 }
 

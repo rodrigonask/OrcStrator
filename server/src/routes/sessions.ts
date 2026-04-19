@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
 import fs from 'fs'
+import fsp from 'fs/promises'
 import path from 'path'
 import os from 'os'
 import readline from 'readline'
@@ -86,41 +87,37 @@ export default async function sessionsRoutes(app: FastifyInstance): Promise<void
       folderMap.set(f.id, { name: f.display_name || f.name, emoji: f.emoji })
     }
 
-    // Build file map for stats lookup
-    const fileMap = new Map<string, string>() // sessionId → filePath
-    const entriesList: Array<{ sessionId: string; filePath: string; mtime: number; match: { instanceId: string; instanceName: string; folderId: string } | undefined }> = []
-
-    for (const filePath of files) {
-      const basename = path.basename(filePath, '.jsonl')
-      let stat: fs.Stats
-      try { stat = fs.statSync(filePath) } catch { continue }
-      fileMap.set(basename, filePath)
-      entriesList.push({ sessionId: basename, filePath, mtime: stat.mtimeMs, match: sessionMap.get(basename) })
-    }
-
-    // Parse token/cost stats for all files in parallel
-    const statsResults = await Promise.all(
-      entriesList.map(e => parseSessionFile(e.filePath).catch(() => ({ inputTokens: 0, outputTokens: 0, costUsd: 0, lineCount: 0 })))
+    // Stat all files in parallel (async) — avoids blocking the event loop with 1000+ statSync calls
+    const statResults = await Promise.all(
+      files.map(async (filePath) => {
+        try {
+          const stat = await fsp.stat(filePath)
+          return { filePath, sessionId: path.basename(filePath, '.jsonl'), mtime: stat.mtimeMs }
+        } catch { return null }
+      })
     )
 
-    const sessions: SessionFile[] = entriesList.map((e, i) => {
-      const match = e.match
+    // Build session list without expensive per-file content parsing.
+    // Stats are loaded on demand via GET /sessions/:sessionId/stats.
+    const sessions: SessionFile[] = []
+    for (const entry of statResults) {
+      if (!entry) continue
+      const match = sessionMap.get(entry.sessionId)
       const folder = match ? folderMap.get(match.folderId) : undefined
-      const stats = statsResults[i]
-      return {
-        sessionId: e.sessionId,
+      sessions.push({
+        sessionId: entry.sessionId,
         instanceId: match?.instanceId,
         instanceName: match?.instanceName,
         folderId: match?.folderId,
         folderName: folder?.name,
         folderEmoji: folder?.emoji ?? undefined,
-        mtime: e.mtime,
-        inputTokens: stats.inputTokens,
-        outputTokens: stats.outputTokens,
-        costUsd: stats.costUsd,
-        lineCount: stats.lineCount,
-      }
-    })
+        mtime: entry.mtime,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        lineCount: 0,
+      })
+    }
 
     // Sort by mtime descending (newest first)
     sessions.sort((a, b) => b.mtime - a.mtime)

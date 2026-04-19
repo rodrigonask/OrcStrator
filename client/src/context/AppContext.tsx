@@ -9,6 +9,7 @@ import type {
   ClaudeStreamEvent,
   ClaudeProcessExitEvent,
   VerbosityLevel,
+  SessionCostState,
 } from '@shared/types'
 import { vfxBus } from '../systems/vfx-bus'
 import { InstancesContext } from './InstancesContext'
@@ -55,6 +56,7 @@ interface UISlice {
   showSettings: boolean
   gameActive: boolean
   verbosityOverrides: Record<string, VerbosityLevel>
+  sessionCosts: Record<string, SessionCostState>
 }
 
 export interface StreamingToolCall {
@@ -119,6 +121,9 @@ export type Action =
   | { type: 'CLEAR_CLI_PROMPT'; payload: string }
   | { type: 'SET_GAME_ACTIVE'; payload: boolean }
   | { type: 'SET_INSTANCE_VERBOSITY'; payload: { instanceId: string; level: VerbosityLevel | null } }
+  | { type: 'SET_SESSION_COST'; payload: { instanceId: string; cost: SessionCostState } }
+  | { type: 'ACCUMULATE_TURN_COST'; payload: { instanceId: string; deltaCost: number; deltaInput: number; deltaOutput: number; deltaCacheRead: number; deltaCacheCreation: number } }
+  | { type: 'RESET_SESSION_COST'; payload: string }
 
 // === Initial State ===
 
@@ -163,6 +168,7 @@ const initialUI: UISlice = {
   showSettings: false,
   gameActive: (() => { try { return localStorage.getItem('orcstrator.gameActive') === 'true' } catch { return false } })(),
   verbosityOverrides: {},
+  sessionCosts: {},
 }
 
 // === Reducers ===
@@ -364,6 +370,33 @@ function uiReducer(state: UISlice, action: Action): UISlice {
       }
       return { ...state, verbosityOverrides: { ...state.verbosityOverrides, [instanceId]: level } }
     }
+    case 'SET_SESSION_COST':
+      return { ...state, sessionCosts: { ...state.sessionCosts, [action.payload.instanceId]: action.payload.cost } }
+    case 'ACCUMULATE_TURN_COST': {
+      const { instanceId, deltaCost, deltaInput, deltaOutput, deltaCacheRead, deltaCacheCreation } = action.payload
+      const prev = state.sessionCosts[instanceId] || { totalCost: 0, totalInput: 0, totalOutput: 0, totalCacheRead: 0, totalCacheCreation: 0, turns: 0, recentCacheRate: 0 }
+      const newInput = prev.totalInput + deltaInput
+      const newCacheRead = prev.totalCacheRead + deltaCacheRead
+      return {
+        ...state,
+        sessionCosts: {
+          ...state.sessionCosts,
+          [instanceId]: {
+            totalCost: prev.totalCost + deltaCost,
+            totalInput: newInput,
+            totalOutput: prev.totalOutput + deltaOutput,
+            totalCacheRead: newCacheRead,
+            totalCacheCreation: prev.totalCacheCreation + deltaCacheCreation,
+            turns: prev.turns + 1,
+            recentCacheRate: newInput > 0 ? newCacheRead / newInput : 0,
+          },
+        },
+      }
+    }
+    case 'RESET_SESSION_COST': {
+      const { [action.payload]: _, ...rest } = state.sessionCosts
+      return { ...state, sessionCosts: rest }
+    }
     default:
       return state
   }
@@ -468,6 +501,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'CLOSE_SETTINGS':
       case 'SET_GAME_ACTIVE':
       case 'SET_INSTANCE_VERBOSITY':
+      case 'SET_SESSION_COST':
+      case 'ACCUMULATE_TURN_COST':
+      case 'RESET_SESSION_COST':
         uiDispatch(action)
         break
     }
@@ -517,6 +553,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               const hasMore = (data as any).hasMore ?? false
               dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
             }).catch(() => {})
+            api.getSessionCostSummary(id).then((cost) => {
+              dispatch({ type: 'SET_SESSION_COST', payload: { instanceId: id, cost } })
+            }).catch(() => {})
           }
         }
       })
@@ -557,6 +596,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const updates: Record<string, unknown> = { ctxTokens: event.inputTokens }
             if (event.model) updates.ctxModel = event.model
             dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates } })
+            // Accumulate per-turn cost for live session display
+            if (event.deltaCostUsd !== undefined) {
+              dispatch({
+                type: 'ACCUMULATE_TURN_COST',
+                payload: {
+                  instanceId,
+                  deltaCost: event.deltaCostUsd ?? 0,
+                  deltaInput: event.deltaInputTokens ?? 0,
+                  deltaOutput: event.deltaOutputTokens ?? 0,
+                  deltaCacheRead: event.deltaCacheReadTokens ?? 0,
+                  deltaCacheCreation: event.deltaCacheCreationTokens ?? 0,
+                },
+              })
+            }
           }
         }
       })
@@ -724,6 +777,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const hasMore = (data as any).hasMore ?? false
         dispatch({ type: 'SET_MESSAGES', payload: { instanceId: urlId, messages, hasMore } })
       }).catch(() => {})
+      // Hydrate session cost on URL restore (selectInstance() does this, but URL restore bypasses it)
+      api.getSessionCostSummary(urlId).then((cost) => {
+        dispatch({ type: 'SET_SESSION_COST', payload: { instanceId: urlId, cost } })
+      }).catch(() => {})
     }
   }, [instState.instances]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -802,6 +859,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
         }).catch((err) => console.error('Failed to fetch history:', err))
       }
+      // Hydrate session cost from DB (restores counter after page reload / instance switch)
+      api.getSessionCostSummary(id).then((cost) => {
+        dispatch({ type: 'SET_SESSION_COST', payload: { instanceId: id, cost } })
+      }).catch(() => {})
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -882,6 +943,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       settings: instState.settings,
       gameActive: uiState.gameActive,
       verbosityOverrides: uiState.verbosityOverrides,
+      sessionCosts: uiState.sessionCosts,
     }),
     [uiState, instState.settings]
   )

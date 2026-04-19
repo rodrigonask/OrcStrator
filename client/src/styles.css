@@ -1655,6 +1655,29 @@ body {
   padding: 0 8px;
 }
 
+.header-stats {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.header-stat {
+  padding: 2px 6px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.header-stat-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
 /* ── Quick command menu (</>  button) ── */
 .cmd-menu-wrap {
   position: relative;
@@ -8141,6 +8164,24 @@ body {
   flex-shrink: 0;
 }
 .usage-pct { color: var(--text-tertiary); }
+
+/* Folder Cost Tree */
+.usage-folder-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.usage-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+.usage-folder-row:hover {
+  background: var(--bg-tertiary);
+}
 
 /* Pipeline Heatmap */
 .usage-heatmap {

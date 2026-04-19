@@ -24,6 +24,7 @@ import type {
   UsageAnomaly,
   UsageEfficiencyDay,
   SessionFile,
+  SessionCostState,
 } from '@shared/types'
 
 const BASE = import.meta.env.VITE_API_URL || ''
@@ -263,6 +264,17 @@ export const rest = {
     get<UsageAnomaly[]>(`/api/usage/anomalies?days=${days}`),
   getUsageEfficiency: (days = 14) =>
     get<UsageEfficiencyDay[]>(`/api/usage/efficiency?days=${days}`),
+
+  // Per-turn cost tracking
+  getSessionCostSummary: (instanceId: string) =>
+    get<SessionCostState>(`/api/usage/session-summary/${instanceId}`),
+  getUsageByFolder: (days = 14) =>
+    get<Array<{
+      folderId: string; folderName: string; folderPath: string; emoji: string | null;
+      totalCostUsd: number; totalInputTokens: number; totalOutputTokens: number;
+      totalCacheRead: number; totalCacheCreation: number;
+      turnCount: number; sessionCount: number; cacheHitRatio: number;
+    }>>(`/api/usage/by-folder?days=${days}`),
 
   // Sessions
   getSessions: () => get<{ sessions: SessionFile[] }>('/api/sessions'),

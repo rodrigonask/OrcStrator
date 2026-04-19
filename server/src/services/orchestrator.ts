@@ -7,6 +7,7 @@ import { markScheduleRunning, appendExecution, updateScheduleAfterRun, safeJsonP
 import { emitOrcLog, getRoleModels, getRoleTools, getRoleEffort, getPermissionFlag, serverStartTime } from './orchestrator-utils.js'
 import { getMcpConfigPath, AGENTS_DIR } from './mcp-config.js'
 import { cloudSync } from './cloud-sync.js'
+import { resolveModelId } from '@orcstrator/shared'
 import type { PipelineTask, ScheduleExecution, OrcLogEntry } from '@orcstrator/shared'
 import fs from 'fs'
 import path from 'path'
@@ -804,7 +805,7 @@ class OrchestratorService {
     const roleModels = getRoleModels()
     const model = retryCount > 0 ? 'opus' : roleModels[role]
     const hasModelFlag = globalFlags.some(f => f.startsWith('--model'))
-    if (!hasModelFlag && model) globalFlags.push(`--model=${model}`)
+    if (!hasModelFlag && model) globalFlags.push(`--model=${resolveModelId(model)}`)
 
     const roleTools = getRoleTools()
     const tools = roleTools[role]
@@ -840,7 +841,7 @@ class OrchestratorService {
       const fallbackRow = db.prepare("SELECT value FROM settings WHERE key = 'fallbackModel'").get() as { value: string } | undefined
       if (fallbackRow) {
         const fm = JSON.parse(fallbackRow.value) as string
-        if (fm && fm !== 'default' && !globalFlags.some(f => f.startsWith('--fallback-model'))) globalFlags.push(`--fallback-model=${fm}`)
+        if (fm && fm !== 'default' && !globalFlags.some(f => f.startsWith('--fallback-model'))) globalFlags.push(`--fallback-model=${resolveModelId(fm)}`)
       }
     } catch { /* ignore */ }
 

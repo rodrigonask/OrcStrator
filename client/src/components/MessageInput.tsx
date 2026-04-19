@@ -13,6 +13,7 @@ import type { ChatMessage } from '@shared/types'
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
 ]
 
@@ -21,11 +22,13 @@ const EFFORT_LEVELS = [
   { id: 'medium', label: 'Medium' },
   { id: 'high', label: 'High' },
   { id: 'max', label: 'Max' },
+  { id: 'xhigh', label: 'xHigh' },
 ]
 
 const AGENT_MODEL_TO_ID: Record<string, string> = {
   sonnet: 'claude-sonnet-4-6',
   opus: 'claude-opus-4-6',
+  'opus-4-7': 'claude-opus-4-7',
   haiku: 'claude-haiku-4-5-20251001',
   default: 'claude-sonnet-4-6',
 }

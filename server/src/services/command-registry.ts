@@ -169,18 +169,21 @@ export function isValidCommand(name: string): boolean {
 
 export async function dispatchCommand(
   command: string,
-  ctx: CommandContext
+  ctx: CommandContext,
+  strategyOverride?: CommandStrategy
 ): Promise<CommandResponse> {
   const parts = command.trim().split(/\s+/)
   const name = parts[0].toLowerCase()
   const args = parts.slice(1).join(' ')
   const entry = lookupCommand(name)
 
+  const fullCtx: CommandContext = { ...ctx, args }
+
+  // If no registered entry, use the strategy override (fallback to skill pass-through)
   if (!entry) {
+    if (strategyOverride === 'skill') return handleSkill(command, fullCtx)
     return { ok: false, result: `Unknown command: ${name}. Type /help to see available commands.` }
   }
-
-  const fullCtx: CommandContext = { ...ctx, args }
 
   switch (entry.strategy) {
     case 'skill':
@@ -362,19 +365,20 @@ async function handleClientOnly(entry: CommandEntry, ctx: CommandContext): Promi
       const modelMap: Record<string, string> = {
         sonnet: 'claude-sonnet-4-6', opus: 'claude-opus-4-6', haiku: 'claude-haiku-4-5-20251001',
         'sonnet-4-6': 'claude-sonnet-4-6', 'opus-4-6': 'claude-opus-4-6',
+        'opus-4-7': 'claude-opus-4-7', 'opus4.7': 'claude-opus-4-7',
       }
       const requested = ctx.args.trim().toLowerCase()
       if (!requested) {
-        return { ok: true, result: 'Available models: sonnet, opus, haiku', action: 'show-models' }
+        return { ok: true, result: 'Available models: sonnet, opus, opus-4-7, haiku', action: 'show-models' }
       }
       const modelId = modelMap[requested] || (requested.startsWith('claude-') ? requested : null)
       if (!modelId) {
-        return { ok: false, result: `Unknown model: ${requested}. Available: sonnet, opus, haiku` }
+        return { ok: false, result: `Unknown model: ${requested}. Available: sonnet, opus, opus-4-7, haiku` }
       }
       return { ok: true, result: `Model set to ${requested}.`, action: 'set-model', value: modelId }
     }
     case '/effort': {
-      const valid = ['low', 'medium', 'high', 'max']
+      const valid = ['low', 'medium', 'high', 'max', 'xhigh']
       const level = ctx.args.trim().toLowerCase()
       if (!level || !valid.includes(level)) {
         return { ok: true, result: `Effort levels: ${valid.join(', ')}. Current effort shown in footer.`, action: 'show-effort' }

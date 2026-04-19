@@ -7,6 +7,7 @@ import { preprocessImages, detectMediaType } from '../services/image-processor.j
 import { getLastAssistantMessage } from '../services/session-sync.js'
 import { orchestrator } from '../services/orchestrator.js'
 import { dispatchCommand, isValidCommand, getAllCommands } from '../services/command-registry.js'
+import { resolveModelId } from '@orcstrator/shared'
 import crypto from 'crypto'
 
 export default async function instanceRoutes(app: FastifyInstance): Promise<void> {
@@ -123,7 +124,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const allFlags = [...globalFlags, ...(body.flags || [])]
     const hasModelFlag = allFlags.some(f => f.startsWith('--model'))
     if (defaultModel && defaultModel !== 'default' && !hasModelFlag) {
-      globalFlags.push(`--model=${defaultModel}`)
+      globalFlags.push(`--model=${resolveModelId(defaultModel)}`)
     }
 
     // Load agent prompt if assigned
@@ -189,21 +190,17 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const { command: rawCommand } = request.body as { command: string }
     if (!rawCommand) { reply.code(400); return { error: 'Missing command' } }
 
-    const baseCmd = rawCommand.split(/\s/)[0].toLowerCase()
-    if (!isValidCommand(baseCmd)) {
-      reply.code(400)
-      return { error: `Unknown command: ${baseCmd}. Type /help to see available commands.` }
-    }
-
     const instance = db.prepare('SELECT session_id, cwd FROM instances WHERE id = ?').get(id) as { session_id: string | null; cwd: string } | undefined
     if (!instance) { reply.code(404); return { error: 'Not found' } }
 
-    return dispatchCommand(rawCommand, {
-      instanceId: id,
-      sessionId: instance.session_id,
-      cwd: instance.cwd,
-      args: '',
-    })
+    const ctx = { instanceId: id, sessionId: instance.session_id, cwd: instance.cwd, args: '' }
+
+    // Known command → dispatch normally; unknown → fall back to skill pass-through
+    const baseCmd = rawCommand.split(/\s/)[0].toLowerCase()
+    if (isValidCommand(baseCmd)) {
+      return dispatchCommand(rawCommand, ctx)
+    }
+    return dispatchCommand(rawCommand, ctx, 'skill')
   })
 
   // List all available commands (for client command palette)

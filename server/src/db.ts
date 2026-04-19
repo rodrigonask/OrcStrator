@@ -529,12 +529,44 @@ function migration022(): void {
   setSchemaVersion(22)
 }
 
+function migration023(): void {
+  // Per-turn cost tracking: one row per assistant response (delta from cumulative CLI totals)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS turn_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      instance_id TEXT NOT NULL,
+      folder_id TEXT NOT NULL,
+      session_id TEXT,
+      message_id TEXT,
+      task_id TEXT,
+      turn_index INTEGER DEFAULT 0,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cache_creation_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER,
+      model TEXT,
+      cumulative_input INTEGER DEFAULT 0,
+      cumulative_output INTEGER DEFAULT 0,
+      cumulative_cost REAL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_turn_costs_instance ON turn_costs(instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_turn_costs_folder ON turn_costs(folder_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_turn_costs_session ON turn_costs(session_id);
+    CREATE INDEX IF NOT EXISTS idx_turn_costs_message ON turn_costs(message_id);
+  `)
+  setSchemaVersion(23)
+}
+
 const migrations = [
   migration001, migration002, migration003, migration004, migration005,
   migration006, migration007, migration008, migration009, migration010,
   migration011, migration012, migration013, migration014, migration015,
   migration016, migration017, migration018, migration019, migration020,
-  migration021, migration022,
+  migration021, migration022, migration023,
 ]
 
 function runMigrations(): void {

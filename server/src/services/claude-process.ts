@@ -195,6 +195,10 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // Stateful stream parser for this process (tracks index→toolId mapping)
   const parseLine = createStreamParser(instanceId)
 
+  // Look up folder_id once for turn_costs denormalization
+  const folderRow = db.prepare('SELECT folder_id FROM instances WHERE id = ?').get(instanceId) as { folder_id: string } | undefined
+  const folderId = folderRow?.folder_id || ''
+
   // Track session ID from system event
   let resolvedSessionId = sessionId || ''
   let lastCostUsd: number | undefined
@@ -204,6 +208,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   let lastCacheRead: number | undefined
   let lastResultText: string | undefined
   let sawAssistantText = false
+  let lastAssistantMessageId: string | undefined
 
   // Batching: accumulate events in 32ms windows
   let eventBatch: ClaudeStreamEvent[] = []
@@ -254,6 +259,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
           if (raw.type === 'assistant' && raw.message?.content) {
             handledAsAssistant = true
             const msgId = crypto.randomUUID()
+            lastAssistantMessageId = msgId
             const content = raw.message.content.map((b: Record<string, unknown>) => {
               if (b.type === 'text') return { type: 'text', text: b.text }
               if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
@@ -325,6 +331,77 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
                 instanceId
               )
             } catch { /* non-critical — exit handler will retry */ }
+
+            // --- Per-turn cost tracking ---
+            const turnCost = event.costUsd ?? 0
+            const turnInput = event.inputTokens ?? 0
+            const turnOutput = event.outputTokens ?? 0
+            const turnCacheCreation = event.cacheCreationTokens ?? 0
+            const turnCacheRead = event.cacheReadTokens ?? 0
+
+            // Look up previous cumulative values to compute session running totals
+            let prevCumCost = 0, prevCumInput = 0, prevCumOutput = 0, prevTurnIndex = -1
+            const sid = resolvedSessionId || null
+            if (sid) {
+              try {
+                const prev = db.prepare(
+                  'SELECT cumulative_cost, cumulative_input, cumulative_output, turn_index FROM turn_costs WHERE session_id = ? AND instance_id = ? ORDER BY turn_index DESC LIMIT 1'
+                ).get(sid, instanceId) as { cumulative_cost: number; cumulative_input: number; cumulative_output: number; turn_index: number } | undefined
+                if (prev) {
+                  prevCumCost = prev.cumulative_cost
+                  prevCumInput = prev.cumulative_input
+                  prevCumOutput = prev.cumulative_output
+                  prevTurnIndex = prev.turn_index
+                }
+              } catch { /* non-critical */ }
+            }
+
+            const turnIndex = prevTurnIndex + 1
+            const cumCost = prevCumCost + turnCost
+            const cumInput = prevCumInput + turnInput
+            const cumOutput = prevCumOutput + turnOutput
+
+            // Get current task ID if any
+            let currentTaskId: string | null = null
+            try {
+              const taskRow = db.prepare('SELECT assigned_task_ids FROM instances WHERE id = ?').get(instanceId) as { assigned_task_ids: string | null } | undefined
+              if (taskRow?.assigned_task_ids) {
+                const ids = JSON.parse(taskRow.assigned_task_ids)
+                if (Array.isArray(ids) && ids.length > 0) currentTaskId = ids[0]
+              }
+            } catch { /* non-critical */ }
+
+            try {
+              db.prepare(
+                `INSERT INTO turn_costs (instance_id, folder_id, session_id, message_id, task_id, turn_index,
+                   input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost_usd,
+                   duration_ms, model, cumulative_input, cumulative_output, cumulative_cost, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ).run(
+                instanceId, folderId, sid, lastAssistantMessageId || null, currentTaskId,
+                turnIndex, turnInput, turnOutput, turnCacheCreation, turnCacheRead, turnCost,
+                event.durationMs ?? null, event.model ?? null, cumInput, cumOutput, cumCost, Date.now()
+              )
+            } catch (err) {
+              console.error(`[claude-process] Failed to insert turn_costs for ${instanceId}:`, err)
+            }
+
+            // Update the message row with per-turn cost data
+            if (lastAssistantMessageId) {
+              try {
+                db.prepare('UPDATE messages SET input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?')
+                  .run(turnInput, turnOutput, turnCost, lastAssistantMessageId)
+              } catch { /* non-critical */ }
+            }
+
+            // Attach delta fields to the event for real-time client display
+            event.deltaCostUsd = turnCost
+            event.deltaInputTokens = turnInput
+            event.deltaOutputTokens = turnOutput
+            event.deltaCacheCreationTokens = turnCacheCreation
+            event.deltaCacheReadTokens = turnCacheRead
+            event.sessionTotalCostUsd = cumCost
+            event.turnMessageId = lastAssistantMessageId
 
             // Turn is done — close stdin so the CLI exits cleanly
             closeStdin()

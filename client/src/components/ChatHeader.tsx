@@ -11,6 +11,18 @@ import { useVerbosity } from '../hooks/useVerbosity'
 import { api } from '../api'
 import { useConfirm } from './ConfirmModal'
 
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+function cacheColor(ratio: number): string {
+  if (ratio >= 0.7) return '#22c55e'
+  if (ratio >= 0.4) return '#eab308'
+  return '#ef4444'
+}
+
 const QUICK_COMMANDS = [
   { cmd: '/compact', label: 'Compact', desc: 'Compress conversation context' },
   { cmd: '/clear', label: 'Clear', desc: 'Clear conversation history' },
@@ -19,7 +31,7 @@ const QUICK_COMMANDS = [
 ] as const
 
 export function ChatHeader() {
-  const { selectedInstanceId: instanceId, terminalPanelOpen, settings } = useUI()
+  const { selectedInstanceId: instanceId, terminalPanelOpen, settings, sessionCosts } = useUI()
   const { messages: allMessages } = useMessages()
   const { instances, folders } = useInstances()
   const { dispatch } = useAppDispatch()
@@ -29,20 +41,7 @@ export function ChatHeader() {
   const agentNames = useAgentNames()
   const { confirm } = useConfirm()
   const isOrchestratorLocked = instance?.orchestratorManaged && folder?.orchestratorActive
-
-  const totalTokens = useMemo(() => {
-    let input = 0
-    let output = 0
-    for (const msg of messages) {
-      for (const block of msg.content) {
-        if (block.type === 'cost') {
-          input += block.inputTokens
-          output += block.outputTokens
-        }
-      }
-    }
-    return { input, output }
-  }, [messages])
+  const sessionCost = instanceId ? sessionCosts[instanceId] : undefined
 
   const contextWindow = useMemo(() => {
     const model = instance?.ctxModel ?? ''
@@ -226,12 +225,6 @@ export function ChatHeader() {
         </span>
       </div>
       <div className="chat-header-right" ref={burgerRef}>
-        <span className="chat-token-count" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
-          {totalTokens.input.toLocaleString()}in / {totalTokens.output.toLocaleString()}out
-        </span>
-        <span className="chat-context-label" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: contextWindow.color }}>
-          CTX {contextWindow.label}/{contextWindow.maxLabel}
-        </span>
         {instance.state === 'running' && (
           <button className="chat-header-btn" onClick={handlePause} title="Pause">
             ⏸
@@ -242,6 +235,42 @@ export function ChatHeader() {
             ▶
           </button>
         )}
+        <div className="header-stats">
+          {sessionCost && sessionCost.turns > 0 ? (() => {
+            const recentPct = Math.round((sessionCost.recentCacheRate ?? 0) * 100)
+            return (
+              <>
+                <span
+                  className="header-stat"
+                  title={`Spent on this chat\n${fmtTokens(sessionCost.totalInput)} in / ${fmtTokens(sessionCost.totalOutput)} out\n${sessionCost.turns} turns`}
+                >
+                  <span style={{ color: '#22c55e' }}>${sessionCost.totalCost.toFixed(2)}</span>
+                </span>
+                <span className="header-stat-divider" />
+                <span
+                  className="header-stat"
+                  title="Cache hit in the last 10 messages"
+                >
+                  <span style={{ color: cacheColor(sessionCost.recentCacheRate ?? 0) }}>{recentPct}%</span>
+                </span>
+              </>
+            )
+          })() : (
+            <>
+              <span className="header-stat" style={{ opacity: 0.4 }}>$0</span>
+              <span className="header-stat-divider" />
+              <span className="header-stat" style={{ opacity: 0.4 }}>—</span>
+            </>
+          )}
+          <span className="header-stat-divider" />
+          <span
+            className="header-stat"
+            title="Current context window usage"
+            style={{ color: contextWindow.color }}
+          >
+            {contextWindow.label}/{contextWindow.maxLabel}
+          </span>
+        </div>
         <button
           className={`chat-header-btn chat-burger-btn${burgerOpen ? ' active' : ''}`}
           onClick={handleBurgerOpen}
