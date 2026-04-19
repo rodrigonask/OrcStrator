@@ -1,6 +1,6 @@
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS, DEFAULT_ROLE_EFFORT } from '@orcstrator/shared'
+import { DEFAULT_ROLE_MODELS, DEFAULT_ROLE_TOOLS, DEFAULT_ROLE_EFFORT, resolveModelId } from '@orcstrator/shared'
 import type { OrcLogEntry } from '@orcstrator/shared'
 
 // ── Orchestrator Event Ring Buffer ──

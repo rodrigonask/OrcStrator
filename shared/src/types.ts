@@ -84,7 +84,7 @@ export type ClaudeStreamEvent =
   | { type: 'tool-start'; instanceId: string; toolId: string; toolName: string }
   | { type: 'tool-input-delta'; instanceId: string; toolId: string; input: string }
   | { type: 'tool-complete'; instanceId: string; toolId: string; output: string; isError?: boolean }
-  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number; resultText?: string; model?: string }
+  | { type: 'result'; instanceId: string; sessionId?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; cacheCreationTokens?: number; cacheReadTokens?: number; resultText?: string; model?: string; deltaCostUsd?: number; deltaInputTokens?: number; deltaOutputTokens?: number; deltaCacheCreationTokens?: number; deltaCacheReadTokens?: number; sessionTotalCostUsd?: number; turnMessageId?: string }
   | { type: 'error'; instanceId: string; message: string }
   | { type: 'system'; instanceId: string; sessionId?: string }
   | { type: 'raw-line'; instanceId: string; line: string; isStderr?: boolean }
@@ -98,6 +98,18 @@ export interface ClaudeProcessExitEvent {
   costUsd?: number
   inputTokens?: number
   outputTokens?: number
+}
+
+// === SESSION COST STATE ===
+
+export interface SessionCostState {
+  totalCost: number
+  totalInput: number
+  totalOutput: number
+  totalCacheRead: number
+  totalCacheCreation: number
+  turns: number
+  recentCacheRate: number
 }
 
 // === TOKEN SAVINGS ===
@@ -330,8 +342,8 @@ export interface McpServerInfo {
 // === SETTINGS ===
 
 export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'dontAsk' | 'auto' | 'bypassPermissions'
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
-export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'default'
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | 'xhigh'
+export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'opus-4-7' | 'default'
 export type AgentRole = 'planner' | 'builder' | 'tester' | 'promoter' | 'scheduler'
 
 export interface AppSettings {

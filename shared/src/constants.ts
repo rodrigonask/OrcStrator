@@ -160,6 +160,19 @@ export const AVAILABLE_TOOLS = [
   'Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebFetch', 'WebSearch', 'Agent',
 ] as const
 
+/** Map short AgentModel names to full Claude CLI model IDs */
+export const MODEL_ID_MAP: Record<string, string> = {
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-6',
+  'opus-4-7': 'claude-opus-4-7',
+}
+
+/** Resolve an AgentModel short name to a CLI --model value */
+export function resolveModelId(model: string): string {
+  return MODEL_ID_MAP[model] ?? model
+}
+
 export const DEFAULT_ROLE_MODELS: Record<string, string> = {
   planner: 'sonnet',
   builder: 'opus',

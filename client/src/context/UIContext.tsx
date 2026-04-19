@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { AppSettings, UsageData, VerbosityLevel } from '@shared/types'
+import type { AppSettings, UsageData, VerbosityLevel, SessionCostState } from '@shared/types'
 
 export interface UIContextValue {
   view: 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage' | 'sessions'
@@ -16,6 +16,7 @@ export interface UIContextValue {
   settings: AppSettings
   gameActive: boolean
   verbosityOverrides: Record<string, VerbosityLevel>
+  sessionCosts: Record<string, SessionCostState>
 }
 
 const defaultSettings: AppSettings = {
@@ -44,6 +45,7 @@ const defaultValue: UIContextValue = {
   settings: defaultSettings,
   gameActive: false,
   verbosityOverrides: {},
+  sessionCosts: {},
 }
 
 export const UIContext = createContext<UIContextValue>(defaultValue)
