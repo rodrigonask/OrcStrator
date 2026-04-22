@@ -1215,22 +1215,16 @@ function Run-Setup {
     }
 
     # ── Step 7: Build shared ───────────────────────────────────
-    Set-StepActive 7 "Preparing app..."
-    $sharedDist = Join-Path $RepoRoot "shared\dist\index.js"
-    if (Test-Path $sharedDist) {
-        Log "shared/dist already built"
-        Set-StepOk 7 "App prepared"
-    } else {
-        Set-StepActive 7 "Building app..."
-        Log "Building shared types..."
-        $r = Run-Cmd $npm "run build -w shared" -WorkDir $RepoRoot -TimeoutSec 60
-        if ($r.ExitCode -ne 0) {
-            Set-StepFail 7 "Build failed"
-            Show-Error "Build Failed" "Could not prepare the app.`nPlease close and try again."
-            return
-        }
-        Set-StepOk 7 "App prepared"
+    # Always rebuild so a git pull that touches shared/src can't leave shared/dist stale.
+    Set-StepActive 7 "Building app..."
+    Log "Building shared types..."
+    $r = Run-Cmd $npm "run build -w shared" -WorkDir $RepoRoot -TimeoutSec 60
+    if ($r.ExitCode -ne 0) {
+        Set-StepFail 7 "Build failed"
+        Show-Error "Build Failed" "Could not prepare the app.`nPlease close and try again."
+        return
     }
+    Set-StepOk 7 "App prepared"
 
     # ══════════════════════════════════════════════════════════
     #  LAUNCH
