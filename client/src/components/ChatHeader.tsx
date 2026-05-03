@@ -45,8 +45,9 @@ export function ChatHeader() {
 
   const contextWindow = useMemo(() => {
     const model = instance?.ctxModel ?? ''
-    const MAX = model.includes('opus-4') ? 1_000_000 : 200_000
-    const maxLabel = MAX === 1_000_000 ? '1M' : '200K'
+    const isHaiku = model.includes('haiku')
+    const MAX = isHaiku ? 200_000 : 1_000_000
+    const maxLabel = isHaiku ? '200K' : '1M'
     const used = instance?.ctxTokens ?? 0
     if (used > 0) {
       const pct = Math.min((used / MAX) * 100, 100)
@@ -132,6 +133,8 @@ export function ChatHeader() {
 
     // Check if this is a CLI slash command (starts with /)
     if (cmd.startsWith('/')) {
+      const cmdName = cmd.split(/\s+/)[0]
+      dispatch({ type: 'SET_PENDING_COMMAND', payload: { instanceId, command: cmdName } })
       // Send to CLI via command dispatcher
       api.sendCommand(instanceId, cmd).then(res => {
         const msg: ChatMessage = {
@@ -155,6 +158,8 @@ export function ChatHeader() {
           createdAt: Date.now(),
         }
         dispatch({ type: 'ADD_MESSAGE', payload: msg })
+      }).finally(() => {
+        dispatch({ type: 'CLEAR_PENDING_COMMAND', payload: instanceId })
       })
       return
     }

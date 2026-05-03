@@ -361,6 +361,7 @@ export interface AppSettings {
   orchestratorModels?: Record<AgentRole, AgentModel>
   orchestratorTools?: Record<AgentRole, string[]>
   permissionMode?: PermissionMode
+  permissionCycleModes?: PermissionMode[]
   effortLevel?: EffortLevel
   maxBudgetUsd?: number
   fallbackModel?: AgentModel

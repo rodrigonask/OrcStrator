@@ -35,13 +35,30 @@ async function get<T>(path: string): Promise<T> {
   return res.json()
 }
 
+async function readErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.clone().json() as { message?: string; error?: string }
+    return body.message || body.error || fallback
+  } catch {
+    try {
+      const text = await res.clone().text()
+      return text.trim() || fallback
+    } catch {
+      return fallback
+    }
+  }
+}
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    const msg = await readErrorMessage(res, `${res.status} ${res.statusText}`)
+    throw new Error(msg)
+  }
   return res.json()
 }
 
@@ -51,13 +68,19 @@ async function put<T>(path: string, body?: unknown): Promise<T> {
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    const msg = await readErrorMessage(res, `${res.status} ${res.statusText}`)
+    throw new Error(msg)
+  }
   return res.json()
 }
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    const msg = await readErrorMessage(res, `${res.status} ${res.statusText}`)
+    throw new Error(msg)
+  }
   return res.json()
 }
 
@@ -96,6 +119,10 @@ export const rest = {
     post<{ ok: boolean; result: string; action?: string; value?: string; url?: string }>(`/api/instances/${instanceId}/command`, { command }),
   writeStdin: (instanceId: string, data: string) =>
     post<{ ok: boolean }>(`/api/instances/${instanceId}/stdin`, { data }),
+  sanitizeSurrogates: (instanceId: string) =>
+    post<{ ok: boolean; error?: string; removedChars?: number; backupPath?: string; affectedLines?: number }>(
+      `/api/instances/${instanceId}/sanitize-surrogates`
+    ),
 
   // History
   getHistory: (instanceId: string, params?: { before?: number; limit?: number }) => {

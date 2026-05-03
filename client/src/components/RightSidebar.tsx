@@ -5,6 +5,7 @@ import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useAgentNames } from '../hooks/useAgentNames'
 import { OrcFeed } from './pipeline/OrcFeed'
+import { PlanLimitsWidget } from './PlanLimitsWidget'
 import { api } from '../api'
 import { fmtUsd, fmtTime, fmtOrcLog } from '../utils/format'
 import { ORC_LOG_FILTER_TYPES } from '@shared/constants'
@@ -230,6 +231,9 @@ export function RightSidebar() {
               <span className="rs-od-compact-saved">{fmtUsd(savings.savedUsd)} saved</span>
             )}
           </div>
+
+          {/* ── Plan limits ── */}
+          <PlanLimitsWidget />
 
           {/* ── Activity Feed ── */}
           {activity.length > 0 && (

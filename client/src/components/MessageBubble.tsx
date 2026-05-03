@@ -5,6 +5,8 @@ import type { ChatMessage, MessageContentBlock, VerbosityLevel } from '@shared/t
 import { ToolCallBlock } from './ToolCallBlock'
 import { getOrcQuip } from '../utils/orcQuips'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { useUI } from '../context/UIContext'
+import { api } from '../api'
 
 // Configure marked once at module level
 marked.setOptions({ breaks: true })
@@ -144,6 +146,63 @@ export const MessageBubble = memo(function MessageBubble({ message, toolResults,
   )
 })
 
+// Detects "API Error: 400 ... invalid_request_error ... surrogate ..." messages
+// emitted by Claude CLI when the session JSONL contains an unpaired UTF-16 surrogate.
+function isSurrogateApiError(text: string): boolean {
+  return /invalid_request_error/.test(text) && /surrogate/.test(text)
+}
+
+function SurrogateRecoveryAction() {
+  const { selectedInstanceId } = useUI()
+  const [state, setState] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
+  const [detail, setDetail] = useState<string>('')
+
+  if (!selectedInstanceId) return null
+
+  const handleClick = async () => {
+    setState('running')
+    setDetail('')
+    try {
+      const res = await api.sanitizeSurrogates(selectedInstanceId)
+      if (res.ok) {
+        setState('success')
+        if (res.removedChars === 0) {
+          setDetail('Session file already clean — try sending again.')
+        } else {
+          setDetail(`Removed ${res.removedChars} chars across ${res.affectedLines} line(s). Try sending again.`)
+        }
+      } else {
+        setState('error')
+        setDetail(res.error || 'Unknown error')
+      }
+    } catch (e) {
+      setState('error')
+      setDetail((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="surrogate-recovery">
+      <div className="surrogate-recovery-explainer">
+        Session file contains an unpaired character (likely a truncated emoji paste). The API rejects every retry until it's removed.
+      </div>
+      <button
+        className="surrogate-recovery-button"
+        onClick={handleClick}
+        disabled={state === 'running' || state === 'success'}
+      >
+        {state === 'idle' && 'Sanitize session file'}
+        {state === 'running' && 'Sanitizing…'}
+        {state === 'success' && '✓ Sanitized'}
+        {state === 'error' && 'Retry sanitize'}
+      </button>
+      {detail && (
+        <div className={`surrogate-recovery-detail ${state}`}>{detail}</div>
+      )}
+    </div>
+  )
+}
+
 function ContentBlock({
   block,
   toolResults,
@@ -160,6 +219,14 @@ function ContentBlock({
   if (block.type === 'text') {
     if (!block.text.trim()) return null
     const collapseAt = verbosity >= 5 ? Infinity : verbosity >= 4 ? 1200 : 600
+    if (isSurrogateApiError(block.text)) {
+      return (
+        <>
+          <TextContent text={block.text} collapseChars={collapseAt} escapeHtml={isHuman} />
+          <SurrogateRecoveryAction />
+        </>
+      )
+    }
     return <TextContent text={block.text} collapseChars={collapseAt} escapeHtml={isHuman} />
   }
 

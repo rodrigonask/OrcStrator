@@ -39,6 +39,7 @@ interface MessagesSlice {
   unreadCounts: Record<string, number>
   rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
   cliPrompts: Record<string, CliPromptData>
+  pendingCommand: Record<string, string>
 }
 
 interface UISlice {
@@ -119,6 +120,8 @@ export type Action =
   | { type: 'APPEND_RAW_LINE'; payload: { instanceId: string; line: string; isStderr?: boolean } }
   | { type: 'SET_CLI_PROMPT'; payload: CliPromptData }
   | { type: 'CLEAR_CLI_PROMPT'; payload: string }
+  | { type: 'SET_PENDING_COMMAND'; payload: { instanceId: string; command: string } }
+  | { type: 'CLEAR_PENDING_COMMAND'; payload: string }
   | { type: 'SET_GAME_ACTIVE'; payload: boolean }
   | { type: 'SET_INSTANCE_VERBOSITY'; payload: { instanceId: string; level: VerbosityLevel | null } }
   | { type: 'SET_SESSION_COST'; payload: { instanceId: string; cost: SessionCostState } }
@@ -151,6 +154,7 @@ const initialMessages: MessagesSlice = {
   unreadCounts: {},
   rawOutput: {},
   cliPrompts: {},
+  pendingCommand: {},
 }
 
 const initialUI: UISlice = {
@@ -312,6 +316,14 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
       const { [action.payload]: _, ...rest } = state.cliPrompts
       return { ...state, cliPrompts: rest }
     }
+    case 'SET_PENDING_COMMAND': {
+      const { instanceId, command } = action.payload
+      return { ...state, pendingCommand: { ...state.pendingCommand, [instanceId]: command } }
+    }
+    case 'CLEAR_PENDING_COMMAND': {
+      const { [action.payload]: _, ...rest } = state.pendingCommand
+      return { ...state, pendingCommand: rest }
+    }
     default:
       return state
   }
@@ -470,6 +482,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'CLEAR_UNREAD':
       case 'SET_CLI_PROMPT':
       case 'CLEAR_CLI_PROMPT':
+      case 'SET_PENDING_COMMAND':
+      case 'CLEAR_PENDING_COMMAND':
         msgDispatch(action)
         break
 
@@ -923,8 +937,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       unreadCounts: msgState.unreadCounts,
       rawOutput: msgState.rawOutput,
       cliPrompts: msgState.cliPrompts,
+      pendingCommand: msgState.pendingCommand,
     }),
-    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts]
+    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts, msgState.pendingCommand]
   )
 
   const uiValue = useMemo(

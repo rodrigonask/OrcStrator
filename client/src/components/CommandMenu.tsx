@@ -84,6 +84,7 @@ export function CommandMenu() {
             createdAt: Date.now(),
           }
           dispatch({ type: 'ADD_MESSAGE', payload: userMsg })
+          dispatch({ type: 'SET_PENDING_COMMAND', payload: { instanceId: selectedInstanceId, command: name } })
           api.sendCommand(selectedInstanceId, name).then(res => {
             const assistantMsg: ChatMessage = {
               id: crypto.randomUUID(),
@@ -116,6 +117,8 @@ export function CommandMenu() {
               id: crypto.randomUUID(), instanceId: selectedInstanceId, role: 'assistant',
               content: [{ type: 'text', text: 'Command failed.' }], createdAt: Date.now(),
             } as ChatMessage })
+          }).finally(() => {
+            dispatch({ type: 'CLEAR_PENDING_COMMAND', payload: selectedInstanceId })
           })
         },
       })

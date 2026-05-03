@@ -65,6 +65,9 @@ export function SettingsPage() {
     }
   )
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.permissionMode ?? 'bypassPermissions')
+  const [permissionCycleModes, setPermissionCycleModes] = useState<PermissionMode[]>(
+    settings.permissionCycleModes ?? ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']
+  )
   const [effortLevel, setEffortLevel] = useState<EffortLevel>(settings.effortLevel ?? 'high')
   const [maxBudgetUsd, setMaxBudgetUsd] = useState(settings.maxBudgetUsd ?? 0)
   const [fallbackModel, setFallbackModel] = useState<AgentModel>(settings.fallbackModel ?? 'default')
@@ -169,6 +172,7 @@ export function SettingsPage() {
       orchestratorModels: roleModels,
       orchestratorTools: roleTools,
       permissionMode,
+      permissionCycleModes,
       effortLevel,
       maxBudgetUsd: maxBudgetUsd > 0 ? maxBudgetUsd : undefined,
       fallbackModel: fallbackModel !== 'default' ? fallbackModel : undefined,
@@ -193,7 +197,7 @@ export function SettingsPage() {
     api.updateSettings(payload)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, roleEffort, permissionMode, effortLevel, maxBudgetUsd, fallbackModel, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingThemes, verbosity, cloudSyncUrl, cloudSyncKey, machineName, customCommands, defaultModel, defaultEffort])
+  }, [dispatch, flags, idleTimeout, notifications, rootFolder, usagePoll, theme, agentNames, allowSpawn, roleMcp, roleModels, roleTools, roleEffort, permissionMode, permissionCycleModes, effortLevel, maxBudgetUsd, fallbackModel, disableCache, maxTokens, maxConcurrent, animationTier, soundTier, namingThemes, verbosity, cloudSyncUrl, cloudSyncKey, machineName, customCommands, defaultModel, defaultEffort])
 
   const handleBack = useCallback(() => {
     dispatch({ type: 'CLOSE_SETTINGS' })
@@ -261,9 +265,12 @@ export function SettingsPage() {
           {tab === 'General' && (
             <div className="settings-grid">
               <div className="settings-col">
-                {/* Permission Mode */}
+                {/* Default Permission Mode */}
                 <div className="settings-card">
-                  {sectionTitle('Permission Mode')}
+                  {sectionTitle('Default Permission Mode')}
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                    Starting mode for new chats. Use Shift+Tab in the chat to cycle per-message.
+                  </p>
                   <select
                     className="form-select"
                     value={permissionMode}
@@ -271,11 +278,34 @@ export function SettingsPage() {
                   >
                     <option value="bypassPermissions">Bypass (auto-approve all)</option>
                     <option value="acceptEdits">Accept Edits (auto-approve file writes)</option>
-                    <option value="auto">Auto (Claude decides)</option>
+                    <option value="auto">Auto Mode (Claude decides w/ safeguards)</option>
                     <option value="plan">Plan (read-only)</option>
-                    <option value="dontAsk">Don't Ask (skip confirmations)</option>
                     <option value="default">Default (ask every action)</option>
                   </select>
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                      Modes included in Shift+Tab cycle:
+                    </div>
+                    {(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as PermissionMode[]).map(mode => (
+                      <label key={mode} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 4, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={permissionCycleModes.includes(mode)}
+                          onChange={e => {
+                            if (e.target.checked) {
+                              setPermissionCycleModes([...permissionCycleModes, mode])
+                            } else {
+                              setPermissionCycleModes(permissionCycleModes.filter(m => m !== mode))
+                            }
+                          }}
+                        />
+                        {mode === 'bypassPermissions' ? 'Bypass' :
+                         mode === 'acceptEdits' ? 'Accept Edits' :
+                         mode === 'plan' ? 'Plan Mode' :
+                         mode === 'auto' ? 'Auto Mode' : 'Default'}
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
                 {/* God Mode Toggle */}
@@ -335,8 +365,8 @@ export function SettingsPage() {
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
-                    <option value="max">Max</option>
                     <option value="xhigh">xHigh (Opus 4.7)</option>
+                    <option value="max">Max</option>
                   </select>
                 </div>
 
@@ -560,9 +590,9 @@ export function SettingsPage() {
                       >
                         <option value="low">Low (fast, cheap)</option>
                         <option value="medium">Medium</option>
-                        <option value="high">High (default)</option>
+                        <option value="high">High</option>
+                        <option value="xhigh">xHigh (default for Opus 4.7)</option>
                         <option value="max">Max (extended thinking)</option>
-                        <option value="xhigh">xHigh (Opus 4.7)</option>
                       </select>
                     </div>
                   ))}

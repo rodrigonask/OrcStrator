@@ -4,7 +4,7 @@ import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { processRegistry } from '../services/process-registry.js'
 import crypto from 'crypto'
-import { spawn } from 'child_process'
+import { spawn, exec } from 'child_process'
 
 function rowToFolder(r: Record<string, unknown>): FolderConfig {
   return {
@@ -136,11 +136,14 @@ export default async function folderRoutes(app: FastifyInstance): Promise<void> 
 
     const folderPath = row.path
     const platform = process.platform
-    const bin = platform === 'win32' ? 'explorer'
-      : platform === 'darwin' ? 'open'
-      : 'xdg-open'
 
-    spawn(bin, [folderPath], { detached: true, stdio: 'ignore', shell: false }).unref()
+    if (platform === 'win32') {
+      const safePath = folderPath.replace(/\\/g, '/').replace(/'/g, "''")
+      exec(`powershell.exe -NoProfile -Command "Invoke-Item '${safePath}'"`)
+    } else {
+      const bin = platform === 'darwin' ? 'open' : 'xdg-open'
+      spawn(bin, [folderPath], { detached: true, stdio: 'ignore', shell: false }).unref()
+    }
 
     return { ok: true, path: folderPath }
   })
