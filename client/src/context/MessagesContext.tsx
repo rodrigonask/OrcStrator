@@ -25,6 +25,7 @@ export interface MessagesContextValue {
   unreadCounts: Record<string, number>
   rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
   cliPrompts: Record<string, CliPromptData>
+  pendingCommand: Record<string, string>
 }
 
 const defaultValue: MessagesContextValue = {
@@ -35,6 +36,7 @@ const defaultValue: MessagesContextValue = {
   unreadCounts: {},
   rawOutput: {},
   cliPrompts: {},
+  pendingCommand: {},
 }
 
 export const MessagesContext = createContext<MessagesContextValue>(defaultValue)

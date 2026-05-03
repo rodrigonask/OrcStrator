@@ -7,6 +7,7 @@ import { preprocessImages, detectMediaType } from '../services/image-processor.j
 import { getLastAssistantMessage } from '../services/session-sync.js'
 import { orchestrator } from '../services/orchestrator.js'
 import { dispatchCommand, isValidCommand, getAllCommands } from '../services/command-registry.js'
+import { sanitizeSurrogates } from '../services/session-sanitizer.js'
 import { resolveModelId } from '@orcstrator/shared'
 import crypto from 'crypto'
 
@@ -116,12 +117,21 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
 
     // Load settings for global flags
     const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
-    const globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
+    let globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
+
+    // If the message-level flags include a permission mode, strip any conflicting
+    // permission flags from globalFlags so the message-level flag wins
+    const bodyFlags = body.flags || []
+    if (bodyFlags.some(f => f.startsWith('--permission-mode'))) {
+      globalFlags = globalFlags.filter(f =>
+        !f.startsWith('--permission-mode') && f !== '--dangerously-skip-permissions'
+      )
+    }
 
     // Load defaultModel setting and inject --model flag if needed
     const defaultModelRow = db.prepare("SELECT value FROM settings WHERE key = 'defaultModel'").get() as { value: string } | undefined
     const defaultModel = defaultModelRow?.value?.replace(/^"|"$/g, '') || 'default'
-    const allFlags = [...globalFlags, ...(body.flags || [])]
+    const allFlags = [...globalFlags, ...bodyFlags]
     const hasModelFlag = allFlags.some(f => f.startsWith('--model'))
     if (defaultModel && defaultModel !== 'default' && !hasModelFlag) {
       globalFlags.push(`--model=${resolveModelId(defaultModel)}`)
@@ -206,6 +216,16 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // List all available commands (for client command palette)
   app.get('/instances/commands', async () => {
     return { commands: getAllCommands() }
+  })
+
+  // Sanitize unpaired surrogate escapes in session JSONL — recovers from
+  // "invalid_request_error: no low surrogate" 400s caused by mid-codepoint paste truncation.
+  app.post('/instances/:id/sanitize-surrogates', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const instance = db.prepare('SELECT session_id, cwd FROM instances WHERE id = ?').get(id) as { session_id: string | null; cwd: string } | undefined
+    if (!instance) { reply.code(404); return { ok: false, error: 'Instance not found' } }
+    if (!instance.session_id) { reply.code(400); return { ok: false, error: 'No session yet — send a message first' } }
+    return sanitizeSurrogates(instance.cwd, instance.session_id)
   })
 
   // Write data to a running process's stdin (for responding to CLI prompts like login/permissions)

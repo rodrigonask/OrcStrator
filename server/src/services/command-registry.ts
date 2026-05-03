@@ -378,7 +378,7 @@ async function handleClientOnly(entry: CommandEntry, ctx: CommandContext): Promi
       return { ok: true, result: `Model set to ${requested}.`, action: 'set-model', value: modelId }
     }
     case '/effort': {
-      const valid = ['low', 'medium', 'high', 'max', 'xhigh']
+      const valid = ['low', 'medium', 'high', 'xhigh', 'max']
       const level = ctx.args.trim().toLowerCase()
       if (!level || !valid.includes(level)) {
         return { ok: true, result: `Effort levels: ${valid.join(', ')}. Current effort shown in footer.`, action: 'show-effort' }

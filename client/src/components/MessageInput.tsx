@@ -8,7 +8,7 @@ import { useFeatureGate } from '../hooks/useFeatureGate'
 import { FeatureLockedModal } from './tour/FeatureLockedModal'
 import { CliPromptBanner } from './CliPromptBanner'
 import { api } from '../api'
-import type { ChatMessage } from '@shared/types'
+import type { ChatMessage, PermissionMode } from '@shared/types'
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -21,8 +21,8 @@ const EFFORT_LEVELS = [
   { id: 'low', label: 'Low' },
   { id: 'medium', label: 'Medium' },
   { id: 'high', label: 'High' },
-  { id: 'max', label: 'Max' },
   { id: 'xhigh', label: 'xHigh' },
+  { id: 'max', label: 'Max' },
 ]
 
 const AGENT_MODEL_TO_ID: Record<string, string> = {
@@ -36,10 +36,21 @@ const AGENT_MODEL_TO_ID: Record<string, string> = {
 const DRAFT_KEY = (id: string) => 'draft-' + id
 const MODEL_KEY = (id: string) => 'model-' + id
 const EFFORT_KEY = (id: string) => 'effort-' + id
+const PERM_KEY = (id: string) => 'perm-' + id
+
+const PERMISSION_CYCLE: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']
+const PERMISSION_LABELS: Record<PermissionMode, string> = {
+  default: 'Default',
+  acceptEdits: 'Accept Edits',
+  plan: 'Plan Mode',
+  auto: 'Auto Mode',
+  bypassPermissions: 'Bypass',
+  dontAsk: "Don't Ask",
+}
 
 export function MessageInput() {
   const { selectedInstanceId: instanceId, settings } = useUI()
-  const { streamingContent } = useMessages()
+  const { streamingContent, pendingCommand } = useMessages()
   const { instances, folders } = useInstances()
   const { dispatch, sendMessage } = useAppDispatch()
   const { addXp } = useGame()
@@ -52,7 +63,11 @@ export function MessageInput() {
     if (!instanceId) return ''
     return sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? ''
   })
-  const [planMode, setPlanMode] = useState(false)
+  const defaultPermMode: PermissionMode = settings.permissionMode ?? 'bypassPermissions'
+  const [permMode, setPermModeRaw] = useState<PermissionMode>(() => {
+    if (!instanceId) return defaultPermMode
+    return (sessionStorage.getItem(PERM_KEY(instanceId)) as PermissionMode) || defaultPermMode
+  })
   const [model, setModelRaw] = useState(() => {
     if (!instanceId) return defaultModelId
     return sessionStorage.getItem(MODEL_KEY(instanceId)) ?? defaultModelId
@@ -61,6 +76,24 @@ export function MessageInput() {
     if (!instanceId) return defaultEffortId
     return sessionStorage.getItem(EFFORT_KEY(instanceId)) ?? defaultEffortId
   })
+
+  const setPermMode = useCallback((v: PermissionMode) => {
+    setPermModeRaw(v)
+    if (instanceId) sessionStorage.setItem(PERM_KEY(instanceId), v)
+  }, [instanceId])
+
+  const cyclePermMode = useCallback(() => {
+    setPermModeRaw(prev => {
+      const enabled = settings.permissionCycleModes && settings.permissionCycleModes.length > 0
+        ? PERMISSION_CYCLE.filter(m => settings.permissionCycleModes!.includes(m))
+        : PERMISSION_CYCLE
+      const cycle = enabled.length > 0 ? enabled : PERMISSION_CYCLE
+      const idx = cycle.indexOf(prev)
+      const next = cycle[(idx + 1) % cycle.length]
+      if (instanceId) sessionStorage.setItem(PERM_KEY(instanceId), next)
+      return next
+    })
+  }, [instanceId, settings.permissionCycleModes])
 
   const setModel = useCallback((v: string) => {
     setModelRaw(v)
@@ -78,6 +111,8 @@ export function MessageInput() {
   const prevInstanceRef = useRef<string | null>(instanceId ?? null)
 
   const isStreaming = instanceId ? !!streamingContent?.[instanceId] : false
+  const runningCommand = instanceId ? pendingCommand?.[instanceId] : undefined
+  const isCommandPending = !!runningCommand
 
   const selectedInstance = instanceId ? instances.find(i => i.id === instanceId) : null
   const selectedFolder = selectedInstance ? folders.find(f => f.id === selectedInstance.folderId) : null
@@ -201,6 +236,8 @@ export function MessageInput() {
         createdAt: Date.now(),
       }
       dispatch({ type: 'ADD_MESSAGE', payload: userMsg })
+      const cmdName = trimmed.split(/\s+/)[0]
+      dispatch({ type: 'SET_PENDING_COMMAND', payload: { instanceId, command: cmdName } })
 
       api.sendCommand(instanceId, trimmed).then(res => {
         const assistantMsg: ChatMessage = {
@@ -217,6 +254,8 @@ export function MessageInput() {
           id: crypto.randomUUID(), instanceId, role: 'assistant',
           content: [{ type: 'text', text: 'Command failed.' }], createdAt: Date.now(),
         }})
+      }).finally(() => {
+        dispatch({ type: 'CLEAR_PENDING_COMMAND', payload: instanceId })
       })
 
       // Clear input
@@ -227,28 +266,41 @@ export function MessageInput() {
       return
     }
 
-    const messageText = planMode ? 'Use plan mode. ' + trimmed : trimmed
-    sendMessage(instanceId, messageText, images.map(i => i.base64), [`--model=${model}`, `--effort=${effort}`])
+    const flags = [`--model=${model}`, `--effort=${effort}`]
+    if (permMode === 'bypassPermissions') flags.push('--dangerously-skip-permissions')
+    else flags.push(`--permission-mode=${permMode}`)
+    sendMessage(instanceId, trimmed, images.map(i => i.base64), flags)
     addXp('message-sent')
     // Clear draft from sessionStorage
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
     sessionStorage.removeItem(DRAFT_KEY(instanceId))
     setText('')
     setImages([])
-    setPlanMode(false)
-  }, [instanceId, text, planMode, model, images, sendMessage, dispatch, processCommandAction, addXp, effort])
+  }, [instanceId, text, permMode, model, images, sendMessage, dispatch, processCommandAction, addXp, effort])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
-    // Shift+Tab toggles plan mode
+    // Shift+Tab cycles permission mode
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault()
-      if (planModeGate.check()) setPlanMode(p => !p)
+      if (planModeGate.check()) cyclePermMode()
     }
-  }, [handleSend])
+    // Ctrl+M cycles model
+    if (e.key === 'm' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      const idx = MODELS.findIndex(m => m.id === model)
+      setModel(MODELS[(idx + 1) % MODELS.length].id)
+    }
+    // Ctrl+E cycles effort
+    if (e.key === 'e' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      const idx = EFFORT_LEVELS.findIndex(l => l.id === effort)
+      setEffort(EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length].id)
+    }
+  }, [handleSend, cyclePermMode, planModeGate, model, effort, setModel, setEffort])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData.items
@@ -341,6 +393,19 @@ export function MessageInput() {
         </div>
       )}
       {instanceId && <CliPromptBanner instanceId={instanceId} />}
+      {isCommandPending && (
+        <div className="pending-command-banner">
+          <span className="pending-command-spinner" aria-hidden="true" />
+          <span className="pending-command-text">Running {runningCommand}… input locked until it finishes.</span>
+          <button
+            className="pending-command-cancel"
+            onClick={() => instanceId && dispatch({ type: 'CLEAR_PENDING_COMMAND', payload: instanceId })}
+            title="Stop waiting — the command keeps running in background. Output will still appear when it finishes."
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       <div
         className="message-input-wrapper"
         onDrop={handleDrop}
@@ -357,7 +422,7 @@ export function MessageInput() {
         <button
           className="message-attach-btn"
           onClick={() => fileInputRef.current?.click()}
-          disabled={!instanceId || isOrchestratorOwned}
+          disabled={!instanceId || isOrchestratorOwned || isCommandPending}
           title="Attach image"
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -370,6 +435,7 @@ export function MessageInput() {
           placeholder={
             isOrchestratorOwned
               ? 'This agent belongs to The Orc now.'
+              : isCommandPending ? `Running ${runningCommand}…`
               : instanceId ? 'Type a message...' : 'Select a chat first'
           }
           value={text}
@@ -377,12 +443,12 @@ export function MessageInput() {
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           rows={1}
-          disabled={!instanceId || isOrchestratorOwned}
+          disabled={!instanceId || isOrchestratorOwned || isCommandPending}
         />
         <button
           className="message-send-btn"
           onClick={handleSend}
-          disabled={!instanceId || isStreaming || isOrchestratorOwned || (!text.trim() && images.length === 0)}
+          disabled={!instanceId || isStreaming || isOrchestratorOwned || isCommandPending || (!text.trim() && images.length === 0)}
           title="Send message"
           style={{ transition: 'box-shadow 0.2s ease' }}
           onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 10px 2px rgba(34, 197, 94, 0.5), 0 0 4px 1px rgba(34, 197, 94, 0.3)' }}
@@ -392,43 +458,50 @@ export function MessageInput() {
         </button>
       </div>
       <div className="message-input-footer">
-        <label className={`plan-mode-toggle ${planMode ? 'active' : ''}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '7px' }}>
-          <input
-            type="checkbox"
-            checked={planMode}
-            onChange={e => { if (planModeGate.check()) setPlanMode(e.target.checked) }}
-          />
-          Plan Mode (Shift+Tab)
-        </label>
-        <div className="model-selector-wrap">
-          <select
-            className="model-selector"
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            title="Select model"
-          >
-            {MODELS.map(m => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
-          <svg className="model-selector-chevron" viewBox="0 0 12 12" fill="none">
-            <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+        <button
+          type="button"
+          className={`perm-mode-toggle perm-${permMode}`}
+          style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}
+          onClick={() => { if (planModeGate.check()) cyclePermMode() }}
+          title={`Permission mode: ${PERMISSION_LABELS[permMode]}\nClick or Shift+Tab to cycle`}
+        >
+          {PERMISSION_LABELS[permMode]} <span style={{ opacity: 0.5 }}>(Shift+Tab)</span>
+        </button>
+        <div className="dropdown-with-hint">
+          <div className="model-selector-wrap">
+            <select
+              className="model-selector"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              title="Select model (Ctrl+M cycles)"
+            >
+              {MODELS.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+            <svg className="model-selector-chevron" viewBox="0 0 12 12" fill="none">
+              <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          <span className="dropdown-shortcut-hint">Ctrl+M</span>
         </div>
-        <div className="model-selector-wrap">
-          <select
-            className="model-selector"
-            value={effort}
-            onChange={e => setEffort(e.target.value)}
-            title="Effort level"
-          >
-            {EFFORT_LEVELS.map(e => (
-              <option key={e.id} value={e.id}>{e.label}</option>
-            ))}
-          </select>
-          <svg className="model-selector-chevron" viewBox="0 0 12 12" fill="none">
-            <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+        <div className="dropdown-with-hint">
+          <div className="model-selector-wrap">
+            <select
+              className="model-selector"
+              value={effort}
+              onChange={e => setEffort(e.target.value)}
+              title="Effort level (Ctrl+E cycles)"
+            >
+              {EFFORT_LEVELS.map(e => (
+                <option key={e.id} value={e.id}>{e.label}</option>
+              ))}
+            </select>
+            <svg className="model-selector-chevron" viewBox="0 0 12 12" fill="none">
+              <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          <span className="dropdown-shortcut-hint">Ctrl+E</span>
         </div>
         <span className="input-hint" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>Enter to send, Shift+Enter for newline</span>
       </div>

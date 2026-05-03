@@ -323,7 +323,10 @@ export const FORCE_UPDATE_INTERVAL_MS = 60_000
 
 export const OAUTH = {
   clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-  redirectUri: 'https://console.anthropic.com/oauth/code/callback',
+  // Anthropic moved the OAuth callback page from console.anthropic.com to platform.claude.com.
+  // The /token endpoint validates redirect_uri exactly against what /authorize used; mismatch
+  // returns 429 ("Rate limited") rather than a clear error, which looks like a real throttle.
+  redirectUri: 'https://platform.claude.com/oauth/code/callback',
   scopes: 'org:create_api_key user:profile user:inference',
   authBaseUrl: 'https://claude.ai/oauth/authorize',
   tokenUrl: 'https://console.anthropic.com/v1/oauth/token',

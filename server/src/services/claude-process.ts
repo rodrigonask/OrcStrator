@@ -132,8 +132,19 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   const safeFlags = filterFlags(flags)
   args.push(...safeFlags)
 
-  // System context — always tell Claude it's running inside OrcStrator
-  const orcstratorContext = 'You are running inside OrcStrator, a multi-instance Claude orchestration platform. The user is chatting with you through its UI, not a terminal.'
+  // AskUserQuestion auto-fails in stream-json mode (no harness to render the prompt),
+  // emitting `is_error:true, content:"Answer questions?"` before the user can see anything.
+  // Disallow the tool entirely so the agent uses plain-text questions instead.
+  args.push('--disallowedTools', 'AskUserQuestion')
+
+  // System context — always tell Claude it's running inside OrcStrator.
+  // Block AskUserQuestion: in stream-json mode the harness can't render it, so claude
+  // auto-fails the tool with `is_error:true, content:"Answer questions?"` before the user
+  // sees anything. Plain-text questions go through normal chat fine.
+  const orcstratorContext = [
+    'You are running inside OrcStrator, a multi-instance Claude orchestration platform. The user is chatting with you through its UI, not a terminal.',
+    'IMPORTANT: Do NOT use the AskUserQuestion tool — it is not supported in this environment and will be auto-dismissed before the user can answer. When you need user input, ask the question in plain text in your response and wait for their next message.',
+  ].join('\n\n')
   const fullSystemPrompt = agentPrompt
     ? `${orcstratorContext}\n\n${agentPrompt}`
     : orcstratorContext
