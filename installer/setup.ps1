@@ -480,6 +480,36 @@ $btnUpdate.Add_Paint({
     }
 })
 
+# Custom paint for two-line text (title + subtitle)
+$script:UpdateTitle = "Checking for updates..."
+$script:UpdateSub = ""
+
+$btnUpdate.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+    $rect = $s.ClientRectangle
+    $pad = 14
+
+    # Title line
+    $titleBrush = New-Object System.Drawing.SolidBrush($s.ForeColor)
+    $g.DrawString($script:UpdateTitle, $FontUpdateTitle, $titleBrush, $pad, 6)
+    $titleBrush.Dispose()
+
+    # Subtitle line
+    if ($script:UpdateSub) {
+        $subColor = if ($script:IsDarkMode) {
+            [System.Drawing.Color]::FromArgb(160, 160, 175)
+        } else {
+            [System.Drawing.Color]::FromArgb(100, 100, 115)
+        }
+        $subBrush = New-Object System.Drawing.SolidBrush($subColor)
+        $g.DrawString($script:UpdateSub, $FontUpdateSub, $subBrush, $pad, 28)
+        $subBrush.Dispose()
+    }
+})
+
 $btnUpdate.Add_Click({
     if (-not $script:UpdateAvailable) { return }
     $btnUpdate.Enabled = $false
