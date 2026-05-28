@@ -123,6 +123,12 @@ export const rest = {
     post<{ ok: boolean; error?: string; removedChars?: number; backupPath?: string; affectedLines?: number }>(
       `/api/instances/${instanceId}/sanitize-surrogates`
     ),
+  getWakeups: (instanceId: string) =>
+    get<{ wakeups: Array<{ id: string; instanceId: string; fireAt: number; delaySeconds: number; prompt: string; reason: string | null; status: 'pending' | 'fired' | 'cancelled'; createdAt: number }> }>(
+      `/api/instances/${instanceId}/wakeups`
+    ),
+  cancelWakeup: (instanceId: string, wakeupId: string) =>
+    del<{ ok: boolean; error?: string }>(`/api/instances/${instanceId}/wakeups/${wakeupId}`),
 
   // History
   getHistory: (instanceId: string, params?: { before?: number; limit?: number }) => {
@@ -262,6 +268,8 @@ export const rest = {
       `/api/fs/claude-md?dir=${encodeURIComponent(dirPath)}`,
       { content }
     ),
+  openPath: (filePath: string) =>
+    post<{ ok: boolean; error?: string }>('/api/fs/open', { path: filePath }),
 
   // Usage log
   getUsageLog: (limit = 100, days?: number) =>

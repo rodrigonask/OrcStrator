@@ -14,6 +14,7 @@ const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { id: 'claude-opus-4-6', label: 'Opus 4.6' },
   { id: 'claude-opus-4-7', label: 'Opus 4.7' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8 (latest)' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
 ]
 
@@ -27,8 +28,10 @@ const EFFORT_LEVELS = [
 
 const AGENT_MODEL_TO_ID: Record<string, string> = {
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-6',
+  opus: 'claude-opus-4-8',
+  'opus-4-6': 'claude-opus-4-6',
   'opus-4-7': 'claude-opus-4-7',
+  'opus-4-8': 'claude-opus-4-8',
   haiku: 'claude-haiku-4-5-20251001',
   default: 'claude-sonnet-4-6',
 }
@@ -50,7 +53,7 @@ const PERMISSION_LABELS: Record<PermissionMode, string> = {
 
 export function MessageInput() {
   const { selectedInstanceId: instanceId, settings } = useUI()
-  const { streamingContent, pendingCommand } = useMessages()
+  const { streamingContent, pendingCommand, pendingWakeups } = useMessages()
   const { instances, folders } = useInstances()
   const { dispatch, sendMessage } = useAppDispatch()
   const { addXp } = useGame()
@@ -145,7 +148,7 @@ export function MessageInput() {
     return () => { if (draftTimerRef.current) clearTimeout(draftTimerRef.current) }
   }, [text, instanceId])
 
-  // Restore draft + reset model/effort when switching instances
+  // Restore draft + reset model/effort/permMode when switching instances
   useEffect(() => {
     const prev = prevInstanceRef.current
     prevInstanceRef.current = instanceId ?? null
@@ -159,15 +162,17 @@ export function MessageInput() {
         sessionStorage.removeItem(DRAFT_KEY(prev))
       }
     }
-    // Restore draft + saved model/effort for new instance
+    // Restore draft + saved model/effort/permMode for new instance
     if (instanceId) {
       setText(sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? '')
       setModelRaw(sessionStorage.getItem(MODEL_KEY(instanceId)) ?? defaultModelId)
       setEffortRaw(sessionStorage.getItem(EFFORT_KEY(instanceId)) ?? defaultEffortId)
+      setPermModeRaw((sessionStorage.getItem(PERM_KEY(instanceId)) as PermissionMode) || defaultPermMode)
     } else {
       setText('')
       setModelRaw(defaultModelId)
       setEffortRaw(defaultEffortId)
+      setPermModeRaw(defaultPermMode)
     }
     setImages([])
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -189,7 +194,7 @@ export function MessageInput() {
         break
       case 'toggle-fast':
         // Toggle between sonnet (fast) and current
-        setModel(m => m === 'claude-sonnet-4-6' ? 'claude-opus-4-6' : 'claude-sonnet-4-6')
+        setModel(m => m === 'claude-sonnet-4-6' ? 'claude-opus-4-8' : 'claude-sonnet-4-6')
         break
       case 'toggle-plan-mode':
         setPlanMode(p => !p)
@@ -406,6 +411,10 @@ export function MessageInput() {
           </button>
         </div>
       )}
+      {instanceId && pendingWakeups?.[instanceId]?.map(w => (
+        <WakeupBanner key={w.id} wakeup={w} instanceId={instanceId} />
+      ))}
+      {instanceId && <LongSessionWarning instanceId={instanceId} />}
       <div
         className="message-input-wrapper"
         onDrop={handleDrop}
@@ -509,6 +518,104 @@ export function MessageInput() {
       {planModeGate.showLockedModal && planModeGate.gate && (
         <FeatureLockedModal gate={planModeGate.gate} onClose={planModeGate.dismissModal} />
       )}
+    </div>
+  )
+}
+
+import type { ScheduledWakeup } from '../context/MessagesContext'
+
+function fmtCountdown(ms: number): string {
+  if (ms <= 0) return 'firing…'
+  const total = Math.ceil(ms / 1000)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
+
+function WakeupBanner({ wakeup, instanceId }: { wakeup: ScheduledWakeup; instanceId: string }) {
+  const [now, setNow] = useState(Date.now())
+  const [cancelling, setCancelling] = useState(false)
+  const { dispatch } = useAppDispatch()
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const remaining = wakeup.fireAt - now
+
+  const handleCancel = async () => {
+    setCancelling(true)
+    // Optimistic — server WS event will also remove, but instant feedback is nicer.
+    dispatch({ type: 'REMOVE_WAKEUP', payload: { instanceId, wakeupId: wakeup.id } })
+    try {
+      await api.cancelWakeup(instanceId, wakeup.id)
+    } catch { /* if it failed server-side, the next page reload will resync */ }
+  }
+
+  return (
+    <div className="wakeup-banner">
+      <span className="wakeup-banner-icon" aria-hidden="true">⏱</span>
+      <span className="wakeup-banner-text">
+        Auto-check in <strong>{fmtCountdown(remaining)}</strong>
+        {wakeup.reason && <span className="wakeup-banner-reason"> — {wakeup.reason}</span>}
+      </span>
+      <button
+        className="wakeup-banner-cancel"
+        onClick={handleCancel}
+        disabled={cancelling}
+        title={wakeup.prompt ? `Will fire prompt: "${wakeup.prompt.slice(0, 200)}"` : undefined}
+      >
+        Cancel
+      </button>
+    </div>
+  )
+}
+
+// Soft warning at 50% context use, hard warning at 80%. The agent's output degrades
+// after each /compact (summary loses nuance), so the right move on a long session is
+// usually to spawn a fresh chat and carry only the relevant context forward.
+function LongSessionWarning({ instanceId }: { instanceId: string }) {
+  const { instances } = useInstances()
+  const { dispatch } = useAppDispatch()
+  const instance = instances.find(i => i.id === instanceId)
+  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem(`longwarn-dismissed-${instanceId}`) === '1')
+
+  if (!instance || dismissed) return null
+
+  const used = instance.ctxTokens ?? 0
+  const model = instance.ctxModel ?? ''
+  const cap = model.includes('haiku') ? 200_000 : 1_000_000
+  const pct = used > 0 ? (used / cap) * 100 : 0
+
+  if (pct < 50) return null
+
+  const isHard = pct >= 80
+  const level = isHard ? 'hard' : 'soft'
+
+  const handleDismiss = () => {
+    sessionStorage.setItem(`longwarn-dismissed-${instanceId}`, '1')
+    setDismissed(true)
+  }
+  const handleNewChat = () => {
+    const inst = instance
+    if (!inst) return
+    api.createInstance({ folderId: inst.folderId }).then(newInst => {
+      dispatch({ type: 'ADD_INSTANCE', payload: newInst })
+      dispatch({ type: 'SELECT_INSTANCE', payload: newInst.id })
+    }).catch(() => {})
+  }
+
+  const msg = isHard
+    ? `Context is ${pct.toFixed(0)}% full. /compact will lose detail — start a fresh chat for new work.`
+    : `Long session (${pct.toFixed(0)}% context). For unrelated tasks, a fresh chat keeps quality higher than /compact.`
+
+  return (
+    <div className={`long-session-warning long-session-${level}`}>
+      <span className="long-session-icon" aria-hidden="true">&#x26A0;</span>
+      <span className="long-session-text">{msg}</span>
+      <button className="long-session-newchat" onClick={handleNewChat}>New chat</button>
+      <button className="long-session-dismiss" onClick={handleDismiss} title="Dismiss for this session">&times;</button>
     </div>
   )
 }

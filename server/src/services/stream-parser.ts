@@ -162,8 +162,17 @@ export function createStreamParser(instanceId: string): (line: string) => ParseR
     ])
 
     // Forward truly interactive event types (e.g. permission prompts, login requests)
-    // so the client can surface them — but ignore informational/auto-handled events
+    // so the client can surface them — but ignore informational/auto-handled events.
+    // Log the full payload (verbose only) so we can map new event shapes to proper UI handlers.
     if (eventType && !SILENT_EVENTS.has(eventType)) {
+      if (process.env.ORCSTRATOR_VERBOSE) {
+        try {
+          const dump = JSON.stringify(data)
+          console.log(`[cli-prompt] instance=${instanceId.slice(0, 8)} eventType=${eventType} data=${dump.slice(0, 800)}`)
+        } catch {
+          console.log(`[cli-prompt] instance=${instanceId.slice(0, 8)} eventType=${eventType} data=<unserializable>`)
+        }
+      }
       return {
         type: 'cli-prompt',
         instanceId,

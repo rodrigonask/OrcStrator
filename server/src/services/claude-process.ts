@@ -4,6 +4,7 @@ import { createStreamParser } from './stream-parser.js'
 import { broadcastEvent, broadcastTerminalLine } from '../ws/handler.js'
 import { db } from '../db.js'
 import { sanitizeSession } from './session-sanitizer.js'
+import { scheduleWakeup, cancelPendingForInstance } from './wakeup-scheduler.js'
 import type { ClaudeStreamEvent, ClaudeProcessExitEvent } from '@orcstrator/shared'
 import crypto from 'crypto'
 import { processRegistry } from './process-registry.js'
@@ -16,7 +17,11 @@ export function setOrchestratorCallback(fn: (instanceId: string, tokens?: Proces
 }
 
 const PROCESS_TIMEOUT_MS = 20 * 60 * 1000 // 20 minutes — aligned with LOCK_TIMEOUT_MS
-const BATCH_INTERVAL_MS = 32
+// Streaming flush cadence. 32ms (~30fps) was overkill — every flush forces React to
+// re-render the message list. 120ms (~8fps) is still visually smooth for typing-style
+// streaming and cuts client render work by ~4x in long chats. Override via env if needed.
+const BATCH_INTERVAL_MS = Number(process.env.ORCSTRATOR_STREAM_FLUSH_MS) || 120
+const VERBOSE = !!process.env.ORCSTRATOR_VERBOSE
 
 interface SendMessageOpts {
   instanceId: string
@@ -62,6 +67,11 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   const { instanceId, text, images, cwd, sessionId, resume, flags = [], agentPrompt, mcpConfigPath, compact } = opts
 
   console.log(`[claude-process] sendMessage START instance=${instanceId} cwd=${cwd} resume=${!!sessionId} hasPrompt=${!!agentPrompt} mcpConfig=${mcpConfigPath || 'none'}`)
+
+  // Cancel any pending auto-scheduled wake-ups for this instance — fresh activity
+  // implicitly supersedes them. Wake-ups that are mid-fire are already marked 'fired'
+  // in the DB before they call sendMessage, so this only clears truly pending ones.
+  cancelPendingForInstance(instanceId)
 
   // Kill any existing process for this instance (await ensures it's dead before spawning)
   if (processRegistry.isTracked(instanceId)) {
@@ -271,6 +281,30 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
             handledAsAssistant = true
             const msgId = crypto.randomUUID()
             lastAssistantMessageId = msgId
+            // Intercept ScheduleWakeup tool_use blocks: claude's stream-json mode has no harness
+            // to honor them, so we persist the intent and let wakeup-scheduler fire sendMessage
+            // when the timer expires. The agent thinks the tool succeeded; we make it real.
+            for (const b of raw.message.content as Array<Record<string, unknown>>) {
+              if (b.type === 'tool_use' && b.name === 'ScheduleWakeup') {
+                const input = (b.input as Record<string, unknown>) ?? {}
+                const delaySeconds = Number(input.delaySeconds)
+                const prompt = typeof input.prompt === 'string' ? input.prompt : ''
+                const reason = typeof input.reason === 'string' ? input.reason : undefined
+                if (Number.isFinite(delaySeconds) && delaySeconds > 0 && prompt) {
+                  try {
+                    scheduleWakeup({
+                      instanceId,
+                      delaySeconds,
+                      prompt,
+                      reason,
+                      toolUseId: b.id as string | undefined,
+                    })
+                  } catch (e) {
+                    console.warn(`[claude-process] Failed to schedule wakeup:`, e)
+                  }
+                }
+              }
+            }
             const content = raw.message.content.map((b: Record<string, unknown>) => {
               if (b.type === 'text') return { type: 'text', text: b.text }
               if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input) }
@@ -464,7 +498,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     parent_tool_use_id: null
   }
   const stdinPayload = JSON.stringify(inputMessage)
-  console.log(`[claude-process] STDIN → ${instanceId}: ${stdinPayload.length} chars (text: ${text.slice(0, 100)}...)`)
+  if (VERBOSE) console.log(`[claude-process] STDIN → ${instanceId}: ${stdinPayload.length} chars (text: ${text.slice(0, 100)}...)`)
   // Guard against unhandled 'error' on stdin (e.g. process dies before write completes)
   let stdinEnded = false
   child.stdin?.on('error', (err) => {
@@ -503,7 +537,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   child.on('exit', (code) => {
     console.log(`[claude-process] EXIT: instance=${instanceId} PID=${child.pid} code=${code}`)
     if (cleanedUp.has(instanceId)) {
-      console.log(`[claude-process] EXIT DEDUP: instance ${instanceId} already cleaned up`)
+      if (VERBOSE) console.log(`[claude-process] EXIT DEDUP: instance ${instanceId} already cleaned up`)
       return
     }
     cleanedUp.add(instanceId)

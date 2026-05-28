@@ -8,6 +8,7 @@ import { getLastAssistantMessage } from '../services/session-sync.js'
 import { orchestrator } from '../services/orchestrator.js'
 import { dispatchCommand, isValidCommand, getAllCommands } from '../services/command-registry.js'
 import { sanitizeSurrogates } from '../services/session-sanitizer.js'
+import { cancelWakeup, getPendingForInstance } from '../services/wakeup-scheduler.js'
 import { resolveModelId } from '@orcstrator/shared'
 import crypto from 'crypto'
 
@@ -216,6 +217,20 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // List all available commands (for client command palette)
   app.get('/instances/commands', async () => {
     return { commands: getAllCommands() }
+  })
+
+  // List pending auto-scheduled wake-ups for an instance (used by client banner on load).
+  app.get('/instances/:id/wakeups', async (request) => {
+    const { id } = request.params as { id: string }
+    return { wakeups: getPendingForInstance(id) }
+  })
+
+  // Cancel a specific pending wake-up.
+  app.delete('/instances/:id/wakeups/:wakeupId', async (request, reply) => {
+    const { wakeupId } = request.params as { id: string; wakeupId: string }
+    const ok = cancelWakeup(wakeupId)
+    if (!ok) { reply.code(404); return { ok: false, error: 'Wake-up not found or not pending' } }
+    return { ok: true }
   })
 
   // Sanitize unpaired surrogate escapes in session JSONL — recovers from

@@ -14,7 +14,7 @@ import type {
 import { vfxBus } from '../systems/vfx-bus'
 import { InstancesContext } from './InstancesContext'
 import { MessagesContext } from './MessagesContext'
-import type { CliPromptData } from './MessagesContext'
+import type { CliPromptData, ScheduledWakeup } from './MessagesContext'
 import { UIContext } from './UIContext'
 import { AppDispatchContext } from './AppDispatchContext'
 import { useInstances } from './InstancesContext'
@@ -40,6 +40,7 @@ interface MessagesSlice {
   rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
   cliPrompts: Record<string, CliPromptData>
   pendingCommand: Record<string, string>
+  pendingWakeups: Record<string, ScheduledWakeup[]>
 }
 
 interface UISlice {
@@ -122,6 +123,9 @@ export type Action =
   | { type: 'CLEAR_CLI_PROMPT'; payload: string }
   | { type: 'SET_PENDING_COMMAND'; payload: { instanceId: string; command: string } }
   | { type: 'CLEAR_PENDING_COMMAND'; payload: string }
+  | { type: 'SET_INSTANCE_WAKEUPS'; payload: { instanceId: string; wakeups: ScheduledWakeup[] } }
+  | { type: 'ADD_WAKEUP'; payload: ScheduledWakeup }
+  | { type: 'REMOVE_WAKEUP'; payload: { instanceId: string; wakeupId: string } }
   | { type: 'SET_GAME_ACTIVE'; payload: boolean }
   | { type: 'SET_INSTANCE_VERBOSITY'; payload: { instanceId: string; level: VerbosityLevel | null } }
   | { type: 'SET_SESSION_COST'; payload: { instanceId: string; cost: SessionCostState } }
@@ -155,6 +159,7 @@ const initialMessages: MessagesSlice = {
   rawOutput: {},
   cliPrompts: {},
   pendingCommand: {},
+  pendingWakeups: {},
 }
 
 const initialUI: UISlice = {
@@ -324,6 +329,24 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
       const { [action.payload]: _, ...rest } = state.pendingCommand
       return { ...state, pendingCommand: rest }
     }
+    case 'SET_INSTANCE_WAKEUPS': {
+      const { instanceId, wakeups } = action.payload
+      return { ...state, pendingWakeups: { ...state.pendingWakeups, [instanceId]: wakeups } }
+    }
+    case 'ADD_WAKEUP': {
+      const w = action.payload
+      const existing = state.pendingWakeups[w.instanceId] || []
+      return {
+        ...state,
+        pendingWakeups: { ...state.pendingWakeups, [w.instanceId]: [...existing.filter(x => x.id !== w.id), w] },
+      }
+    }
+    case 'REMOVE_WAKEUP': {
+      const { instanceId, wakeupId } = action.payload
+      const existing = state.pendingWakeups[instanceId] || []
+      const filtered = existing.filter(w => w.id !== wakeupId)
+      return { ...state, pendingWakeups: { ...state.pendingWakeups, [instanceId]: filtered } }
+    }
     default:
       return state
   }
@@ -484,6 +507,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'CLEAR_CLI_PROMPT':
       case 'SET_PENDING_COMMAND':
       case 'CLEAR_PENDING_COMMAND':
+      case 'SET_INSTANCE_WAKEUPS':
+      case 'ADD_WAKEUP':
+      case 'REMOVE_WAKEUP':
         msgDispatch(action)
         break
 
@@ -644,6 +670,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
 
     unsubs.push(api.onUsageUpdated((payload: any) => dispatch({ type: 'SET_USAGE', payload })))
+
+    unsubs.push(
+      api.onEvent('wakeup:scheduled', (payload: ScheduledWakeup) => {
+        dispatch({ type: 'ADD_WAKEUP', payload })
+      })
+    )
+    unsubs.push(
+      api.onEvent('wakeup:cancelled', (payload: { instanceId: string; wakeupId: string }) => {
+        dispatch({ type: 'REMOVE_WAKEUP', payload })
+      })
+    )
+    unsubs.push(
+      api.onEvent('wakeup:fired', (payload: { instanceId: string; wakeupId: string }) => {
+        dispatch({ type: 'REMOVE_WAKEUP', payload })
+      })
+    )
 
     unsubs.push(
       api.onEvent('instance:updated', (payload: Record<string, unknown>) => {
@@ -877,6 +919,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       api.getSessionCostSummary(id).then((cost) => {
         dispatch({ type: 'SET_SESSION_COST', payload: { instanceId: id, cost } })
       }).catch(() => {})
+      // Hydrate pending auto-scheduled wake-ups (so banner survives page reload)
+      api.getWakeups(id).then((res) => {
+        dispatch({ type: 'SET_INSTANCE_WAKEUPS', payload: { instanceId: id, wakeups: res.wakeups } })
+      }).catch(() => {})
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -938,8 +984,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       rawOutput: msgState.rawOutput,
       cliPrompts: msgState.cliPrompts,
       pendingCommand: msgState.pendingCommand,
+      pendingWakeups: msgState.pendingWakeups,
     }),
-    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts, msgState.pendingCommand]
+    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts, msgState.pendingCommand, msgState.pendingWakeups]
   )
 
   const uiValue = useMemo(

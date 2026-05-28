@@ -89,9 +89,12 @@ export function broadcastTerminalLine(instanceId: string, payload: unknown): voi
   }
 }
 
+const VERBOSE = !!process.env.ORCSTRATOR_VERBOSE
+
 export function broadcastEvent(message: { type: string; payload: unknown }): void {
-  // Log all non-stream events (skip high-frequency output batches)
-  if (message.type !== 'claude:output-batch') {
+  // Log all non-stream events (skip high-frequency output batches). Gated behind
+  // ORCSTRATOR_VERBOSE so the dev console isn't a firehose of WS events.
+  if (VERBOSE && message.type !== 'claude:output-batch') {
     console.log(`[ws] broadcast ${message.type} → ${clients.size} clients | ${JSON.stringify(message.payload).slice(0, 200)}`)
   }
   const data = JSON.stringify(message)

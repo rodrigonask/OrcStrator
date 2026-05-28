@@ -15,8 +15,9 @@ const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
   { value: 'default', label: 'Default' },
   { value: 'haiku', label: 'Haiku (fast/cheap)' },
   { value: 'sonnet', label: 'Sonnet (balanced)' },
-  { value: 'opus', label: 'Opus 4.6' },
-  { value: 'opus-4-7', label: 'Opus 4.7 (strongest)' },
+  { value: 'opus-4-6', label: 'Opus 4.6' },
+  { value: 'opus-4-7', label: 'Opus 4.7' },
+  { value: 'opus', label: 'Opus 4.8 (latest, strongest)' },
 ]
 const TABS = ['General', 'Agents', 'Advanced'] as const
 type Tab = typeof TABS[number]
@@ -365,7 +366,7 @@ export function SettingsPage() {
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
-                    <option value="xhigh">xHigh (Opus 4.7)</option>
+                    <option value="xhigh">xHigh (Opus 4.7/4.8)</option>
                     <option value="max">Max</option>
                   </select>
                 </div>
@@ -591,7 +592,7 @@ export function SettingsPage() {
                         <option value="low">Low (fast, cheap)</option>
                         <option value="medium">Medium</option>
                         <option value="high">High</option>
-                        <option value="xhigh">xHigh (default for Opus 4.7)</option>
+                        <option value="xhigh">xHigh (default for Opus 4.7/4.8)</option>
                         <option value="max">Max (extended thinking)</option>
                       </select>
                     </div>

@@ -17,6 +17,17 @@ export interface CliPromptData {
   receivedAt: number
 }
 
+export interface ScheduledWakeup {
+  id: string
+  instanceId: string
+  fireAt: number
+  delaySeconds: number
+  prompt: string
+  reason: string | null
+  status: 'pending' | 'fired' | 'cancelled'
+  createdAt: number
+}
+
 export interface MessagesContextValue {
   messages: Record<string, ChatMessage[]>
   hasMore: Record<string, boolean>
@@ -26,6 +37,7 @@ export interface MessagesContextValue {
   rawOutput: Record<string, Array<{ line: string; isStderr?: boolean }>>
   cliPrompts: Record<string, CliPromptData>
   pendingCommand: Record<string, string>
+  pendingWakeups: Record<string, ScheduledWakeup[]>
 }
 
 const defaultValue: MessagesContextValue = {
@@ -37,6 +49,7 @@ const defaultValue: MessagesContextValue = {
   rawOutput: {},
   cliPrompts: {},
   pendingCommand: {},
+  pendingWakeups: {},
 }
 
 export const MessagesContext = createContext<MessagesContextValue>(defaultValue)
