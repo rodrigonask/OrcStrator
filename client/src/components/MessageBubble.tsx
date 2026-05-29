@@ -284,6 +284,35 @@ function ContentBlock({
   return null
 }
 
+// Auto-linkify URLs (http/https) and Windows-style absolute paths in rendered HTML.
+// Runs after marked so it sees the actual rendered output (including inside <code>);
+// skips content already inside <a> tags so markdown links aren't double-wrapped.
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
+const WIN_PATH_RE = /\b[A-Za-z]:[\\/](?:[^\\/:<>"|?*\s]+[\\/])*[^\\/:<>"|?*\s]+/g
+const TRAILING_PUNCT_RE = /([.,;:!?)\]}'"`]+)$/
+
+function autoLinkify(html: string): string {
+  const parts = html.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/g)
+  return parts.map((part, i) => {
+    if (i % 2 === 1) return part
+    return part
+      .replace(URL_RE, (m) => {
+        const trail = m.match(TRAILING_PUNCT_RE)
+        const core = trail ? m.slice(0, m.length - trail[0].length) : m
+        const trailing = trail ? trail[0] : ''
+        const safe = core.replace(/"/g, '&quot;')
+        return `<a class="auto-url" href="${safe}" target="_blank" rel="noopener noreferrer">${core}</a>${trailing}`
+      })
+      .replace(WIN_PATH_RE, (m) => {
+        const trail = m.match(TRAILING_PUNCT_RE)
+        const core = trail ? m.slice(0, m.length - trail[0].length) : m
+        const trailing = trail ? trail[0] : ''
+        const safe = core.replace(/"/g, '&quot;')
+        return `<a class="auto-path" data-path="${safe}" href="#" title="Click to open in default app">${core}</a>${trailing}`
+      })
+  }).join('')
+}
+
 function TextContent({ text, collapseChars = 600, escapeHtml = false }: { text: string; collapseChars?: number; escapeHtml?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const isTall = collapseChars < Infinity && text.length > collapseChars
@@ -292,7 +321,8 @@ function TextContent({ text, collapseChars = 600, escapeHtml = false }: { text: 
   const html = useMemo(() => {
     const safeText = escapeHtml ? displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;') : displayText
     const raw = marked.parse(safeText) as string
-    return DOMPurify.sanitize(raw, {
+    const linked = autoLinkify(raw)
+    return DOMPurify.sanitize(linked, {
       ALLOWED_TAGS: [
         'p', 'br', 'strong', 'em', 'b', 'i', 'u', 's', 'del',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -300,13 +330,26 @@ function TextContent({ text, collapseChars = 600, escapeHtml = false }: { text: 
         'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
         'hr', 'div', 'span', 'sup', 'sub',
       ],
-      ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel'],
+      ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel', 'data-path'],
     })
   }, [displayText])
 
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement
+    const pathLink = target.closest('a.auto-path') as HTMLAnchorElement | null
+    if (pathLink) {
+      e.preventDefault()
+      const filePath = pathLink.getAttribute('data-path')
+      if (filePath) {
+        api.openPath(filePath).catch(err => console.error('Failed to open path:', err))
+      }
+    }
+    // .auto-url anchors fall through to the browser's default open-in-new-tab behavior.
+  }
+
   return (
     <div className="message-content-wrapper">
-      <div className="message-content" dangerouslySetInnerHTML={{ __html: html }} />
+      <div className="message-content" onClick={handleClick} dangerouslySetInnerHTML={{ __html: html }} />
       {isTall && (
         <span className="view-more-inline" onClick={() => setExpanded(e => !e)}>
           {expanded ? 'View less ↑' : '... View more ↓'}

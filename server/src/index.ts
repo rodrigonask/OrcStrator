@@ -11,6 +11,7 @@ import { processRegistry, isProcessAlive, setMaxConcurrentProcesses, getMaxConcu
 import treeKill from 'tree-kill'
 import { orchestrator, type ResumeSnapshot } from './services/orchestrator.js'
 import { schedulerService } from './services/scheduler-service.js'
+import { startWakeupScheduler, stopWakeupScheduler } from './services/wakeup-scheduler.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
 import { DEFAULT_PORT, ALLOWED_ORIGINS } from './config.js'
 import { resetOverdriveForAll } from './services/overdrive.js'
@@ -218,6 +219,7 @@ async function main(): Promise<void> {
   })
   orchestrator.start()
   schedulerService.start()
+  startWakeupScheduler()
   cloudSync.initialize()
 
   // Resume dead sessions + trigger work — only on clean startup, NOT on restart
@@ -288,6 +290,7 @@ async function main(): Promise<void> {
     console.log('[server] Shutting down...')
     orchestrator.stop()
     schedulerService.stop()
+    stopWakeupScheduler()
 
     // Delete dev lockfile so watcher can restart freely
     orchestrator.clearDevLock()

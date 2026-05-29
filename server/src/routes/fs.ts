@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { spawn } from 'child_process'
 import { db } from '../db.js'
 
 /**
@@ -218,6 +219,49 @@ export default async function fsRoutes(app: FastifyInstance): Promise<void> {
         : estimatedTokens > 1500
           ? `Your CLAUDE.md is ~${estimatedTokens.toLocaleString()} tokens. It is loaded into every agent session.`
           : null,
+    }
+  })
+
+  // Open a file or folder in the OS's default handler (file manager or default app).
+  // Used by auto-detected file path links in chat messages. Path must be absolute,
+  // within allowed roots, and actually exist — no URL schemes, no traversal.
+  app.post('/fs/open', async (request, reply) => {
+    const body = request.body as { path?: string }
+    const target = body?.path
+    if (typeof target !== 'string' || !target.trim()) {
+      reply.code(400); return { ok: false, error: 'Missing path' }
+    }
+    if (!path.isAbsolute(target)) {
+      reply.code(400); return { ok: false, error: 'Path must be absolute' }
+    }
+    if (/^[a-z]+:\/\//i.test(target)) {
+      reply.code(400); return { ok: false, error: 'URL scheme not allowed — open URLs in the browser instead' }
+    }
+    const resolved = path.resolve(target)
+    if (!isPathAllowed(resolved)) {
+      reply.code(403); return { ok: false, error: 'Path not in allowed directories' }
+    }
+    if (!fs.existsSync(resolved)) {
+      reply.code(404); return { ok: false, error: 'Path does not exist' }
+    }
+
+    try {
+      if (process.platform === 'win32') {
+        // `start` is a cmd builtin; first quoted arg is the window title.
+        const child = spawn('cmd', ['/c', 'start', '""', resolved], {
+          windowsHide: true, detached: true, stdio: 'ignore',
+        })
+        child.unref()
+      } else if (process.platform === 'darwin') {
+        const child = spawn('open', [resolved], { detached: true, stdio: 'ignore' })
+        child.unref()
+      } else {
+        const child = spawn('xdg-open', [resolved], { detached: true, stdio: 'ignore' })
+        child.unref()
+      }
+      return { ok: true }
+    } catch (err) {
+      reply.code(500); return { ok: false, error: `Failed to open: ${(err as Error).message}` }
     }
   })
 

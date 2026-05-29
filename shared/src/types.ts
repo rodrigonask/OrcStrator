@@ -343,7 +343,7 @@ export interface McpServerInfo {
 
 export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'dontAsk' | 'auto' | 'bypassPermissions'
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | 'xhigh'
-export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'opus-4-7' | 'default'
+export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'opus-4-6' | 'opus-4-7' | 'opus-4-8' | 'default'
 export type AgentRole = 'planner' | 'builder' | 'tester' | 'promoter' | 'scheduler'
 
 export interface AppSettings {

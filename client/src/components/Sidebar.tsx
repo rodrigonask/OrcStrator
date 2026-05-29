@@ -240,7 +240,7 @@ export function Sidebar() {
                 dispatch({ type: 'SET_VIEW', payload: 'chat' })
                 api.sendMessage(inst.id, {
                   text: 'I want to create a new project in this directory. Ask me what kind of project I want to build, help me pick a name, then create the folder and scaffold it step by step.',
-                  flags: ['--model=claude-opus-4-6'],
+                  flags: ['--model=claude-opus-4-7'],
                 })
               } catch (err) {
                 console.error('Failed to create new project instance:', err)

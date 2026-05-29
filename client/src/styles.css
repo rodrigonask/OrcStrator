@@ -1775,6 +1775,25 @@ body {
   gap: 12px;
 }
 
+/* Virtuoso owns its own scroll + item layout, so we override the flex/gap above
+   and give items their own padding instead. */
+.message-list-virtuoso {
+  display: block !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  overflow-y: hidden;
+  min-height: 0;
+}
+.message-list-item-wrap {
+  padding: 6px 20px;
+}
+.message-list-item-wrap:first-child {
+  padding-top: 16px;
+}
+.message-list-item-wrap:last-child {
+  padding-bottom: 16px;
+}
+
 .message-list-empty {
   display: flex;
   align-items: center;
@@ -1931,6 +1950,27 @@ body {
 
 .message-content a:hover {
   text-decoration: underline;
+}
+
+/* Auto-linkified URLs and file paths inherit code-span styling when nested in <code>, */
+/* but always show pointer cursor and underline on hover so they read as clickable.    */
+.message-content a.auto-url,
+.message-content a.auto-path {
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+  opacity: 0.95;
+}
+.message-content a.auto-url:hover,
+.message-content a.auto-path:hover {
+  text-decoration: none;
+  border-bottom-style: solid;
+  opacity: 1;
+}
+.message-content code a.auto-url,
+.message-content code a.auto-path {
+  border-bottom-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .message-content h1,
@@ -3298,6 +3338,72 @@ body {
   color: var(--text-primary);
 }
 
+/* Action button row inside the prompt body (URL open / Allow / Deny etc.) */
+.cli-prompt-action-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.cli-prompt-open-url {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  background: #7c3aed;
+  border: 1px solid #6d28d9;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.cli-prompt-open-url:hover {
+  background: #6d28d9;
+}
+.cli-prompt-copy-url {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.cli-prompt-copy-url:hover {
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+}
+.cli-prompt-allow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 14px;
+  border-radius: 4px;
+  background: #16a34a;
+  border: 1px solid #15803d;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.cli-prompt-allow:hover {
+  background: #15803d;
+}
+.cli-prompt-deny {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 14px;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #ef4444;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.cli-prompt-deny:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
 /* Pending Command Banner — shown while a slash command (e.g. /compact) is mid-flight */
 .pending-command-banner {
   display: flex;
@@ -3341,6 +3447,54 @@ body {
 }
 .pending-command-cancel:hover {
   background: rgba(124, 58, 237, 0.4);
+}
+
+/* ── Auto-scheduled wake-up banner ── */
+.wakeup-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin-bottom: 4px;
+  background: rgba(34, 211, 238, 0.10);
+  border: 1px solid rgba(34, 211, 238, 0.30);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: #67e8f9;
+}
+.wakeup-banner-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.wakeup-banner-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wakeup-banner-reason {
+  color: #a5f3fc;
+  opacity: 0.8;
+}
+.wakeup-banner-cancel {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  background: rgba(34, 211, 238, 0.20);
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  border-radius: 4px;
+  color: #cffafe;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.wakeup-banner-cancel:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.4);
+}
+.wakeup-banner-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .message-input-wrapper {

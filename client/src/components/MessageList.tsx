@@ -1,10 +1,10 @@
-import { useMemo, useState, useCallback, useEffect } from 'react'
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import type { ChatMessage } from '@shared/types'
 import { useUI } from '../context/UIContext'
 import { useMessages } from '../context/MessagesContext'
 import { useInstances } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
-import { useAutoScroll } from '../hooks/useAutoScroll'
 import { useVerbosity } from '../hooks/useVerbosity'
 import { MessageBubble } from './MessageBubble'
 import { ActivityBubble } from './ActivityBubble'
@@ -42,7 +42,8 @@ export function MessageList() {
   const messages: ChatMessage[] = instanceId ? (allMessages[instanceId] || []) : []
   const hasMore = instanceId ? (allHasMore[instanceId] ?? false) : false
   const [loadingOlder, setLoadingOlder] = useState(false)
-  const scrollRef = useAutoScroll([messages])
+  const [atBottom, setAtBottom] = useState(true)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   const handleLoadOlder = useCallback(async () => {
     if (!instanceId || loadingOlder) return
@@ -84,7 +85,6 @@ export function MessageList() {
 
     const flushTools = () => {
       if (pendingTools.length > 0) {
-        // Always include groups that contain AskUser/Plan so the interactive UI is visible
         const hasSpecial = pendingTools.some(tc =>
           tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode'
         )
@@ -98,7 +98,6 @@ export function MessageList() {
 
     const endSession = (summaryKey: string) => {
       if (hasSession && sessionToolCount > 0) {
-        // Level 1: no summary. Level 2: summary line. Level 3+: session summary
         if (verbosity >= 2) {
           result.push({ kind: 'session-summary', toolCount: sessionToolCount, key: summaryKey })
         }
@@ -110,10 +109,8 @@ export function MessageList() {
       const isOrcBrief = msg.content[0]?.type === 'orc-brief'
 
       if (isOrcBrief) {
-        // End previous session
         flushTools()
         endSession(msg.id + '-session-end')
-        // Start new session
         sessionToolCount = 0
         hasSession = true
         result.push({ kind: 'message', msg })
@@ -129,7 +126,6 @@ export function MessageList() {
       }
     }
 
-    // Flush trailing tools + close final session (only if agent is done)
     flushTools()
     if (!isAgentRunning) {
       endSession('final-session-end')
@@ -138,17 +134,65 @@ export function MessageList() {
     return result
   }, [messages, isAgentRunning, verbosity])
 
-  if (messages.length === 0) {
+  // While streaming, follow the bottom — the live turn (in Footer) grows but the
+  // data array doesn't change, so Virtuoso's followOutput won't trigger. Scroll manually.
+  useEffect(() => {
+    if (!showLiveTurn || !atBottom || !virtuosoRef.current) return
+    virtuosoRef.current.scrollToIndex({ index: items.length - 1, behavior: 'auto', align: 'end' })
+  }, [liveText, liveToolCalls.length, showLiveTurn, atBottom, items.length])
+
+  // ALWAYS land at the bottom when opening / switching chats. Virtuoso's scrollToIndex
+  // is unreliable: it anchors on the last data item but tool blocks / images measure
+  // asynchronously, so the "bottom" keeps shifting downward for several frames. Direct
+  // DOM scroll on the scroller is the only reliable way — we run rAF for ~500ms,
+  // continuously pinning scrollTop to scrollHeight as content settles.
+  const scrollerElRef = useRef<HTMLElement | null>(null)
+  const onScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+    scrollerElRef.current = (el && 'scrollHeight' in (el as object)) ? (el as HTMLElement) : null
+  }, [])
+  useEffect(() => {
+    if (!instanceId || items.length === 0) return
+    let cancelled = false
+    let frame = 0
+    const MAX_FRAMES = 30 // ~500ms @ 60fps — covers item-height measurement settling
+    const stick = () => {
+      if (cancelled) return
+      const el = scrollerElRef.current
+      if (el) el.scrollTop = el.scrollHeight
+      setAtBottom(true)
+      frame++
+      if (frame < MAX_FRAMES) requestAnimationFrame(stick)
+    }
+    requestAnimationFrame(stick)
+    return () => { cancelled = true }
+  }, [instanceId, items.length === 0])
+
+  const renderItem = useCallback((_index: number, item: DisplayItem) => {
+    if (item.kind === 'message') {
+      return <MessageBubble key={item.msg.id} message={item.msg} toolResults={toolResults} verbosity={verbosity} />
+    }
+    if (item.kind === 'tools') {
+      const hasSpecial = item.calls.some(tc =>
+        tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode'
+      )
+      if (verbosity <= 2 && !hasSpecial) {
+        return <SessionSummary key={item.key} toolCount={item.calls.length} />
+      }
+      return <ToolCallGroup key={item.key} calls={item.calls} toolResults={toolResults} verbosity={verbosity} />
+    }
+    return <SessionSummary key={item.key} toolCount={item.toolCount} />
+  }, [toolResults, verbosity])
+
+  if (messages.length === 0 && !showLiveTurn) {
     return (
-      <div className="message-list" ref={scrollRef}>
+      <div className="message-list">
         <div className="message-list-empty">No messages yet. Send a message to start.</div>
       </div>
     )
   }
 
-  return (
-    <div className="message-list" ref={scrollRef}>
-      {hasMore && (
+  const LoadOlderHeader = hasMore
+    ? () => (
         <div className="message-list-load-older">
           <button
             className="btn btn-sm"
@@ -158,38 +202,131 @@ export function MessageList() {
             {loadingOlder ? 'Loading...' : 'Load older messages'}
           </button>
         </div>
+      )
+    : undefined
+
+  const LiveTurnFooter = showLiveTurn
+    ? () => (
+        <LiveTurn
+          verbosity={verbosity}
+          liveText={liveText}
+          liveToolCalls={liveToolCalls}
+          isAgentRunning={!!isAgentRunning}
+        />
+      )
+    : undefined
+
+  return (
+    <Virtuoso
+      // Force remount per instance so initialTopMostItemIndex re-applies on chat switch
+      // (Virtuoso retains scroll offset across data swaps otherwise, leaving you mid-list).
+      key={instanceId || 'empty'}
+      ref={virtuosoRef}
+      scrollerRef={onScrollerRef}
+      className="message-list message-list-virtuoso"
+      data={items}
+      itemContent={(index, item) => (
+        <div className="message-list-item-wrap">{renderItem(index, item)}</div>
       )}
-      {items.map(item => {
-        if (item.kind === 'message') return <MessageBubble key={item.msg.id} message={item.msg} toolResults={toolResults} verbosity={verbosity} />
-        if (item.kind === 'tools') {
-          // Level 2: collapsed summary, UNLESS the group contains AskUser/Plan
-          const hasSpecial = item.calls.some(tc =>
-            tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode'
-          )
-          if (verbosity <= 2 && !hasSpecial) {
-            return <SessionSummary key={item.key} toolCount={item.calls.length} />
-          }
-          return <ToolCallGroup key={item.key} calls={item.calls} toolResults={toolResults} verbosity={verbosity} />
-        }
-        return <SessionSummary key={item.key} toolCount={item.toolCount} />
-      })}
-      {showLiveTurn && (
-        <div className="message-bubble assistant">
-          {/* Levels 1-2: ThinkingIndicator, Levels 3+: existing ActivityBubble + streaming */}
-          {verbosity <= 2 ? (
-            <>
-              <ThinkingIndicator
-                toolCalls={liveToolCalls}
-                isRunning={isAgentRunning}
-                liveText={liveText}
-                verbosity={verbosity}
-              />
-              {/* Always show AskUser/Plan blocks even at low verbosity */}
-              {liveToolCalls.some(tc => tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode') && (
-                <div className="live-tool-blocks">
-                  {liveToolCalls
-                    .filter(tc => tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode')
-                    .map(tc => (
+      components={{
+        Header: LoadOlderHeader,
+        Footer: LiveTurnFooter,
+      }}
+      followOutput={atBottom ? 'auto' : false}
+      atBottomStateChange={setAtBottom}
+      initialTopMostItemIndex={Math.max(0, items.length - 1)}
+      increaseViewportBy={{ top: 600, bottom: 1200 }}
+    />
+  )
+}
+
+interface LiveTurnProps {
+  verbosity: 1 | 2 | 3 | 4 | 5
+  liveText: string
+  liveToolCalls: Array<{ toolId: string; toolName: string; input: string; output?: string; isError?: boolean; isRunning: boolean }>
+  isAgentRunning: boolean
+}
+
+function LiveTurn({ verbosity, liveText, liveToolCalls, isAgentRunning }: LiveTurnProps) {
+  return (
+    <div className="message-bubble assistant">
+      {verbosity <= 2 ? (
+        <>
+          <ThinkingIndicator
+            toolCalls={liveToolCalls}
+            isRunning={isAgentRunning}
+            liveText={liveText}
+            verbosity={verbosity}
+          />
+          {liveToolCalls.some(tc => tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode') && (
+            <div className="live-tool-blocks">
+              {liveToolCalls
+                .filter(tc => tc.toolName === 'AskUserQuestion' || tc.toolName === 'ExitPlanMode')
+                .map(tc => (
+                  <ToolCallBlock
+                    key={tc.toolId}
+                    toolName={tc.toolName}
+                    input={tc.input || '{}'}
+                    output={tc.output}
+                    isError={tc.isError}
+                    isRunning={tc.isRunning}
+                    defaultExpanded={false}
+                    verbosity={verbosity}
+                  />
+                ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {liveToolCalls.length > 0 && (() => {
+            const activeTool = [...liveToolCalls].reverse().find(tc => tc.isRunning)
+            const lastTool = liveToolCalls[liveToolCalls.length - 1]
+            const activityLabel = activeTool
+              ? formatToolLabel(activeTool.toolName, activeTool.input || '{}')
+              : lastTool
+                ? formatToolLabel(lastTool.toolName, lastTool.input || '{}')
+                : 'Working...'
+            return (
+              <>
+                <ActivityBubble
+                  toolCalls={liveToolCalls}
+                  isRunning={isAgentRunning}
+                  activityLabel={activityLabel}
+                />
+                {verbosity < 4 && liveToolCalls.some(tc =>
+                  tc.toolName === 'AskUserQuestion' ||
+                  tc.toolName === 'ExitPlanMode' ||
+                  (tc.toolName === 'Write' && (() => {
+                    try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
+                  })())
+                ) && (
+                  <div className="live-tool-blocks">
+                    {liveToolCalls
+                      .filter(tc =>
+                        tc.toolName === 'AskUserQuestion' ||
+                        tc.toolName === 'ExitPlanMode' ||
+                        (tc.toolName === 'Write' && (() => {
+                          try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
+                        })())
+                      )
+                      .map(tc => (
+                        <ToolCallBlock
+                          key={tc.toolId}
+                          toolName={tc.toolName}
+                          input={tc.input || '{}'}
+                          output={tc.output}
+                          isError={tc.isError}
+                          isRunning={tc.isRunning}
+                          defaultExpanded={false}
+                          verbosity={verbosity}
+                        />
+                      ))}
+                  </div>
+                )}
+                {verbosity >= 4 && (
+                  <div className="live-tool-blocks">
+                    {liveToolCalls.map(tc => (
                       <ToolCallBlock
                         key={tc.toolId}
                         toolName={tc.toolName}
@@ -197,96 +334,28 @@ export function MessageList() {
                         output={tc.output}
                         isError={tc.isError}
                         isRunning={tc.isRunning}
-                        defaultExpanded={false}
+                        defaultExpanded={true}
                         verbosity={verbosity}
                       />
                     ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              {liveToolCalls.length > 0 && (() => {
-                const activeTool = [...liveToolCalls].reverse().find(tc => tc.isRunning)
-                const lastTool = liveToolCalls[liveToolCalls.length - 1]
-                const activityLabel = activeTool
-                  ? formatToolLabel(activeTool.toolName, activeTool.input || '{}')
-                  : lastTool
-                    ? formatToolLabel(lastTool.toolName, lastTool.input || '{}')
-                    : 'Working...'
-                return (
-                  <>
-                    <ActivityBubble
-                      toolCalls={liveToolCalls}
-                      isRunning={isAgentRunning}
-                      activityLabel={activityLabel}
-                    />
-                    {/* Show live AskUser/Plan tool blocks inline at any verbosity so their UI is visible */}
-                    {verbosity < 4 && liveToolCalls.some(tc =>
-                      tc.toolName === 'AskUserQuestion' ||
-                      tc.toolName === 'ExitPlanMode' ||
-                      (tc.toolName === 'Write' && (() => {
-                        try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
-                      })())
-                    ) && (
-                      <div className="live-tool-blocks">
-                        {liveToolCalls
-                          .filter(tc =>
-                            tc.toolName === 'AskUserQuestion' ||
-                            tc.toolName === 'ExitPlanMode' ||
-                            (tc.toolName === 'Write' && (() => {
-                              try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
-                            })())
-                          )
-                          .map(tc => (
-                            <ToolCallBlock
-                              key={tc.toolId}
-                              toolName={tc.toolName}
-                              input={tc.input || '{}'}
-                              output={tc.output}
-                              isError={tc.isError}
-                              isRunning={tc.isRunning}
-                              defaultExpanded={false}
-                              verbosity={verbosity}
-                            />
-                          ))}
-                      </div>
-                    )}
-                    {/* Levels 4-5: show live tool blocks inline */}
-                    {verbosity >= 4 && (
-                      <div className="live-tool-blocks">
-                        {liveToolCalls.map(tc => (
-                          <ToolCallBlock
-                            key={tc.toolId}
-                            toolName={tc.toolName}
-                            input={tc.input || '{}'}
-                            output={tc.output}
-                            isError={tc.isError}
-                            isRunning={tc.isRunning}
-                            defaultExpanded={true}
-                            verbosity={verbosity}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )
-              })()}
-              {liveText && (
-                <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{liveText}</div>
-              )}
-              {isAgentRunning && liveToolCalls.length === 0 && !liveText && (
-                <div className="wave-indicator">
-                  <span /><span /><span />
-                </div>
-              )}
-            </>
+                  </div>
+                )}
+              </>
+            )
+          })()}
+          {liveText && (
+            <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{liveText}</div>
           )}
-          {!isAgentRunning && !liveText && liveToolCalls.length === 0 && (
+          {isAgentRunning && liveToolCalls.length === 0 && !liveText && (
             <div className="wave-indicator">
               <span /><span /><span />
             </div>
           )}
+        </>
+      )}
+      {!isAgentRunning && !liveText && liveToolCalls.length === 0 && (
+        <div className="wave-indicator">
+          <span /><span /><span />
         </div>
       )}
     </div>
@@ -296,7 +365,7 @@ export function MessageList() {
 function SessionSummary({ toolCount }: { toolCount: number }) {
   return (
     <div className="chat-history-summary">
-      <span className="chat-history-summary-icon">{'\uD83D\uDCDC'}</span>
+      <span className="chat-history-summary-icon">{'📜'}</span>
       <span className="chat-history-summary-text">Used {toolCount} tool{toolCount !== 1 ? 's' : ''}</span>
       <span className="chat-history-summary-count">{toolCount} action{toolCount !== 1 ? 's' : ''}</span>
     </div>
@@ -310,7 +379,6 @@ interface ToolCallGroupProps {
 }
 
 function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
-  // Auto-expand if group contains AskUser or plan tools so their UI is immediately visible
   const hasSpecialTool = calls.some(tc =>
     tc.toolName === 'AskUserQuestion' ||
     tc.toolName === 'ExitPlanMode' ||
@@ -320,7 +388,6 @@ function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
   )
   const [expanded, setExpanded] = useState(hasSpecialTool || verbosity >= 4)
 
-  // Auto-expand when a special tool (AskUser/Plan) is added to an already-mounted group
   useEffect(() => {
     if (hasSpecialTool) setExpanded(true)
   }, [hasSpecialTool])

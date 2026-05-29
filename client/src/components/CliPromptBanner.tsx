@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useMessages } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
@@ -22,6 +22,39 @@ function promptDetail(eventType: string, data: Record<string, unknown>): string 
   return `Claude CLI needs your attention (${eventType})`
 }
 
+const URL_RE = /https?:\/\/[^\s<>"'`)]+/i
+
+// Recursively scan the data payload for any string that looks like an http(s) URL.
+// Login/OAuth prompts often nest the URL under data.url, data.data.url, etc.
+function findUrlInData(data: unknown, depth = 0): string | null {
+  if (depth > 4 || data == null) return null
+  if (typeof data === 'string') {
+    const m = data.match(URL_RE)
+    if (m) {
+      // Strip trailing punctuation that's likely sentence-glue, not part of the URL.
+      return m[0].replace(/[.,;:!?)\]}'"`]+$/, '')
+    }
+    return null
+  }
+  if (typeof data === 'object') {
+    for (const v of Object.values(data as Record<string, unknown>)) {
+      const found = findUrlInData(v, depth + 1)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// Heuristics for permission-style prompts that take a y/n decision.
+function isPermissionPrompt(label: string, detail: string, data: Record<string, unknown>): boolean {
+  if (label === 'Permission Request') return true
+  const sub = data.subtype as string | undefined
+  if (sub && /perm|approve|allow|consent|confirm/i.test(sub)) return true
+  // Match common patterns in the detail text
+  if (/\[y\/n\]|\(y\/n\)|yes\/no|approve\?|allow\?|grant\?/i.test(detail)) return true
+  return false
+}
+
 export function CliPromptBanner({ instanceId }: { instanceId: string }) {
   const { cliPrompts } = useMessages()
   const { dispatch } = useAppDispatch()
@@ -37,12 +70,19 @@ export function CliPromptBanner({ instanceId }: { instanceId: string }) {
     }
   }, [prompt?.receivedAt])
 
-  const handleSend = useCallback(() => {
+  const writeAndClear = useCallback((payload: string) => {
     if (!prompt) return
-    api.writeStdin(instanceId, response + '\n').catch(() => {})
+    api.writeStdin(instanceId, payload).catch(() => {})
     dispatch({ type: 'CLEAR_CLI_PROMPT', payload: instanceId })
     setResponse('')
-  }, [instanceId, prompt, response, dispatch])
+  }, [instanceId, prompt, dispatch])
+
+  const handleSend = useCallback(() => {
+    writeAndClear(response + '\n')
+  }, [response, writeAndClear])
+
+  const handleAllow = useCallback(() => writeAndClear('y\n'), [writeAndClear])
+  const handleDeny = useCallback(() => writeAndClear('n\n'), [writeAndClear])
 
   const handleDismiss = useCallback(() => {
     dispatch({ type: 'CLEAR_CLI_PROMPT', payload: instanceId })
@@ -58,6 +98,14 @@ export function CliPromptBanner({ instanceId }: { instanceId: string }) {
     }
   }, [handleSend, handleDismiss])
 
+  const url = useMemo(() => prompt ? findUrlInData(prompt.data) : null, [prompt])
+  const isPerm = useMemo(() => {
+    if (!prompt) return false
+    const label = promptLabel(prompt.eventType, prompt.data)
+    const detail = promptDetail(prompt.eventType, prompt.data)
+    return isPermissionPrompt(label, detail, prompt.data)
+  }, [prompt])
+
   if (!prompt) return null
 
   const label = promptLabel(prompt.eventType, prompt.data)
@@ -69,6 +117,40 @@ export function CliPromptBanner({ instanceId }: { instanceId: string }) {
       <div className="cli-prompt-body">
         <div className="cli-prompt-label">{label}</div>
         <div className="cli-prompt-detail">{detail}</div>
+
+        {/* OAuth / login URL — primary CTA opens it in a new tab */}
+        {url && (
+          <div className="cli-prompt-action-row">
+            <button
+              className="cli-prompt-open-url"
+              onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
+              title={url}
+            >
+              Open in browser ↗
+            </button>
+            <button
+              className="cli-prompt-copy-url"
+              onClick={() => navigator.clipboard.writeText(url).catch(() => {})}
+              title="Copy URL to clipboard"
+            >
+              Copy URL
+            </button>
+          </div>
+        )}
+
+        {/* Permission-style yes/no decision */}
+        {isPerm && (
+          <div className="cli-prompt-action-row">
+            <button className="cli-prompt-allow" onClick={handleAllow}>
+              Allow
+            </button>
+            <button className="cli-prompt-deny" onClick={handleDeny}>
+              Deny
+            </button>
+          </div>
+        )}
+
+        {/* Free-form text fallback — useful for anything we haven't classified yet */}
         <div className="cli-prompt-input-row">
           <input
             ref={inputRef}
@@ -77,6 +159,7 @@ export function CliPromptBanner({ instanceId }: { instanceId: string }) {
             onChange={e => setResponse(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type response and press Enter..."
+            type={prompt.eventType === 'api_key' || (prompt.data.subtype as string) === 'api_key' ? 'password' : 'text'}
           />
           <button className="cli-prompt-send" onClick={handleSend}>Send</button>
         </div>

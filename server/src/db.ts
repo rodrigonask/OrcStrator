@@ -561,12 +561,35 @@ function migration023(): void {
   setSchemaVersion(23)
 }
 
+function migration024(): void {
+  // ScheduleWakeup support: agent's tool calls are captured here and fired by wakeup-scheduler.
+  // The harness (claude code's interactive runtime) normally drives this, but stream-json mode
+  // has no harness — so OrcStrator persists the intent and fires sendMessage when the timer expires.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_wakeups (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      tool_use_id TEXT,
+      fire_at INTEGER NOT NULL,
+      delay_seconds INTEGER NOT NULL,
+      prompt TEXT NOT NULL,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      fired_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_wakeups_pending_fire_at ON scheduled_wakeups(fire_at) WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_wakeups_instance ON scheduled_wakeups(instance_id, status);
+  `)
+  setSchemaVersion(24)
+}
+
 const migrations = [
   migration001, migration002, migration003, migration004, migration005,
   migration006, migration007, migration008, migration009, migration010,
   migration011, migration012, migration013, migration014, migration015,
   migration016, migration017, migration018, migration019, migration020,
-  migration021, migration022, migration023,
+  migration021, migration022, migration023, migration024,
 ]
 
 function runMigrations(): void {
