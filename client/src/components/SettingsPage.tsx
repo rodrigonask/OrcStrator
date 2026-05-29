@@ -16,8 +16,8 @@ const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
   { value: 'haiku', label: 'Haiku (fast/cheap)' },
   { value: 'sonnet', label: 'Sonnet (balanced)' },
   { value: 'opus-4-6', label: 'Opus 4.6' },
-  { value: 'opus-4-7', label: 'Opus 4.7' },
-  { value: 'opus', label: 'Opus 4.8 (latest, strongest)' },
+  { value: 'opus', label: 'Opus 4.7 (default opus)' },
+  { value: 'opus-4-8', label: 'Opus 4.8 (latest, opt-in)' },
 ]
 const TABS = ['General', 'Agents', 'Advanced'] as const
 type Tab = typeof TABS[number]

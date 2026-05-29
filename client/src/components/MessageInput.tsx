@@ -28,7 +28,7 @@ const EFFORT_LEVELS = [
 
 const AGENT_MODEL_TO_ID: Record<string, string> = {
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-8',
+  opus: 'claude-opus-4-7',
   'opus-4-6': 'claude-opus-4-6',
   'opus-4-7': 'claude-opus-4-7',
   'opus-4-8': 'claude-opus-4-8',
@@ -194,7 +194,7 @@ export function MessageInput() {
         break
       case 'toggle-fast':
         // Toggle between sonnet (fast) and current
-        setModel(m => m === 'claude-sonnet-4-6' ? 'claude-opus-4-8' : 'claude-sonnet-4-6')
+        setModel(m => m === 'claude-sonnet-4-6' ? 'claude-opus-4-7' : 'claude-sonnet-4-6')
         break
       case 'toggle-plan-mode':
         setPlanMode(p => !p)
@@ -414,7 +414,6 @@ export function MessageInput() {
       {instanceId && pendingWakeups?.[instanceId]?.map(w => (
         <WakeupBanner key={w.id} wakeup={w} instanceId={instanceId} />
       ))}
-      {instanceId && <LongSessionWarning instanceId={instanceId} />}
       <div
         className="message-input-wrapper"
         onDrop={handleDrop}
@@ -572,50 +571,3 @@ function WakeupBanner({ wakeup, instanceId }: { wakeup: ScheduledWakeup; instanc
   )
 }
 
-// Soft warning at 50% context use, hard warning at 80%. The agent's output degrades
-// after each /compact (summary loses nuance), so the right move on a long session is
-// usually to spawn a fresh chat and carry only the relevant context forward.
-function LongSessionWarning({ instanceId }: { instanceId: string }) {
-  const { instances } = useInstances()
-  const { dispatch } = useAppDispatch()
-  const instance = instances.find(i => i.id === instanceId)
-  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem(`longwarn-dismissed-${instanceId}`) === '1')
-
-  if (!instance || dismissed) return null
-
-  const used = instance.ctxTokens ?? 0
-  const model = instance.ctxModel ?? ''
-  const cap = model.includes('haiku') ? 200_000 : 1_000_000
-  const pct = used > 0 ? (used / cap) * 100 : 0
-
-  if (pct < 50) return null
-
-  const isHard = pct >= 80
-  const level = isHard ? 'hard' : 'soft'
-
-  const handleDismiss = () => {
-    sessionStorage.setItem(`longwarn-dismissed-${instanceId}`, '1')
-    setDismissed(true)
-  }
-  const handleNewChat = () => {
-    const inst = instance
-    if (!inst) return
-    api.createInstance({ folderId: inst.folderId }).then(newInst => {
-      dispatch({ type: 'ADD_INSTANCE', payload: newInst })
-      dispatch({ type: 'SELECT_INSTANCE', payload: newInst.id })
-    }).catch(() => {})
-  }
-
-  const msg = isHard
-    ? `Context is ${pct.toFixed(0)}% full. /compact will lose detail — start a fresh chat for new work.`
-    : `Long session (${pct.toFixed(0)}% context). For unrelated tasks, a fresh chat keeps quality higher than /compact.`
-
-  return (
-    <div className={`long-session-warning long-session-${level}`}>
-      <span className="long-session-icon" aria-hidden="true">&#x26A0;</span>
-      <span className="long-session-text">{msg}</span>
-      <button className="long-session-newchat" onClick={handleNewChat}>New chat</button>
-      <button className="long-session-dismiss" onClick={handleDismiss} title="Dismiss for this session">&times;</button>
-    </div>
-  )
-}

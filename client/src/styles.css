@@ -3449,65 +3449,6 @@ body {
   background: rgba(124, 58, 237, 0.4);
 }
 
-/* ── Long-session warning (context filling up) ── */
-.long-session-warning {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  margin-bottom: 4px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: var(--font-mono);
-}
-.long-session-soft {
-  background: rgba(234, 179, 8, 0.10);
-  border: 1px solid rgba(234, 179, 8, 0.30);
-  color: #eab308;
-}
-.long-session-hard {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.40);
-  color: #f87171;
-}
-.long-session-icon {
-  font-size: 13px;
-  flex-shrink: 0;
-}
-.long-session-text {
-  flex: 1;
-  line-height: 1.4;
-}
-.long-session-newchat {
-  flex-shrink: 0;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  background: #7c3aed;
-  border: 1px solid #6d28d9;
-  color: #ffffff;
-}
-.long-session-newchat:hover {
-  background: #6d28d9;
-}
-.long-session-dismiss {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: inherit;
-  opacity: 0.6;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 4px;
-}
-.long-session-dismiss:hover {
-  opacity: 1;
-}
-
 /* ── Auto-scheduled wake-up banner ── */
 .wakeup-banner {
   display: flex;

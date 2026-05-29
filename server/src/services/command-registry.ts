@@ -363,18 +363,18 @@ async function handleClientOnly(entry: CommandEntry, ctx: CommandContext): Promi
       return { ok: true, result: 'Clearing conversation history.', action: 'clear-history' }
     case '/model': {
       const modelMap: Record<string, string> = {
-        sonnet: 'claude-sonnet-4-6', opus: 'claude-opus-4-8', haiku: 'claude-haiku-4-5-20251001',
+        sonnet: 'claude-sonnet-4-6', opus: 'claude-opus-4-7', haiku: 'claude-haiku-4-5-20251001',
         'sonnet-4-6': 'claude-sonnet-4-6', 'opus-4-6': 'claude-opus-4-6',
         'opus-4-7': 'claude-opus-4-7', 'opus4.7': 'claude-opus-4-7',
         'opus-4-8': 'claude-opus-4-8', 'opus4.8': 'claude-opus-4-8',
       }
       const requested = ctx.args.trim().toLowerCase()
       if (!requested) {
-        return { ok: true, result: 'Available models: sonnet, opus (4.8), opus-4-7, opus-4-6, haiku', action: 'show-models' }
+        return { ok: true, result: 'Available models: sonnet, opus (4.7), opus-4-8, opus-4-6, haiku', action: 'show-models' }
       }
       const modelId = modelMap[requested] || (requested.startsWith('claude-') ? requested : null)
       if (!modelId) {
-        return { ok: false, result: `Unknown model: ${requested}. Available: sonnet, opus, opus-4-7, opus-4-6, haiku` }
+        return { ok: false, result: `Unknown model: ${requested}. Available: sonnet, opus, opus-4-8, opus-4-6, haiku` }
       }
       return { ok: true, result: `Model set to ${requested}.`, action: 'set-model', value: modelId }
     }

@@ -141,6 +141,32 @@ export function MessageList() {
     virtuosoRef.current.scrollToIndex({ index: items.length - 1, behavior: 'auto', align: 'end' })
   }, [liveText, liveToolCalls.length, showLiveTurn, atBottom, items.length])
 
+  // ALWAYS land at the bottom when opening / switching chats. Virtuoso's scrollToIndex
+  // is unreliable: it anchors on the last data item but tool blocks / images measure
+  // asynchronously, so the "bottom" keeps shifting downward for several frames. Direct
+  // DOM scroll on the scroller is the only reliable way — we run rAF for ~500ms,
+  // continuously pinning scrollTop to scrollHeight as content settles.
+  const scrollerElRef = useRef<HTMLElement | null>(null)
+  const onScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+    scrollerElRef.current = (el && 'scrollHeight' in (el as object)) ? (el as HTMLElement) : null
+  }, [])
+  useEffect(() => {
+    if (!instanceId || items.length === 0) return
+    let cancelled = false
+    let frame = 0
+    const MAX_FRAMES = 30 // ~500ms @ 60fps — covers item-height measurement settling
+    const stick = () => {
+      if (cancelled) return
+      const el = scrollerElRef.current
+      if (el) el.scrollTop = el.scrollHeight
+      setAtBottom(true)
+      frame++
+      if (frame < MAX_FRAMES) requestAnimationFrame(stick)
+    }
+    requestAnimationFrame(stick)
+    return () => { cancelled = true }
+  }, [instanceId, items.length === 0])
+
   const renderItem = useCallback((_index: number, item: DisplayItem) => {
     if (item.kind === 'message') {
       return <MessageBubble key={item.msg.id} message={item.msg} toolResults={toolResults} verbosity={verbosity} />
@@ -192,7 +218,11 @@ export function MessageList() {
 
   return (
     <Virtuoso
+      // Force remount per instance so initialTopMostItemIndex re-applies on chat switch
+      // (Virtuoso retains scroll offset across data swaps otherwise, leaving you mid-list).
+      key={instanceId || 'empty'}
       ref={virtuosoRef}
+      scrollerRef={onScrollerRef}
       className="message-list message-list-virtuoso"
       data={items}
       itemContent={(index, item) => (
