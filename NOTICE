@@ -1,0 +1,382 @@
+OrcStrator
+Copyright 2026 Pareto 13 Ltd
+
+OrcStrator is licensed under FSL-1.1-ALv2 (Functional Source License 1.1,
+Apache 2.0 future license). See LICENSE.
+
+This product includes third-party software, listed below with the license
+each package declares. The full license and notice texts are reproduced in
+THIRD_PARTY_LICENSES. The list is the production dependency closure of the
+shared, server and client packages (client dependencies are bundled into
+the web build). Entries marked "optional" are platform-specific packages
+npm installs only on matching systems.
+
+RUNTIME
+
+Node.js 22.11.0
+  License: MIT, with bundled third-party components (full text in THIRD_PARTY_LICENSES)
+  The Windows installer payload bundles node.exe. Source builds use the
+  Node.js installed on your machine.
+
+SQLite (compiled into better-sqlite3)
+  License: Public Domain
+
+libvips (prebuilt binaries in the @img/sharp-libvips-* packages below)
+  License: LGPL-3.0-or-later
+
+BUNDLED BUILD RUNTIME
+
+Vite 6.4.1
+  License: MIT (full text in THIRD_PARTY_LICENSES)
+  The web build bundles Vite runtime helpers: the module preload polyfill,
+  the preload helper, and the CommonJS interop helpers of
+  @rollup/plugin-commonjs (MIT), which Vite ships inside its own package.
+
+NPM PACKAGES (173)
+
+@dnd-kit/accessibility 3.1.1
+  License: MIT
+@dnd-kit/core 6.3.1
+  License: MIT
+@dnd-kit/sortable 10.0.0
+  License: MIT
+@dnd-kit/utilities 3.2.2
+  License: MIT
+@emnapi/runtime 1.8.1 (optional)
+  License: MIT
+@fastify/accept-negotiator 2.0.1
+  License: MIT
+@fastify/ajv-compiler 4.0.5
+  License: MIT
+@fastify/cors 10.1.0
+  License: MIT
+@fastify/error 4.2.0
+  License: MIT
+@fastify/fast-json-stringify-compiler 5.0.3
+  License: MIT
+@fastify/forwarded 3.0.1
+  License: MIT
+@fastify/merge-json-schemas 0.2.1
+  License: MIT
+@fastify/proxy-addr 5.1.0
+  License: MIT
+@fastify/send 4.1.0
+  License: MIT
+@fastify/static 8.3.0
+  License: MIT
+@fastify/websocket 11.2.0
+  License: MIT
+@img/colour 1.1.0
+  License: MIT
+@img/sharp-darwin-arm64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-darwin-x64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-libvips-darwin-arm64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-darwin-x64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linux-arm 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linux-arm64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linux-ppc64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linux-riscv64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linux-s390x 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linux-x64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linuxmusl-arm64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-libvips-linuxmusl-x64 1.2.4 (optional)
+  License: LGPL-3.0-or-later
+@img/sharp-linux-arm 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linux-arm64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linux-ppc64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linux-riscv64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linux-s390x 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linux-x64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linuxmusl-arm64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-linuxmusl-x64 0.34.5 (optional)
+  License: Apache-2.0
+@img/sharp-wasm32 0.34.5 (optional)
+  License: Apache-2.0 AND LGPL-3.0-or-later AND MIT
+@img/sharp-win32-arm64 0.34.5 (optional)
+  License: Apache-2.0 AND LGPL-3.0-or-later
+@img/sharp-win32-ia32 0.34.5 (optional)
+  License: Apache-2.0 AND LGPL-3.0-or-later
+@img/sharp-win32-x64 0.34.5 (optional)
+  License: Apache-2.0 AND LGPL-3.0-or-later
+@isaacs/cliui 9.0.0
+  License: BlueOak-1.0.0
+@lukeed/ms 2.0.2
+  License: MIT
+@pinojs/redact 0.4.0
+  License: MIT
+@supabase/auth-js 2.99.3
+  License: MIT
+@supabase/functions-js 2.99.3
+  License: MIT
+@supabase/postgrest-js 2.99.3
+  License: MIT
+@supabase/realtime-js 2.99.3
+  License: MIT
+@supabase/storage-js 2.99.3
+  License: MIT
+@supabase/supabase-js 2.99.3
+  License: MIT
+@types/node 22.19.15
+  License: MIT
+@types/phoenix 1.6.7
+  License: MIT
+@types/trusted-types 2.0.7 (optional)
+  License: MIT
+@types/ws 8.18.1
+  License: MIT
+abstract-logging 2.0.1
+  License: MIT
+ajv 8.18.0
+  License: MIT
+ajv-formats 3.0.1
+  License: MIT
+atomic-sleep 1.0.0
+  License: MIT
+avvio 9.2.0
+  License: MIT
+balanced-match 4.0.4
+  License: MIT
+base64-js 1.5.1
+  License: MIT
+better-sqlite3 11.10.0
+  License: MIT
+bindings 1.5.0
+  License: MIT
+bl 4.1.0
+  License: MIT
+brace-expansion 5.0.4
+  License: MIT
+buffer 5.7.1
+  License: MIT
+chownr 1.1.4
+  License: ISC
+content-disposition 0.5.4
+  License: MIT
+cookie 1.1.1
+  License: MIT
+cross-spawn 7.0.6
+  License: MIT
+decompress-response 6.0.0
+  License: MIT
+deep-extend 0.6.0
+  License: MIT
+depd 2.0.0
+  License: MIT
+dequal 2.0.3
+  License: MIT
+detect-libc 2.1.2
+  License: Apache-2.0
+dompurify 3.3.2
+  License: (MPL-2.0 OR Apache-2.0)
+duplexify 4.1.3
+  License: MIT
+end-of-stream 1.4.5
+  License: MIT
+escape-html 1.0.3
+  License: MIT
+expand-template 2.0.3
+  License: (MIT OR WTFPL)
+fast-decode-uri-component 1.0.1
+  License: MIT
+fast-deep-equal 3.1.3
+  License: MIT
+fast-json-stringify 6.3.0
+  License: MIT
+fast-querystring 1.1.2
+  License: MIT
+fast-uri 3.1.0
+  License: BSD-3-Clause
+fastify 5.8.2
+  License: MIT
+fastify-plugin 5.1.0
+  License: MIT
+fastq 1.20.1
+  License: ISC
+file-uri-to-path 1.0.0
+  License: MIT
+find-my-way 9.5.0
+  License: MIT
+foreground-child 3.3.1
+  License: ISC
+fs-constants 1.0.0
+  License: MIT
+github-from-package 0.0.0
+  License: MIT
+glob 11.1.0
+  License: BlueOak-1.0.0
+http-errors 2.0.1
+  License: MIT
+iceberg-js 0.8.1
+  License: MIT
+ieee754 1.2.1
+  License: BSD-3-Clause
+inherits 2.0.4
+  License: ISC
+ini 1.3.8
+  License: ISC
+ipaddr.js 2.3.0
+  License: MIT
+isexe 2.0.0
+  License: ISC
+jackspeak 4.2.3
+  License: BlueOak-1.0.0
+json-schema-ref-resolver 3.0.0
+  License: MIT
+json-schema-traverse 1.0.0
+  License: MIT
+light-my-request 6.6.0
+  License: BSD-3-Clause
+lru-cache 11.2.6
+  License: BlueOak-1.0.0
+marked 15.0.12
+  License: MIT
+mime 3.0.0
+  License: MIT
+mimic-response 3.1.0
+  License: MIT
+minimatch 10.2.4
+  License: BlueOak-1.0.0
+minimist 1.2.8
+  License: MIT
+minipass 7.1.3
+  License: BlueOak-1.0.0
+mkdirp-classic 0.5.3
+  License: MIT
+mnemonist 0.40.0
+  License: MIT
+napi-build-utils 2.0.0
+  License: MIT
+node-abi 3.87.0
+  License: MIT
+obliterator 2.0.5
+  License: MIT
+on-exit-leak-free 2.1.2
+  License: MIT
+once 1.4.0
+  License: ISC
+package-json-from-dist 1.0.1
+  License: BlueOak-1.0.0
+path-key 3.1.1
+  License: MIT
+path-scurry 2.0.2
+  License: BlueOak-1.0.0
+pino 10.3.1
+  License: MIT
+pino-abstract-transport 3.0.0
+  License: MIT
+pino-std-serializers 7.1.0
+  License: MIT
+prebuild-install 7.1.3
+  License: MIT
+process-warning 4.0.1
+  License: MIT
+process-warning 5.0.0
+  License: MIT
+pump 3.0.4
+  License: MIT
+quick-format-unescaped 4.0.4
+  License: MIT
+rc 1.2.8
+  License: (BSD-2-Clause OR MIT OR Apache-2.0)
+react 19.2.4
+  License: MIT
+react-dom 19.2.4
+  License: MIT
+react-virtuoso 4.18.7
+  License: MIT
+readable-stream 3.6.2
+  License: MIT
+real-require 0.2.0
+  License: MIT
+require-from-string 2.0.2
+  License: MIT
+ret 0.5.0
+  License: MIT
+reusify 1.1.0
+  License: MIT
+rfdc 1.4.1
+  License: MIT
+safe-buffer 5.2.1
+  License: MIT
+safe-regex2 5.0.0
+  License: MIT
+safe-stable-stringify 2.5.0
+  License: MIT
+scheduler 0.27.0
+  License: MIT
+secure-json-parse 4.1.0
+  License: BSD-3-Clause
+semver 7.7.4
+  License: ISC
+set-cookie-parser 2.7.2
+  License: MIT
+setprototypeof 1.2.0
+  License: ISC
+sharp 0.34.5
+  License: Apache-2.0
+shebang-command 2.0.0
+  License: MIT
+shebang-regex 3.0.0
+  License: MIT
+signal-exit 4.1.0
+  License: ISC
+simple-concat 1.0.1
+  License: MIT
+simple-get 4.0.1
+  License: MIT
+sonic-boom 4.2.1
+  License: MIT
+split2 4.2.0
+  License: ISC
+statuses 2.0.2
+  License: MIT
+stream-shift 1.0.3
+  License: MIT
+string_decoder 1.3.0
+  License: MIT
+strip-json-comments 2.0.1
+  License: MIT
+tar-fs 2.1.4
+  License: MIT
+tar-stream 2.2.0
+  License: MIT
+thread-stream 4.0.0
+  License: MIT
+toad-cache 3.7.0
+  License: MIT
+toidentifier 1.0.1
+  License: MIT
+tree-kill 1.2.2
+  License: MIT
+tslib 2.8.1
+  License: 0BSD
+tunnel-agent 0.6.0
+  License: Apache-2.0
+undici-types 6.21.0
+  License: MIT
+util-deprecate 1.0.2
+  License: MIT
+which 2.0.2
+  License: ISC
+wrappy 1.0.2
+  License: ISC
+ws 8.19.0
+  License: MIT

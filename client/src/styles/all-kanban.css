@@ -1,0 +1,172 @@
+/* All-projects board.
+ *
+ * AllProjectsKanban.tsx shipped with no stylesheet at all: it was written, never mounted,
+ * and every one of these class names resolved to nothing. Unstyled it renders as a single
+ * column of stacked divs. These rules mirror .pipeline-columns / .pipeline-column in
+ * styles.css so the global board and the per-project board read as the same surface.
+ *
+ * Kept in its own file rather than appended to styles.css, which another instance owns. */
+
+/* The whole board is one horizontal scroll container, not two.
+ *
+ * The headers live in a separate row from the columns. If only the columns scrolled
+ * sideways, the labels would stay put while the columns moved underneath them and every
+ * column would end up captioned with the wrong status. Scrolling here moves both rows
+ * together; min-width: min-content on each row lets them grow past the container so there
+ * is something to scroll. */
+.all-kanban {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  gap: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.all-kanban-headers {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+  padding-bottom: 8px;
+  min-width: min-content;
+}
+
+/* 200px, not the 300px the per-project board uses. Five columns at 300px need 1548px and
+ * do not fit next to the sidebar on a 1440-wide screen, so the Done column fell off the
+ * right edge: the one board whose entire purpose is seeing everything at once was the one
+ * board you could not see all of. flex: 1 still lets them spread out on a wider monitor. */
+.all-kanban-header {
+  min-width: 200px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--border);
+  font-size: 16px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: var(--font-mono);
+}
+
+/* Matches .pipeline-column-count on the per-project board. On an aggregate board the
+ * total per status is the number worth reading. */
+.all-kanban-header-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.all-kanban-columns {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  gap: 12px;
+  min-width: min-content;
+}
+
+.all-kanban-col {
+  min-width: 200px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.all-kanban-col.drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-secondary));
+  box-shadow: 0 0 12px 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Project divider. This is the thing that makes a flat column readable: without it a
+ * column is an undifferentiated pile of cards from a dozen different clients. */
+/* The project cue lives here, on a 2px left edge, and NOT as a tint behind every card.
+ * Tinting the cards washed whole columns in a project's colour (two of the configured
+ * projects are the same green), and projects with no colour set got nothing at all, so
+ * the same board was both too loud and inconsistent. The divider already names the
+ * project; a thin edge is enough to group by, and folderColor() gives every project a
+ * colour whether or not one was ever chosen. */
+.project-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-top: 4px;
+  border-radius: var(--radius-sm);
+  border-left: 2px solid var(--project-color, var(--border));
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.project-divider:first-child {
+  margin-top: 0;
+}
+
+.project-divider:hover {
+  background: var(--bg-hover, var(--bg-tertiary));
+  color: var(--text-primary);
+}
+
+.project-divider-chevron {
+  font-size: 8px;
+  width: 10px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.project-divider-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pushed to the right edge so a collapsed group still declares how much it is hiding. */
+.project-divider-count {
+  margin-left: auto;
+  padding-left: 6px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sub-heading inside a settings card, for cards that group several features under one
+ * title (AI Features holds the shared API key, Session Naming and Session Summary). */
+.settings-subhead {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* The pending-task badge moved into the sidebar's board pill: see .folder-tool-pill in styles.css. */

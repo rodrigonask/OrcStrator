@@ -1,0 +1,62 @@
+/*
+ * "Blocked on the user" styling for the top-bar active strip and the sidebar.
+ *
+ * Deliberately a separate file rather than an addition to styles.css: another instance was
+ * holding uncommitted edits to styles.css when this shipped, and the house rule is not to
+ * touch a file a sibling instance has open. Fold these rules back into styles.css next to
+ * the other .topbar-tab rules once that lands, they are only here for isolation.
+ *
+ * Colour choice: amber, not green. A waiting chip is NOT working, and a pulsing green dot
+ * would say the opposite. The dot is steady on purpose, so movement in the strip continues
+ * to mean "something is happening" and stillness means "something needs you".
+ */
+
+.topbar-tab.waiting {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-tertiary));
+}
+.topbar-tab.waiting:hover {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 20%, var(--bg-tertiary));
+}
+.topbar-tab.waiting .topbar-tab-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Steady amber dot. Same geometry as .topbar-tab-live so the chips stay aligned, but with
+   a slow breathing halo rather than the live pulse: present, not urgent. */
+.topbar-tab-wait {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 26%, transparent);
+  animation: topbar-wait-breathe 3.2s ease-in-out infinite;
+}
+@keyframes topbar-wait-breathe {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 26%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 8%, transparent); }
+}
+
+/* Grid tile header dot. Always-mounted element, class swap only, so no layout shift. */
+.instance-state-dot.awaiting {
+  background: var(--warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 26%, transparent);
+}
+
+/* Sidebar parity, done the sidebar's way: state lives in the NAME COLOUR, never in an
+   extra element. A dot that only exists while blocked would shove the name sideways on
+   every block and un-block. Amber matches the chip, so one instance reads the same in
+   the strip, on its tile, and in the list.
+
+   Colour ONLY, deliberately no font-weight: its sibling name states all change colour
+   alone, and bolding reflows the name's width on every block and unblock, which is the
+   same jitter in a smaller costume. */
+.instance-name.inst-awaiting,
+.instance-name.inst-awaiting .instance-name-text {
+  color: var(--warning);
+}

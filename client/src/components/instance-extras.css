@@ -1,0 +1,52 @@
+/* Sidebar + chat-header extras — the uncommitted-work badge and the cache-keeper
+ * controls (keep-warm 🔥 toggle + compact). Kept out of styles.css to avoid colliding
+ * with parallel sidebar work. */
+
+/* Uncommitted-work marker — a Sublime-style gutter "light" in the row's left
+ * indentation instead of an icon eating right-side space. The element itself is a wide
+ * invisible hover zone (so the tooltip still works); the visible amber capsule is drawn
+ * by ::before. .instance-item is already position:relative. */
+.uncommitted-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  cursor: help;
+  z-index: 1;
+}
+/* Own lane, inboard of the project's colour rail (rail sits at the far-left
+ * edge, ~x6-9; this amber pip sits ~x11-15, clear of both the rail and the
+ * chat text). Soft, contained glow so it never bleeds onto the rail. */
+.uncommitted-gutter::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: #f59e0b;
+  box-shadow: 0 0 3px rgba(245, 158, 11, 0.45);
+}
+
+/* Keep-warm toggle — muted when off, warm orange + gentle flicker when ON. Shared by the
+ * grid-tile header button and the chat-header button (both stroke currentColor). */
+.keepwarm-btn { color: var(--text-muted); opacity: 0.65; }
+.keepwarm-btn:hover { opacity: 1; }
+.keepwarm-btn.on {
+  color: #f97316;
+  opacity: 1;
+  animation: keepwarm-flicker 2.4s ease-in-out infinite;
+}
+@keyframes keepwarm-flicker {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(249, 115, 22, 0.5)); }
+  50%      { filter: drop-shadow(0 0 7px rgba(255, 150, 30, 0.85)); }
+}
+
+/* Compact button — subtle until hovered; dimmed while a compaction is in flight. */
+.compact-btn:hover { color: var(--accent, #8b5cf6); }
+.compact-btn:disabled { opacity: 0.4; cursor: default; }
+.compact-btn.spin { animation: compact-spin 0.9s linear infinite; }
+@keyframes compact-spin { to { transform: rotate(360deg); } }

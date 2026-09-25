@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The Node major the Windows installer bundles. Native modules are
+          # ABI-bound, so CI must test against the Node users actually run
+          # (22 = ABI 127).
+          node-version: 22
+          cache: npm
+
+      # better-sqlite3 ships prebuilds for Node 22 on both platforms;
+      # if a prebuild is ever missing, node-gyp falls back to a source
+      # build (ubuntu runners include build-essential, windows includes MSVC).
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build shared
+        run: npm run build -w shared
+
+      - name: Typecheck server
+        run: npx tsc --noEmit
+        working-directory: server
+
+      - name: Typecheck client
+        run: npx tsc --noEmit
+        working-directory: client
+
+      - name: Build client
+        run: npx vite build
+        working-directory: client
+
+      - name: Schedule tests
+        run: npm run test:schedule
+
+      - name: Server tests
+        run: npm run test:server
+
+      # The hook test gives the spawned hook its own scratch home and
+      # telemetry file, so it never writes into a real data dir.
+      - name: Compaction hook tests
+        run: node server/hooks/test/run-tests.mjs
+
+      - name: Stream parser permission test
+        run: npx tsx scripts/test-parser-permission.ts
+
+  # The Windows launcher and release tooling (PowerShell 5.1, like users run).
+  installer-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and NO stored credentials (the updater tests must see
+          # GitHub unauthenticated).
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      # The updater tests fetch from origin and need a tracking branch. Point
+      # origin at a local bare copy so that works with no credentials and no
+      # network, in this repo and in any fork.
+      - name: Give the checkout a branch with a local upstream
+        shell: powershell
+        run: |
+          $bare = Join-Path $env:RUNNER_TEMP 'origin.git'
+          git checkout -q -B ci-local
+          git init -q --bare $bare
+          git remote set-url origin $bare
+          git push -q origin ci-local
+          if ($LASTEXITCODE -ne 0) { throw 'could not push to the local upstream' }
+          git fetch -q origin
+          git branch --set-upstream-to=origin/ci-local ci-local
+          if ($LASTEXITCODE -ne 0) { throw 'could not track origin/ci-local' }
+          git rev-parse --abbrev-ref '@{u}'
+      - name: Launcher and release tests
+        shell: powershell
+        run: |
+          $failed = @()
+          # Every launcher test runs, whatever the history depth: the updater
+          # tests build the history they need in their own scratch clones.
+          $tests = @(Get-ChildItem installer -Filter 'test-*.ps1') + @(Get-ChildItem installer/release -Filter 'test-*.ps1')
+          foreach ($t in $tests) {
+            Write-Host "::group::$($t.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            Write-Host "$($t.Name): exit $code"
+            if ($code -ne 0) { $failed += $t.Name }
+          }
+          if ($failed.Count) { throw "Failed: $($failed -join ', ')" }
+      - name: Worker tests
+        run: npm test
+        working-directory: worker
