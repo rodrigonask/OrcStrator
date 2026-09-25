@@ -1,0 +1,14 @@
+OrcStrator
+
+This software is licensed under the Functional Source License, Version 1.1,
+with Apache 2.0 as the future license (FSL-1.1-ALv2). The full terms are in
+the LICENSE file installed next to this one.
+
+Third-party components are listed in the NOTICE file of the source repository,
+and their full license texts are in its THIRD_PARTY_LICENSES file.
+
+OrcStrator is not affiliated with Anthropic. It requires your own Claude
+account and the official Claude Code CLI.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTIES OF ANY KIND, AS SET OUT
+IN THE LICENSE.

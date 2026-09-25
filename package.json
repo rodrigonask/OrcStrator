@@ -1,0 +1,31 @@
+{
+  "name": "orcstrator",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Rodrigo Souza (rodrigonask.com)",
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run build -w shared && concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "kill": "npx kill-port 3334 5174",
+    "restart": "npm run kill; npm run dev",
+    "build": "npm run build -w shared && npm run build -w client && npm run build -w server",
+    "test:schedule": "tsx shared/test/next-run.test.ts",
+    "test:server": "tsx server/test/pretty-slug.test.ts",
+    "test": "npm run test:schedule && npm run test:server && npm run build",
+    "start": "npm run start -w server",
+    "prepare": "node -e \"require('fs').existsSync('scripts/install-hooks.cjs')&&require('./scripts/install-hooks.cjs')\""
+  },
+  "devDependencies": {
+    "concurrently": "^9",
+    "sharp": "^0.34.5",
+    "typescript": "^5.6"
+  },
+  "version": "2.0.0",
+  "engines": {
+    "node": ">=22"
+  }
+}

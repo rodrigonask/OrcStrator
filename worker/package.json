@@ -1,0 +1,14 @@
+{
+  "name": "@orcstrator/update-worker",
+  "version": "1.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Rodrigo Souza (rodrigonask.com)",
+  "type": "module",
+  "description": "OrcStrator update server: a Cloudflare Worker serving signed release manifests and downloads, with staged rollout and a kill switch.",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  }
+}

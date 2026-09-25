@@ -1,0 +1,27 @@
+# Example Cloudflare Worker config for the OrcStrator update server. Copy it to
+# wrangler.toml and replace every <PLACEHOLDER> with values from your own account.
+name = "orcstrator-updates"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+[vars]
+# "true" to require a licence key on update checks.
+REQUIRE_KEY = "false"
+# Public bucket base. Only needed when NOT binding R2 below.
+PUBLIC_BASE = ""
+# Your release PUBLIC key (RSA XML, not a secret). Uploaded manifests are
+# verified against it. Several <RSAKeyValue> blocks may be concatenated.
+RELEASE_PUBLIC_KEY = "<YOUR_RELEASE_PUBLIC_KEY_RSA_XML>"
+# Secret (never in this file): UPLOAD_TOKEN, the bearer token for
+# PUT /admin/upload. Set it with `wrangler secret put UPLOAD_TOKEN`.
+
+# Policy, licences and rollout state. Create with:
+#   wrangler kv namespace create ORC_KV
+[[kv_namespaces]]
+binding = "ORC_KV"
+id = "<YOUR_KV_NAMESPACE_ID>"
+
+# Release bucket. Keep it private and let the Worker be the only reader.
+[[r2_buckets]]
+binding = "ORC_RELEASES"
+bucket_name = "<YOUR_R2_BUCKET_NAME>"

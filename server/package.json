@@ -1,0 +1,32 @@
+{
+  "name": "@orcstrator/server",
+  "version": "2.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Rodrigo Souza (rodrigonask.com)",
+  "type": "module",
+  "scripts": {
+    "dev": "node dev-watch.mjs",
+    "dev:raw": "tsx watch --ignore '../shared/dist/**' src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10",
+    "@fastify/static": "^8",
+    "@fastify/websocket": "^11",
+    "@orcstrator/shared": "*",
+    "@supabase/supabase-js": "^2.99.3",
+    "better-sqlite3": "^11",
+    "fastify": "^5",
+    "sharp": "^0.34.5",
+    "tree-kill": "^1.2.2",
+    "ws": "^8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7",
+    "@types/node": "^22",
+    "@types/ws": "^8",
+    "tsx": "^4"
+  }
+}
