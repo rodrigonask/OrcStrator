@@ -7,6 +7,10 @@ Code CLI.
 
 ![OrcStrator](media/screenshot.png)
 
+## Get more out of it
+
+Join the community at [rodrigonask.com](https://rodrigonask.com) for free resources on how to use OrcStrator, plus the up-to-date version before it lands in this repo.
+
 Not affiliated with Anthropic. Requires your own Claude account.
 
 OrcStrator starts the official Claude Code CLI (`claude`) for every session, so
