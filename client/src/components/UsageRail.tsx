@@ -1,5 +1,6 @@
 import { useUI } from '../context/UIContext'
 import type { UsageBucket } from '@shared/types'
+import { useUsage } from '../context/LiveStatsContext'
 
 /**
  * Plan limits, rebuilt for a 32px column.
@@ -56,7 +57,8 @@ function UsageRing({ bucket }: { bucket: UsageBucket }) {
 }
 
 export function UsageRail() {
-  const { usage, settings } = useUI()
+  const { settings } = useUI()
+  const usage = useUsage()
   if (settings.showPlanLimits === false) return null
   if (!usage || !usage.connected || usage.buckets.length === 0) return null
   return (

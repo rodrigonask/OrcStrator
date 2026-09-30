@@ -2,7 +2,7 @@
  * Permission bundles: plain-English grants, each expanding to the CLI rule patterns that
  * actually enforce it.
  *
- * WHY THESE SEVEN. Not guessed. An audit of permission refusals in real sessions showed
+ * WHY THESE SEVEN. Not guessed. A review of permission refusals in real sessions showed
  * Git, file reads and the browser dominate, followed by changing files, running scripts,
  * GitHub and the internet, with deploys, installs and processes making up the rest. Most
  * refusals came from the auto-mode classifier rather than any rule anyone wrote.
@@ -39,13 +39,22 @@ export interface PermissionBundle {
   readOnly: boolean
   /** Rules this expands to, in the CLI's own syntax. */
   allow: string[]
+  /**
+   * ASK rules that ride with the bundle. A prefix allow like `Bash(git diff:*)` also
+   * allows `git diff --output=package.json`, which overwrites a file, and the CLI has no way to
+   * say "this prefix, minus that flag". An ask beats an allow, so these few spellings stop and
+   * wait for a click instead of running, while the everyday forms stay silent.
+   */
+  ask?: string[]
+  /** One line shown under the bundle when the chat runs in Auto mode, where it behaves differently. */
+  autoModeNote?: string
 }
 
 export const PERMISSION_BUNDLES: PermissionBundle[] = [
   {
     id: 'read',
     label: 'Look at things',
-    description: 'Read files, list folders, search text, and check what changed in Git. Cannot alter anything.',
+    description: 'Read files, list folders, search text, and check what changed in Git. The few spellings of these that could write a file or run a program ask you first.',
     readOnly: true,
     allow: [
       'Read', 'Glob', 'Grep',
@@ -55,13 +64,21 @@ export const PERMISSION_BUNDLES: PermissionBundle[] = [
       'Bash(pwd)', 'Bash(which:*)', 'Bash(basename:*)', 'Bash(dirname:*)',
       // Read-only Git. `fetch` is here rather than in the Git bundle because it only updates
       // your copy of the remote's refs: it changes no file you are working on and nothing on
-      // the remote, and it was the joint most-refused git subcommand in the audit.
+      // the remote, and it was the joint most-refused git subcommand in that review.
       'Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)',
       'Bash(git fetch:*)', 'Bash(git remote:*)', 'Bash(git rev-parse:*)', 'Bash(git merge-base:*)',
       'Bash(git ls-files:*)', 'Bash(git blame:*)', 'Bash(git describe:*)', 'Bash(git branch)',
       'Bash(git worktree list)', 'Bash(git stash list)', 'Bash(git reflog:*)',
       'PowerShell(Get-Content:*)', 'PowerShell(Get-ChildItem:*)', 'PowerShell(Select-String:*)',
       'PowerShell(Test-Path:*)', 'PowerShell(Get-Item:*)',
+    ],
+    // Each of these is a reading command with a flag that writes or runs something.
+    ask: [
+      'Bash(rg*--pre*)', 'Bash(git diff*--output*)', 'Bash(sort* -o*)', 'Bash(sort*--output*)',
+      'Bash(find* -delete*)', 'Bash(find* -exec*)', 'Bash(find* -ok*)', 'Bash(find* -fprint*)',
+      'Bash(git remote* add *)', 'Bash(git remote* set-url*)', 'Bash(git remote* remove *)',
+      'Bash(git remote* rm *)', 'Bash(git remote* rename *)', 'Bash(git remote* set-head*)',
+      'Bash(git remote* set-branches*)', 'Bash(git remote* prune*)',
     ],
   },
   {
@@ -82,6 +99,13 @@ export const PERMISSION_BUNDLES: PermissionBundle[] = [
       'Bash(gh pr:*)', 'Bash(gh issue:*)', 'Bash(gh run:*)', 'Bash(gh browse:*)',
       'Bash(gh repo view:*)', 'Bash(gh repo clone:*)', 'Bash(gh release view:*)',
       'Bash(gh auth status)',
+    ],
+    // Saving work must not be able to throw work away, or change git for every repo on the machine.
+    ask: [
+      'Bash(git reset*--hard*)', 'Bash(git restore*)', 'Bash(git checkout* -- *)', 'Bash(git checkout* .)',
+      'Bash(git stash* drop*)', 'Bash(git stash* clear*)', 'Bash(git branch* -D*)',
+      'Bash(git config*--global*)', 'Bash(git config*--system*)', 'Bash(git config*alias.*)',
+      'Bash(git clean*)',
     ],
   },
   {
@@ -113,6 +137,7 @@ export const PERMISSION_BUNDLES: PermissionBundle[] = [
       // otherwise by listing cmdlets would be theatre.
       'PowerShell',
     ],
+    autoModeNote: 'In Auto mode (the recommended default) this switch only partly applies: npm and the other package managers run without asking, and they can run any script in the project, but direct Node, Python and shell commands still ask you each time.',
   },
   {
     id: 'web',
@@ -178,43 +203,180 @@ function remoteDeletionRules(branch: string): string[] {
     `Bash(git push*--delete* ${branch}*)`,
     `Bash(git push* -d* ${branch}*)`,
     `Bash(git push* :${branch}*)`,
+    // The full ref name reaches the same branch.
+    `Bash(git push*--delete* refs/heads/${branch}*)`,
+    `Bash(git push* -d* refs/heads/${branch}*)`,
+    `Bash(git push* :refs/heads/${branch}*)`,
   ]
 }
+
+/**
+ * `-f` combined with the other one-letter push flags: `-fu`, `-uf`, `-fuv` and so on. Listed, not
+ * globbed: `* -*f*` would also catch `git push -u origin handoff --tags`.
+ */
+const FORCE_COMBOS = ['fu', 'uf', 'fv', 'vf', 'fq', 'qf', 'fuv', 'fvu', 'ufv', 'uvf', 'vfu', 'vuf']
+
+/** The push rules, before the global-option twins are added. */
+const PUSH_RULES: string[] = [
+  'Bash(git push*--force*)',
+  'Bash(git push*--force-with-lease*)',
+  'Bash(git push* -f)',
+  'Bash(git push* -f *)',
+  ...FORCE_COMBOS.flatMap(c => [`Bash(git push* -${c})`, `Bash(git push* -${c} *)`]),
+  ...PROTECTED_BRANCHES.flatMap(remoteDeletionRules),
+]
 
 /**
  * The git half of the fence: rewriting history that is already pushed, and deleting a trunk
  * branch. Exported so the "recommended git rules" preset in the UI can BE this list instead
  * of holding a copy of it. The copy is what drifted, and once the two disagreed nobody could
  * tell which one had bitten.
+ *
+ * Every rule also has a twin for a global option before `push` (`git -C ../app push -f`,
+ * `git -c push.default=current push -f`), which agents in worktrees write all the time.
  */
 export const GIT_HISTORY_FENCE: string[] = [
-  'Bash(git push*--force*)',
-  'Bash(git push*--force-with-lease*)',
-  'Bash(git push* -f)',
-  'Bash(git push* -f *)',
-  ...PROTECTED_BRANCHES.flatMap(remoteDeletionRules),
+  ...PUSH_RULES,
+  ...PUSH_RULES.map(r => r.replace(/^Bash\(git push/, 'Bash(git -* push')),
 ]
 
 /**
- * Deny rules for "everything except destructive". Deliberately short and precise rather than
- * a broad sweep, because a deny is a glob over a command string, not an understanding of what
- * the command does: a long list of half-right patterns reads as safety while blocking ordinary
- * work and still missing the exotic spelling.
+ * Git history rules, in both shells. The `run` bundle grants bare `PowerShell`, so a Bash-only
+ * deny is a deny with a door next to it.
+ */
+function bothShells(bashRules: string[]): string[] {
+  return [...bashRules, ...bashRules.map(r => r.replace(/^Bash\(/, 'PowerShell('))]
+}
+
+/**
+ * Ways to call rm, each anchored at the start of the command. Anchored on purpose: a leading `*`
+ * also caught `echo confirm C:/Windows` and `terraform -chdir=C:/Windows plan`, and a deny cannot
+ * be lifted for one chat.
+ */
+const BASH_RM = ['rm', '/bin/rm', '/usr/bin/rm', '\\rm', 'command rm']
+
+/**
+ * PowerShell delete. The CLI matches PowerShell rules case-insensitively and canonicalizes "common
+ * aliases" before matching, but its docs only give `gci`/`ls`/`dir` as the example, so the delete
+ * aliases are listed explicitly rather than trusted to that mapping. The app's
+ * own matcher maps them either way, so these extra rules are harmless duplicates there.
+ */
+const POWERSHELL_DELETE = ['Remove-Item', 'rm', 'del', 'rd', 'rmdir', 'ri', 'erase']
+
+/**
+ * The system folders nobody's agent should ever delete. Bash spellings carry their casing
+ * (Git Bash is case-preserving and the rule glob is case-sensitive there); PowerShell's are
+ * lower-case because PowerShell matching ignores case.
+ */
+const SYSTEM_DIRS_BASH = ['Windows', 'windows', 'WINDOWS', 'Program Files', 'Program\\ Files']
+const DRIVE_SPELLINGS_BASH = ['/c/', '/C/', 'C:/', 'c:/', 'C:\\', 'C:\\\\']
+const SYSTEM_DIRS_POWERSHELL = ['c:\\windows', 'c:/windows', 'c:\\program files', 'c:/program files']
+const SYSTEM_VARS_BASH = ['$WINDIR', '$SYSTEMROOT', '${WINDIR}', '$windir', '$SystemRoot']
+const SYSTEM_VARS_POWERSHELL = ['$env:windir', '$env:systemroot', '$env:programfiles']
+
+/** Generic ways to say "my home folder", or its parent. The literal path is added at spawn by homeFenceRules. */
+const HOME_WORDS_BASH = ['~', '$HOME', '"$HOME"', '${HOME}', '"${HOME}"', '"$HOME/"', '$USERPROFILE', '"$USERPROFILE"', '~/..', '$HOME/..']
+const HOME_WORDS_POWERSHELL = ['~', '"~"', '$home', '"$home"', '$env:userprofile', '"$env:userprofile"', '${env:userprofile}']
+
+/**
+ * Deny a delete of a folder ITSELF (not of something inside it). The target has to be the whole
+ * word: `rm -rf ~` and `rm -rf ~/` are refused, `rm -rf ~/project/tmp` is not, because cleaning up
+ * inside your home folder is ordinary work and wiping the folder is not.
  *
- * What it covers, and the UI says exactly this: rewriting or deleting history that is already
- * pushed, and deleting the folders an operating system needs. Nothing else.
+ * KNOWN LIMIT, said plainly in the UI too: a rule's `*` is always a wildcard, never a literal star
+ * (the permission docs describe no escape for it), so `rm -rf ~/*` (everything INSIDE the home
+ * folder) cannot be told apart from `rm -rf ~/project` and is not fenced. Same for `rm -rf /*`.
+ */
+function bashDeleteTargetRules(targets: string[]): string[] {
+  return targets.flatMap(t => BASH_RM.flatMap(rm => ['', '/'].flatMap(tail => [`Bash(${rm} * ${t}${tail})`, `Bash(${rm} * ${t}${tail} *)`])))
+}
+function powershellDeleteTargetRules(targets: string[]): string[] {
+  return targets.flatMap(t => POWERSHELL_DELETE.flatMap(cmd => cmd === 'Remove-Item'
+    ? ['', '\\', '/'].flatMap(tail => [
+        `PowerShell(${cmd}* ${t}${tail})`, `PowerShell(${cmd}* ${t}${tail} *)`,
+        `PowerShell(${cmd}*:${t}${tail})`, `PowerShell(${cmd}*:${t}${tail} *)`,
+      ])
+    : [`PowerShell(${cmd} * ${t})`, `PowerShell(${cmd} * ${t} *)`]))
+}
+
+/**
+ * Deny rules for "everything except destructive". Still a short list of catastrophes,
+ * not a sweep, because a deny is a glob over a command string, not an understanding of it (the
+ * CLI's own docs call argument patterns fragile). What it covers, and the UI says exactly this:
+ *
+ *   - rewriting or deleting git history that is already pushed, in the usual spellings
+ *     (`--force`, `-f` alone or combined, `+branch`, `--mirror`, a global option before push),
+ *     and deleting a trunk branch on the remote, including by its full ref name;
+ *   - deleting the whole home folder or its parent (`~`, `$HOME`, `$env:USERPROFILE`, and at
+ *     spawn the literal path, see homeFenceRules);
+ *   - deleting anything in the folders Windows needs, in the usual slash styles and cases.
+ *
+ * Flag order does not matter: the patterns match on the command and the TARGET, so `rm -rf`,
+ * `rm -fr` and `rm -r -f` are all the same rule.
  */
 export const DESTRUCTIVE_FENCE: string[] = [
-  ...GIT_HISTORY_FENCE,
-  'Bash(rm -rf /)',
-  'Bash(rm*-rf*/c/Windows*)',
-  'Bash(rm*-rf*/c/Program Files*)',
-  'PowerShell(Remove-Item*C:\\Windows*)',
-  'PowerShell(Remove-Item*C:\\Program Files*)',
-]
+  ...bothShells([
+    ...GIT_HISTORY_FENCE,
+    'Bash(git push* +*)',
+    'Bash(git push*--mirror*)',
+    'Bash(git -* push* +*)',
+    'Bash(git -* push*--mirror*)',
+  ]),
+  ...BASH_RM.flatMap(rm => [`Bash(${rm} * /)`, `Bash(${rm} * / *)`]),
+  // No space before the folder, so a quoted path ("C:/Program Files"), a -Path: argument and a
+  // plain one are all the same rule.
+  ...SYSTEM_DIRS_BASH.flatMap(d => DRIVE_SPELLINGS_BASH.flatMap(drive => BASH_RM.map(rm => `Bash(${rm} *${drive}${d}*)`))),
+  ...SYSTEM_VARS_BASH.flatMap(v => BASH_RM.map(rm => `Bash(${rm} *${v}*)`)),
+  ...SYSTEM_DIRS_POWERSHELL.flatMap(d => POWERSHELL_DELETE.map(cmd => `PowerShell(${cmd}*${d}*)`)),
+  ...SYSTEM_VARS_POWERSHELL.flatMap(v => POWERSHELL_DELETE.map(cmd => `PowerShell(${cmd}*${v}*)`)),
+  ...bashDeleteTargetRules(HOME_WORDS_BASH),
+  ...powershellDeleteTargetRules(HOME_WORDS_POWERSHELL),
+  'Bash(find ~ *-delete*)', 'Bash(find $HOME *-delete*)',
+].filter((r, i, all) => all.indexOf(r) === i)
 
 /**
- * ASK rules installed when some grants are on but `deploy` is NOT one of them.
+ * The literal home-folder spellings for one machine, added to the fence at spawn. `rm -rf ~` is
+ * covered by DESTRUCTIVE_FENCE; `rm -rf /c/Users/<you>` can only be covered by someone who knows
+ * the path, which is the server, not this shared list.
+ */
+export function homeFenceRules(home: string | null | undefined): string[] {
+  if (!home || typeof home !== 'string') return []
+  const trimmed = home.replace(/[\\/]+$/, '')
+  const m = /^([A-Za-z]):[\\/](.*)$/.exec(trimmed)
+  if (!m) {
+    const parent = trimmed.replace(/\/[^/]+$/, '')
+    return bashDeleteTargetRules([trimmed, ...(parent && parent !== trimmed ? [parent] : [])])
+  }
+  const drive = m[1]
+  const rest = m[2].replace(/\\/g, '/')
+  const parentRest = rest.includes('/') ? rest.replace(/\/[^/]+$/, '') : ''
+  const bash = new Set<string>()
+  const ps = new Set<string>()
+  // Git Bash writes /c/..., everything else C:/... ; PowerShell writes C:\... or C:/... . The
+  // parent (C:\Users) is fenced too: deleting it takes everyone's home folder.
+  for (const r of parentRest ? [rest, parentRest] : [rest]) {
+    const lo = drive.toLowerCase()
+    const up = drive.toUpperCase()
+    bash.add(`/${lo}/${r}`)
+    bash.add(`/${lo}/${r.toLowerCase()}`)
+    bash.add(`${up}:/${r}`)
+    bash.add(`${lo}:/${r.toLowerCase()}`)
+    bash.add(`'${up}:\\${r.replace(/\//g, '\\')}'`)
+    ps.add(`${drive.toLowerCase()}:\\${r.toLowerCase().replace(/\//g, '\\')}`)
+    ps.add(`${drive.toLowerCase()}:/${r.toLowerCase()}`)
+    ps.add(`"${drive.toLowerCase()}:\\${r.toLowerCase().replace(/\//g, '\\')}"`)
+  }
+  return [...bashDeleteTargetRules([...bash]), ...powershellDeleteTargetRules([...ps])]
+}
+
+/** The fence a spawn actually writes: the shared list plus this machine's home folder. */
+export function destructiveFence(home?: string | null): string[] {
+  return [...DESTRUCTIVE_FENCE, ...homeFenceRules(home)].filter((r, i, all) => all.indexOf(r) === i)
+}
+
+/**
+ * ASK rules installed whenever `deploy` is NOT granted (this used to wait until some
+ * other grant was on, so a fresh install gated nothing at all).
  *
  * Without this the deploy toggle would be decorative. "Run programs and scripts" has to
  * include `npm` and `npx` to be useful at all, and `Bash(npx:*)` matches `npx wrangler deploy`
@@ -243,28 +405,90 @@ export const DESTRUCTIVE_FENCE: string[] = [
  * went straight through. The refusal did not stop the
  * deploy, it picked the shell.
  */
-export const DEPLOY_FENCE: string[] = [
-  'Bash(*wrangler deploy*)',
-  'Bash(*wrangler publish*)',
+/**
+ * "deploy" as the script name after a runner prefix, and only as the name: `yarn workspace web
+ * deploy`, `... deploy --prod` and `... deploy:prod` ask; `yarn workspace api test deploy.spec.ts`
+ * and `make deploy-check` do not (a loose `*deploy*` asked on those, and an ask
+ * stops an unattended routine).
+ */
+function scriptNamed(prefix: string): string[] {
+  // Not `deploy:*`: a rule ending in `:*` is the prefix form (the same as `deploy *`), so it can
+  // never match `deploy:prod`. `deploy:p*` catches deploy:prod and deploy:production.
+  // Production and staging names in every separator (`make deploy-prod` and `npm
+  // -w web run deploy-production` stopped asking). Not a bare `deploy-*`: the `*` in a prefix such
+  // as `yarn --cwd *` spans words, so it would ask about `yarn --cwd web add deploy-utils`.
+  // Beta, dev, test and live too; `deploy:beta` is a real
+  // convention here. A rule cannot say "deploy: then any word" (a closing `:*` is the prefix form).
+  const names = ['deploy', 'deploy *']
+  for (const sep of [':', '-', '_']) for (const env of 'psbdtl') names.push(`deploy${sep}${env}*`)
+  return names.map(n => `Bash(*${prefix} ${n})`)
+}
+
+export const DEPLOY_FENCE: string[] = bothShells([
+  // Cloudflare, including Pages and a pinned version (`npx wrangler@3 deploy`).
+  'Bash(*wrangler*deploy*)',
+  'Bash(*WRANGLER*deploy*)',
+  'Bash(*wrangler*publish*)',
+  'Bash(*wrangler*versions upload*)',
+  // Vercel (`vc` is its short name): a bare `vercel` IS a deploy.
+  'Bash(*vercel)',
+  'Bash(*vercel .*)',
   'Bash(*vercel deploy*)',
   'Bash(*vercel --prod*)',
+  'Bash(*vercel --yes*)',
+  'Bash(*vercel -y*)',
+  'Bash(*vercel --prebuilt*)',
+  'Bash(*vercel promote*)',
+  'Bash(*vercel redeploy*)',
+  'Bash(*vc --prod*)',
+  'Bash(*vc deploy*)',
+  'Bash(*netlify deploy*)',
+  'Bash(*netlify-cli deploy*)',
+  'Bash(*ntl deploy*)',
+  'Bash(*firebase deploy*)',
+  'Bash(*firebase-tools deploy*)',
+  'Bash(*firebase-tools@* deploy*)',
   'Bash(*supabase functions deploy*)',
   'Bash(*supabase db push*)',
-  'Bash(*netlify deploy*)',
-  'Bash(npm run deploy*)',
-  'Bash(npm run release*)',
+  'Bash(*supabase db reset*)',
   'Bash(*flyctl deploy*)',
-  'PowerShell(*wrangler deploy*)',
-  'PowerShell(*wrangler publish*)',
-  'PowerShell(*vercel deploy*)',
-  'PowerShell(*vercel --prod*)',
-  'PowerShell(*supabase functions deploy*)',
-  'PowerShell(*supabase db push*)',
-  'PowerShell(*netlify deploy*)',
-  'PowerShell(npm run deploy*)',
-  'PowerShell(npm run release*)',
-  'PowerShell(*flyctl deploy*)',
-]
+  'Bash(*fly deploy*)',
+  'Bash(*railway up*)',
+  'Bash(*railway deploy*)',
+  'Bash(*railway/cli up*)',
+  'Bash(*cdk deploy*)',
+  'Bash(*serverless deploy*)',
+  'Bash(*sls deploy*)',
+  'Bash(*gcloud * deploy*)',
+  ...scriptNamed('make'),
+  'Bash(*gh workflow run deploy.yml*)',
+  'Bash(*gh workflow run deploy.yaml*)',
+  'Bash(*gh workflow run deploy)',
+  'Bash(*gh workflow run deploy *)',
+  'Bash(*gh workflow run deploy-p*)',
+  'Bash(*gh workflow run deploy_p*)',
+  'Bash(*gh workflow run deploy-s*)',
+  'Bash(*gh workflow run deploy_s*)',
+  // The project's own deploy script, through every package manager. Narrow on purpose: the
+  // earlier `*npm*run*deploy*` also asked about `npm run test -- deploy.test.ts`.
+  'Bash(*npm run deploy*)',
+  'Bash(*npm run-script deploy*)',
+  ...scriptNamed('npm run -*'),
+  ...scriptNamed('npm --prefix * run'),
+  ...scriptNamed('npm -w * run'),
+  ...scriptNamed('npm --workspace* run'),
+  'Bash(*npm run release*)',
+  'Bash(*pnpm run deploy*)',
+  'Bash(*pnpm deploy*)',
+  ...scriptNamed('pnpm --filter *'),
+  'Bash(*yarn deploy*)',
+  'Bash(*yarn run deploy*)',
+  ...scriptNamed('yarn workspace *'),
+  ...scriptNamed('yarn --cwd *'),
+  'Bash(*bun deploy*)',
+  'Bash(*bun run deploy*)',
+  ...scriptNamed('bun run --cwd *'),
+])
 
 /** Every bundle id. Used by "Allow everything", which includes deploying. */
 export const ALL_BUNDLE_IDS: PermissionBundleId[] = PERMISSION_BUNDLES.map(b => b.id)
@@ -296,6 +520,17 @@ export function expandBundles(ids: readonly string[] | undefined): string[] {
       seen.add(rule)
       out.push(rule)
     }
+  }
+  return out
+}
+
+/** The ask guards of a set of bundles, de-duplicated and order-stable. */
+export function expandBundleAsks(ids: readonly string[] | undefined): string[] {
+  if (!ids?.length) return []
+  const out: string[] = []
+  for (const bundle of PERMISSION_BUNDLES) {
+    if (!ids.includes(bundle.id)) continue
+    for (const rule of bundle.ask ?? []) if (!out.includes(rule)) out.push(rule)
   }
   return out
 }

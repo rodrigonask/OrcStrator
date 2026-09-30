@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import DOMPurify from 'dompurify'
-import type { PipelineTask, PipelineColumn, TaskComment } from '@shared/types'
+// Link and image rules for every sanitize call.
+import { installSanitizerHooks } from '../../utils/sanitize'
+import type { PipelineTask, PipelineColumn, TaskComment, TaskRun } from '@shared/types'
 import { PIPELINE_COLUMNS, DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { usePipeline } from '../../context/PipelineContext'
 import { rest } from '../../api/rest'
@@ -13,6 +15,9 @@ import { TaskSettings, type TaskSettingsHandle } from './TaskSettings'
 import { describeSchedule, computerZone } from '@shared/schedule-next'
 import { MODELS } from '../../utils/modelOptions'
 import { parseMarkdown } from '../../utils/markdown'
+import { changedCardFields, changedSettingFields, hasCardEdits } from '../../utils/cardEdits'
+
+installSanitizerHooks()
 
 function AgentLabel({ agentId }: { agentId?: string | null }) {
   const { instances } = useInstances()
@@ -44,7 +49,7 @@ function AgentLabel({ agentId }: { agentId?: string | null }) {
 function renderMd(text: string): string {
   return DOMPurify.sanitize(parseMarkdown(text), {
     ALLOWED_TAGS: ['p','br','strong','em','code','pre','ul','ol','li','blockquote','h1','h2','h3','h4','h5','h6','a','s','del'],
-    ALLOWED_ATTR: ['href', 'target'],
+    ALLOWED_ATTR: ['href', 'target', 'rel'],
   })
 }
 
@@ -75,6 +80,7 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
   const [labelInput, setLabelInput] = useState('')
   const [labels, setLabels] = useState<string[]>([...task.labels])
   const [comments, setComments] = useState<TaskComment[]>([])
+  const [runs, setRuns] = useState<TaskRun[]>([])
   const [commentBody, setCommentBody] = useState('')
   const [postingComment, setPostingComment] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -168,6 +174,12 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     rest.getTask(projectId, task.id).then(fetched => {
       setFull(fetched)
       setDescription(fetched.description ?? '')
+      // The board's copy can be older than the row (an agent or a run changed it since the
+      // board last refreshed), so the editable fields start from the row too.
+      // Only where the person has not already typed: the fields are live before the row lands.
+      setTitle(t => (t === task.title ? fetched.title : t))
+      setPriority(p => (p === task.priority ? fetched.priority : p))
+      setLabels(l => (l.join('\u0000') === task.labels.join('\u0000') ? [...(fetched.labels ?? [])] : l))
       setLoadError(null)
     }).catch(err => {
       setLoadError(
@@ -180,6 +192,14 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     if (!projectId) return
     rest.getTaskComments(projectId, task.id).then(setComments).catch(() => {})
   }, [projectId, task.id])
+
+  // Run history, for a card with a schedule. A routine's close summaries land on its runs
+  // rather than in the comments, so the comments stay the things a person wrote. Refetched
+  // when the board's copy of the card changes, which is when a run or a summary lands.
+  useEffect(() => {
+    if (!projectId || !task.scheduleKind) { setRuns([]); return }
+    rest.getTaskRuns(projectId, task.id, 20).then(r => setRuns(r.runs)).catch(() => {})
+  }, [projectId, task.id, task.scheduleKind, task.updatedAt, task.lastRunAt])
 
   // Keep the comments list pinned to its newest entry WITHOUT using scrollIntoView.
   // scrollIntoView walks up and scrolls every scrollable ancestor, and because the UI
@@ -205,13 +225,36 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     body.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
   }, [comments])
 
+  // Escape, the backdrop and the x all close through here. With unsaved edits it asks first:
+  // one stray click on the backdrop used to throw away a half-written description.
+  const edits = { title, description, priority, labels }
+  // A settings section that was opened counts as edited when its payload differs from the row.
+  const settingsDirty = (): boolean => {
+    const s = settingsMounted && full ? settingsRef.current?.build() : undefined
+    if (!s || 'error' in s) return !!s
+    return Object.keys(changedSettingFields(full!, s)).length > 0
+  }
+  const dirty = hasCardEdits(full, edits)
+  const asking = useRef(false)
+  const requestClose = useCallback(async () => {
+    if (asking.current) return
+    if (!dirty && !settingsDirty()) { onClose(); return }
+    asking.current = true
+    try {
+      const ok = await confirm('Close this card without saving? Your changes will be lost.', 'Unsaved changes', { confirmLabel: 'Discard changes', danger: true })
+      if (ok) onClose()
+    } finally {
+      asking.current = false
+    }
+  }, [dirty, onClose, confirm, full, settingsMounted]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') void requestClose()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
+  }, [requestClose])
 
   // ONE SAVE FOR THE WHOLE CARD. The settings section hands over its half of the body, or
   // the first thing wrong with it, and a rejected schedule keeps the panel open with the
@@ -229,11 +272,16 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     setSaveError(null)
     const settings = settingsRef.current?.build()
     if (settings && 'error' in settings) { setSaveError(settings.error); return }
-    try {
-      await rest.updateTask(projectId, task.id, { title, description, priority, labels, ...(settings ?? {}) })
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Could not save this card')
-      return
+    // Only what changed since the row loaded, so a Save never writes back a field an agent or
+    // a run updated while the panel was open.
+    const body = { ...changedCardFields(full, { title, description, priority, labels }), ...(settings ? changedSettingFields(full, settings) : {}) }
+    if (Object.keys(body).length > 0) {
+      try {
+        await rest.updateTask(projectId, task.id, body)
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : 'Could not save this card')
+        return
+      }
     }
     onClose()
   }, [full, task.id, projectId, title, description, priority, labels, onClose])
@@ -255,11 +303,15 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
     // chip. The task could never be unblocked from the panel.
     const currentlyBlocked = labels.includes('blocked')
     try {
+      // Block and unblock are saved on the spot, so the loaded row moves with them: the chip
+      // is not an unsaved edit and must not trigger the discard prompt or be sent again.
       if (currentlyBlocked) {
         setLabels(l => l.filter(lb => lb !== 'blocked'))
+        setFull(f => (f ? { ...f, labels: (f.labels ?? []).filter(lb => lb !== 'blocked') } : f))
         await unblockTask(task.id, projectId)
       } else {
         setLabels(l => (l.includes('blocked') ? l : [...l, 'blocked']))
+        setFull(f => (f ? { ...f, labels: (f.labels ?? []).includes('blocked') ? f.labels : [...(f.labels ?? []), 'blocked'] } : f))
         await blockTask(task.id, 'Manually blocked', projectId)
       }
     } catch (err) {
@@ -358,11 +410,11 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
 
   return (
     <div className="task-detail-overlay">
-      <div className="task-detail-backdrop" onClick={onClose} />
+      <div className="task-detail-backdrop" onClick={() => void requestClose()} />
       <div className="task-detail-panel">
         <div className="task-detail-header">
           <span className="modal-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>Task Detail</span>
-          <button className="modal-close" onClick={onClose}>x</button>
+          <button className="modal-close" onClick={() => void requestClose()}>x</button>
         </div>
 
         <div className="task-detail-body">
@@ -625,6 +677,28 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
               </button>
             </div>
           </div>
+
+          {/* Runs: a routine's record of what each fire did. */}
+          {task.scheduleKind && runs.length > 0 && (
+            <div className="task-detail-section">
+              <div className="task-detail-section-label">Runs</div>
+              <div className="task-comments-list">
+                {runs.map(r => (
+                  <div key={r.id} className="task-comment task-comment-agent">
+                    <div className="task-comment-header">
+                      <span className="task-comment-author">{r.status === 'ok' ? 'Finished' : r.status === 'running' ? 'Running' : r.status.charAt(0).toUpperCase() + r.status.slice(1)}</span>
+                      <span className="task-comment-time">
+                        {formatTime(r.startedAt)}{r.costUsd > 0 ? ` · $${r.costUsd.toFixed(2)}` : ''}
+                      </span>
+                    </div>
+                    {(r.summary || r.error) && (
+                      <div className="task-comment-body" dangerouslySetInnerHTML={{ __html: renderMd(r.summary || r.error || '') }} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* History */}
           <div className="task-detail-section">

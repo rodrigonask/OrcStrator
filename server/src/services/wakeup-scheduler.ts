@@ -1,6 +1,8 @@
 import crypto from 'crypto'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
+import { processRegistry, agentSlot } from './process-registry.js'
+import { isClaimed, chatKey } from './turn-gate.js'
 
 // Agent-initiated ONE-SHOT self-wakeups (ScheduleWakeup tool calls). User-defined
 // RECURRING prompts live in routine-scheduler.ts — the two are deliberately separate.
@@ -13,7 +15,9 @@ export interface WakeupRow {
   delay_seconds: number
   prompt: string
   reason: string | null
-  status: 'pending' | 'fired' | 'cancelled'
+  // 'firing' is the short window while the turn is being started: not 'pending', so sendMessage's
+  // own cancelPendingForInstance cannot cancel the wake-up that is sending it.
+  status: 'pending' | 'firing' | 'fired' | 'cancelled' | 'failed'
   created_at: number
   fired_at: number | null
 }
@@ -55,23 +59,85 @@ function arm(wakeup: WakeupRow): void {
   timers.set(wakeup.id, timer)
 }
 
-async function fire(wakeupId: string): Promise<void> {
+/** How long a wake-up waits when its chat is busy, or when a send fails, before trying again. */
+export const WAKEUP_RETRY_MS = 60_000
+/** Sends that may fail before a wake-up is given up on (a busy chat does not count). */
+const MAX_SEND_ATTEMPTS = 3
+const sendFailures = new Map<string, number>()
+
+type Sender = (opts: { instanceId: string; text: string; cwd: string; sessionId?: string; origin: 'wakeup' }) => Promise<unknown>
+
+/**
+ * A chat is busy while a turn runs in it: tracked by the registry, or not idle in the DB, or a
+ * turn is starting on it right now (turn-gate.ts). The agent limit being full
+ * counts as busy too: the wake-up waits for a slot instead of failing its send attempts.
+ */
+function chatIsBusy(instanceId: string, processState: string | null): boolean {
+  return processRegistry.isTracked(instanceId) || (processState != null && processState !== 'idle')
+    || isClaimed(chatKey(instanceId)) || !agentSlot(instanceId).ok
+}
+
+/** Push a wake-up back by WAKEUP_RETRY_MS and re-arm it, keeping it pending. */
+function rearm(wakeupId: string): void {
+  db.prepare("UPDATE scheduled_wakeups SET status = 'pending', fire_at = ? WHERE id = ?").run(Date.now() + WAKEUP_RETRY_MS, wakeupId)
+  const row = db.prepare('SELECT * FROM scheduled_wakeups WHERE id = ?').get(wakeupId) as WakeupRow | undefined
+  if (row) {
+    arm(row)
+    broadcastEvent({ type: 'wakeup:scheduled', payload: rowToWakeup(row) })
+  }
+}
+
+/**
+ * Fire one wake-up.
+ *
+ * Two rules the old version broke:
+ *   1. A wake-up never lands on a busy chat. sendMessage KILLS a running process before it spawns,
+ *      so an agent still working when its own wake-up came due was killed mid-turn by it. Now the
+ *      wake-up waits another minute instead, as many times as it takes.
+ *   2. It is marked fired only once the turn actually started. It used to be marked first, so a
+ *      send that failed was simply lost. A failed send goes back to pending and retries, and is
+ *      given up on ('failed') only after MAX_SEND_ATTEMPTS.
+ *
+ * `send` is injectable for the test; the real one is sendMessage, imported lazily to avoid the
+ * circular dependency with claude-process.
+ */
+export async function fireWakeup(wakeupId: string, send?: Sender): Promise<'fired' | 'deferred' | 'retry' | 'failed' | 'skipped'> {
+  const pendingTimer = timers.get(wakeupId)
+  if (pendingTimer) clearTimeout(pendingTimer)
   timers.delete(wakeupId)
 
   const row = db.prepare('SELECT * FROM scheduled_wakeups WHERE id = ?').get(wakeupId) as WakeupRow | undefined
-  if (!row || row.status !== 'pending') return
+  if (!row || row.status !== 'pending') return 'skipped'
 
-  const instance = db.prepare('SELECT id, cwd, session_id FROM instances WHERE id = ?')
-    .get(row.instance_id) as { id: string; cwd: string; session_id: string | null } | undefined
+  const instance = db.prepare('SELECT id, cwd, session_id, process_state FROM instances WHERE id = ?')
+    .get(row.instance_id) as { id: string; cwd: string; session_id: string | null; process_state: string | null } | undefined
   if (!instance) {
     db.prepare("UPDATE scheduled_wakeups SET status = 'cancelled' WHERE id = ?").run(wakeupId)
-    return
+    return 'skipped'
   }
 
-  db.prepare("UPDATE scheduled_wakeups SET status = 'fired', fired_at = ? WHERE id = ?")
-    .run(Date.now(), wakeupId)
+  // The user stopped or paused this chat since the wake-up was scheduled: it does not start the
+  // chat again on its own. The user stop hook cancels these
+  // already; this is the check at the moment of firing.
+  const paused = (db.prepare('SELECT state FROM instances WHERE id = ?').get(instance.id) as { state: string } | undefined)?.state === 'paused'
+  // Only a wake-up scheduled BEFORE the stop: one a later turn scheduled (a routine's own
+  // follow-up) is that turn's, not something the user stopped.
+  if (paused || processRegistry.stoppedByUserSince(instance.id, row.created_at)) {
+    db.prepare("UPDATE scheduled_wakeups SET status = 'cancelled' WHERE id = ? AND status = 'pending'").run(wakeupId)
+    broadcastEvent({ type: 'wakeup:cancelled', payload: { instanceId: instance.id, wakeupId } })
+    console.log(`[wakeup] ${wakeupId.slice(0, 8)} cancelled: its chat was ${paused ? 'paused' : 'stopped'} by the user`)
+    return 'skipped'
+  }
 
-  broadcastEvent({ type: 'wakeup:fired', payload: { instanceId: row.instance_id, wakeupId } })
+  if (chatIsBusy(instance.id, instance.process_state)) {
+    console.log(`[wakeup] ${wakeupId.slice(0, 8)} due, but its chat is busy; trying again in ${WAKEUP_RETRY_MS / 1000}s`)
+    rearm(wakeupId)
+    return 'deferred'
+  }
+
+  // Claimed, not yet fired. Guarded on 'pending' so two timers can never both claim it.
+  const claimed = db.prepare("UPDATE scheduled_wakeups SET status = 'firing' WHERE id = ? AND status = 'pending'").run(wakeupId)
+  if (claimed.changes === 0) return 'skipped'
 
   // A wake-up is an autonomous fire too, so its chat surfaces exactly like a routine fire
   // does (grid tile, one glow, bright status until read). The surface itself is made inside
@@ -84,10 +150,9 @@ async function fire(wakeupId: string): Promise<void> {
     ? 'Auto-scheduled check-in. Continue or report status.'
     : row.prompt
 
-  // Lazy import to avoid circular dependency between claude-process and this scheduler.
-  const { sendMessage } = await import('./claude-process.js')
+  const sender: Sender = send ?? (async (o) => (await import('./claude-process.js')).sendMessage(o))
   try {
-    await sendMessage({
+    await sender({
       instanceId: row.instance_id,
       text: prompt,
       cwd: instance.cwd,
@@ -95,11 +160,30 @@ async function fire(wakeupId: string): Promise<void> {
       origin: 'wakeup',
     })
   } catch (err) {
-    console.error(`[wakeup] Failed to fire wakeup ${wakeupId}:`, err)
-    // The turn never started (busy chat, spawn failure). sendMessage takes its own surface
-    // back, by the exact timestamp it wrote; an unqualified ackSurface here would clear an
-    // older pending surface too whenever sendMessage throws before it ever surfaced.
+    // The turn never started (spawn failure, a race with a manual send). sendMessage takes its
+    // own surface back, by the exact timestamp it wrote.
+    const failures = (sendFailures.get(wakeupId) ?? 0) + 1
+    sendFailures.set(wakeupId, failures)
+    if (failures >= MAX_SEND_ATTEMPTS) {
+      console.error(`[wakeup] ${wakeupId.slice(0, 8)} failed to send ${failures} times, giving up:`, err)
+      sendFailures.delete(wakeupId)
+      db.prepare("UPDATE scheduled_wakeups SET status = 'failed' WHERE id = ?").run(wakeupId)
+      broadcastEvent({ type: 'wakeup:cancelled', payload: { instanceId: row.instance_id, wakeupId } })
+      return 'failed'
+    }
+    console.error(`[wakeup] ${wakeupId.slice(0, 8)} failed to send (attempt ${failures}), retrying in ${WAKEUP_RETRY_MS / 1000}s:`, err)
+    rearm(wakeupId)
+    return 'retry'
   }
+
+  sendFailures.delete(wakeupId)
+  db.prepare("UPDATE scheduled_wakeups SET status = 'fired', fired_at = ? WHERE id = ?").run(Date.now(), wakeupId)
+  broadcastEvent({ type: 'wakeup:fired', payload: { instanceId: row.instance_id, wakeupId } })
+  return 'fired'
+}
+
+function fire(wakeupId: string): Promise<unknown> {
+  return fireWakeup(wakeupId).catch(err => console.error(`[wakeup] fire ${wakeupId.slice(0, 8)} crashed:`, err))
 }
 
 export function scheduleWakeup(opts: {
@@ -114,11 +198,26 @@ export function scheduleWakeup(opts: {
   const now = Date.now()
   const fireAt = now + clamped * 1000
 
-  db.prepare(`
-    INSERT INTO scheduled_wakeups
-      (id, instance_id, tool_use_id, fire_at, delay_seconds, prompt, reason, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-  `).run(id, opts.instanceId, opts.toolUseId ?? null, fireAt, clamped, opts.prompt, opts.reason ?? null, now)
+  // The same tool call seen twice (a resumed stream re-sends it) is ONE wake-up,
+  // and a chat may have at most MAX_PENDING_PER_CHAT waiting: an agent that queued dozens
+  // had them all fire together. Checked and inserted in one transaction.
+  const existing = db.transaction(() => {
+    if (opts.toolUseId) {
+      const dup = db.prepare('SELECT id FROM scheduled_wakeups WHERE instance_id = ? AND tool_use_id = ?')
+        .get(opts.instanceId, opts.toolUseId) as { id: string } | undefined
+      if (dup) return dup.id
+    }
+    const pending = (db.prepare("SELECT COUNT(*) AS n FROM scheduled_wakeups WHERE instance_id = ? AND status = 'pending'")
+      .get(opts.instanceId) as { n: number }).n
+    if (pending >= MAX_PENDING_PER_CHAT) throw new WakeupCapError(MAX_PENDING_PER_CHAT)
+    db.prepare(`
+      INSERT INTO scheduled_wakeups
+        (id, instance_id, tool_use_id, fire_at, delay_seconds, prompt, reason, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(id, opts.instanceId, opts.toolUseId ?? null, fireAt, clamped, opts.prompt, opts.reason ?? null, now)
+    return null
+  }).immediate()
+  if (existing) return rowToWakeup(db.prepare('SELECT * FROM scheduled_wakeups WHERE id = ?').get(existing) as WakeupRow)
 
   const row = db.prepare('SELECT * FROM scheduled_wakeups WHERE id = ?').get(id) as WakeupRow
   arm(row)
@@ -128,7 +227,24 @@ export function scheduleWakeup(opts: {
   return wakeup
 }
 
-export function cancelWakeup(wakeupId: string): boolean {
+/** Pending wake-ups one chat may hold at once. */
+export const MAX_PENDING_PER_CHAT = 5
+
+export class WakeupCapError extends Error {
+  constructor(max: number) {
+    super(`This chat already has ${max} wake-ups waiting, so a new one was not scheduled. Cancel one first.`)
+  }
+}
+
+/**
+ * Cancel a pending wake-up. With `instanceId`, only one belonging to that chat
+ * (the route used to ignore the chat id in its URL, so any chat could cancel any other's).
+ */
+export function cancelWakeup(wakeupId: string, instanceId?: string): boolean {
+  if (instanceId !== undefined) {
+    const owner = db.prepare('SELECT instance_id FROM scheduled_wakeups WHERE id = ?').get(wakeupId) as { instance_id: string } | undefined
+    if (!owner || owner.instance_id !== instanceId) return false
+  }
   const timer = timers.get(wakeupId)
   if (timer) {
     clearTimeout(timer)
@@ -174,6 +290,9 @@ export function getAllPending(): ScheduledWakeup[] {
 export function startWakeupScheduler(): void {
   if (started) return
   started = true
+  // A 'firing' row means the server stopped between claiming a wake-up and starting its turn,
+  // so the turn never started: it is pending again, not lost.
+  db.prepare("UPDATE scheduled_wakeups SET status = 'pending' WHERE status = 'firing'").run()
   const pending = db.prepare("SELECT * FROM scheduled_wakeups WHERE status = 'pending'").all() as WakeupRow[]
   for (const row of pending) arm(row)
   console.log(`[wakeup] Scheduler started — re-armed ${pending.length} pending wake-up(s)`)

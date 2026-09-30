@@ -3,9 +3,11 @@ import { api } from '../api'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import type { UsageBucket } from '@shared/types'
+import { useUsage } from '../context/LiveStatsContext'
 
 export function PlanLimitsWidget() {
-  const { usage, settings } = useUI()
+  const { settings } = useUI()
+  const usage = useUsage()
   const { dispatch } = useAppDispatch()
   const [authStarted, setAuthStarted] = useState(false)
   const [pasteCode, setPasteCode] = useState('')

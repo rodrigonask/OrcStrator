@@ -1,4 +1,4 @@
-import type { PipelineColumn, AppSettings, VerbosityLevel, AgentModel, EffortLevel } from './types.js'
+import type { PipelineColumn, AppSettings, VerbosityLevel, AgentModel, EffortLevel, PermissionMode } from './types.js'
 
 export const PIPELINE_COLUMNS: PipelineColumn[] = [
   'backlog', 'ready', 'in_progress', 'in_review', 'done'
@@ -300,8 +300,38 @@ export const DEFAULT_TASK_KICKOFF_TEMPLATE = `You're working on this task from t
 
 When you're done, finish with a short summary of what you changed.`
 
+/**
+ * The app-wide permission mode a chat or card falls back to.
+ *
+ * A NEW install starts in Auto: Claude decides with its safeguards on, instead of every chat
+ * approving everything. Bypass is still there, as an explicit choice in Settings or on one card
+ * (the usual reason: a routine that runs while nobody is watching).
+ *
+ * An EXISTING install keeps exactly what it has. Older installs often have no `permissionMode`
+ * row at all and only `globalFlags: ['--dangerously-skip-permissions']`, so the stored flags are
+ * read before the new default is: a saved bypass stays bypass, a saved `--permission-mode=X`
+ * stays X, and only a settings table with neither falls through to Auto.
+ */
+export const DEFAULT_PERMISSION_MODE: PermissionMode = 'auto'
+
+export function effectivePermissionMode(settings: { permissionMode?: PermissionMode | null; globalFlags?: readonly string[] | null } | null | undefined): PermissionMode {
+  if (settings?.permissionMode) return settings.permissionMode
+  const flags = Array.isArray(settings?.globalFlags) ? settings!.globalFlags! : []
+  if (flags.includes('--dangerously-skip-permissions')) return 'bypassPermissions'
+  const named = flags.find(f => typeof f === 'string' && f.startsWith('--permission-mode='))
+  if (named) {
+    const mode = named.slice('--permission-mode='.length) as PermissionMode
+    if (PERMISSION_MODES.includes(mode)) return mode
+  }
+  return DEFAULT_PERMISSION_MODE
+}
+
+const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'plan', 'acceptEdits', 'dontAsk', 'auto', 'bypassPermissions']
+
 export const DEFAULT_SETTINGS: AppSettings = {
-  globalFlags: ['--dangerously-skip-permissions'],
+  // Auto, not bypass. Written once, into a brand-new database only.
+  globalFlags: ['--permission-mode=auto'],
+  permissionMode: DEFAULT_PERMISSION_MODE,
   idleTimeoutSeconds: 60,
   notifications: true,
   startWithOS: false,

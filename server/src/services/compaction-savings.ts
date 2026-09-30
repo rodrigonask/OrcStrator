@@ -22,19 +22,17 @@ function getOffset(): number {
   }
 }
 
+/** Throws on failure: it runs inside the ingest transaction, which must then roll back its rows too. */
 function setOffset(n: number): void {
-  try {
-    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-      .run(OFFSET_KEY, JSON.stringify(n))
-  } catch {
-    /* non-critical */
-  }
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(OFFSET_KEY, JSON.stringify(n))
 }
 
 // Prepared statements are created lazily INSIDE the functions below, never at module load:
 // `db` is only assigned when initDb() runs, and this module is imported (via the usage route)
-// before that — touching db.prepare at top level would crash startup. better-sqlite3 caches by
-// SQL text, so per-call prepare is effectively free.
+// before that, and touching db.prepare at top level would crash startup. better-sqlite3 does NOT
+// cache statements: the same SQL prepared twice is compiled twice (about 4 microseconds each,
+// measured), which is cheap at this call rate but not free.
 
 // Synchronous by design: with no `await` inside, concurrent callers can't interleave, so the
 // byte-offset cursor stays consistent without locking. Reads only the new tail of the log.
@@ -103,16 +101,22 @@ export function ingestCompactionLog(): void {
         )
       }
     })
-    tx(lines)
-    setOffset(offset + Buffer.byteLength(consumed, 'utf8'))
+    // The rows and the offset that says they were read move together: a crash
+    // between the two used to re-read the same lines on the next boot and count them twice.
+    db.transaction(() => {
+      tx(lines)
+      setOffset(offset + Buffer.byteLength(consumed, 'utf8'))
+    })()
   } catch (err) {
     console.warn('[compaction-savings] ingest failed:', err)
   }
 }
 
+// Days are the user's own calendar days: 'localtime' after 'unixepoch'. UTC buckets
+// put anything done between midnight and 01:00 in British summer time on the previous day.
 export function getCompactionSavingsSummary(since: number): CompactionSavingsSummary {
   const dayRows = db.prepare(`
-    SELECT date(created_at / 1000, 'unixepoch') AS day,
+    SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day,
       COUNT(*) AS compactions,
       COALESCE(SUM(before_chars), 0) AS before_chars,
       COALESCE(SUM(after_chars), 0) AS after_chars,
@@ -126,7 +130,7 @@ export function getCompactionSavingsSummary(since: number): CompactionSavingsSum
   // Dollar value per (day, model) at that model's INPUT rate, counted once = conservative
   // (ignores the smaller recurring cache-read savings on later turns).
   const dayModelRows = db.prepare(`
-    SELECT date(created_at / 1000, 'unixepoch') AS day, model, COALESCE(SUM(saved_tokens), 0) AS saved_tokens
+    SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day, model, COALESCE(SUM(saved_tokens), 0) AS saved_tokens
     FROM compaction_savings
     WHERE created_at >= ?
     GROUP BY day, model

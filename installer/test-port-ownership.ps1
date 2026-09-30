@@ -1,4 +1,4 @@
-# Port handling of an INSTALLED OrcStrator (installer plan s6 B8): it never
+# Port handling of an INSTALLED OrcStrator: it never
 # kills a process it did not start. Only a process recorded in the launcher's
 # own state file AND running an exe from inside its own app folder is "ours".
 #

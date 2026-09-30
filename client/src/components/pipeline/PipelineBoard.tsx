@@ -179,12 +179,6 @@ export function PipelineBoard() {
         <span className="pipeline-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 14 }}>
           {allProjects ? 'All Projects' : 'Pipeline Project'}
         </span>
-        {(() => {
-          const f = folders.find(f => f.id === projectId)
-          return f?.cloudSync ? (
-            <span title={f.lastSyncedAt ? `Last synced: ${new Date(f.lastSyncedAt).toLocaleTimeString()}` : 'Synced to Cloud'} style={{ fontSize: 12, color: 'var(--accent)', marginLeft: 4 }}>{'☁'}</span>
-          ) : null
-        })()}
         <div className="pipeline-kind-filters" role="group" aria-label="Show only">
           <button
             type="button"

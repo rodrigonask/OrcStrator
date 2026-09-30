@@ -29,12 +29,16 @@ export function canonicalizeCwd(input: string): string {
   const hit = cache.get(input)
   if (hit !== undefined) return hit
 
-  const result = resolve(input)
-  cache.set(input, result)
+  const { path: result, complete } = resolve(input)
+  // Only a path that exists in full is remembered. A path with segments that do
+  // not exist yet (a worktree about to be created, say) keeps the caller's spelling for those
+  // segments, and once they are created on disk with a different case the remembered answer
+  // would be wrong for the life of the server. So those are worked out again next time.
+  if (complete) cache.set(input, result)
   return result
 }
 
-function resolve(input: string): string {
+function resolve(input: string): { path: string; complete: boolean } {
   // Walk up to the longest ancestor that exists on disk, canonicalize that, then re-append
   // the segments that don't exist yet (a not-yet-created worktree dir, say).
   let head = input
@@ -42,12 +46,14 @@ function resolve(input: string): string {
   for (;;) {
     try {
       const real = fs.realpathSync.native(head)
-      // More than a case difference (junction/symlink) — leave the caller's path alone.
-      if (real.toLowerCase() !== head.toLowerCase()) return input
-      return tail.length ? path.join(real, ...tail) : real
+      // More than a case difference (junction/symlink): leave the caller's path alone.
+      // Stable for as long as that link exists, so it is safe to remember.
+      if (real.toLowerCase() !== head.toLowerCase()) return { path: input, complete: tail.length === 0 }
+      return tail.length ? { path: path.join(real, ...tail), complete: false } : { path: real, complete: true }
     } catch {
       const parent = path.dirname(head)
-      if (parent === head) return input // reached the root without finding anything real
+      // Reached the root without finding anything real.
+      if (parent === head) return { path: input, complete: false }
       tail.unshift(path.basename(head))
       head = parent
     }

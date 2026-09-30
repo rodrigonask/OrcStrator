@@ -8,7 +8,7 @@ import {
 } from '@shared/permission-rules'
 import type { FolderConfig, PermissionRuleSet } from '@shared/types'
 import { useUI } from '../context/UIContext'
-import { useInstances } from '../context/InstancesContext'
+import { useInstance, useInstancesSelector } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { mergeProjectRules, projectRuleChain } from '../utils/permissionMatch'
@@ -43,10 +43,11 @@ export interface PermissionScopeControl {
 
 export function usePermissionScope(instanceId: string | undefined): PermissionScopeControl {
   const { settings } = useUI()
-  const { folders, instances } = useInstances()
+  const folders = useInstancesSelector(s => s.folders)
+  const instance = useInstance(instanceId)
   const { dispatch } = useAppDispatch()
 
-  const instance = useMemo(() => instances.find(i => i.id === instanceId), [instances, instanceId])
+
   const project = useMemo(
     () => folders.find(f => f.id === instance?.folderId) ?? null,
     [folders, instance],

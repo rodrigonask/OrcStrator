@@ -26,7 +26,7 @@ $want = @(
     'Log','Find-Exe','Get-LauncherState','Save-LauncherState','Set-LauncherStateValue',
     'ConvertTo-OrcCanonicalJson','Test-OrcSignedManifest','Test-OrcPayload','Compare-OrcVersion',
     'Get-OrcInstallRoot','Get-OrcActiveVersion','Set-OrcActiveVersion','Get-OrcVersionPath',
-    'Get-OrcUpdateChannel','Get-OrcUpdateManifest','Get-OrcStagedManifest','ConvertFrom-OrcSignedManifestText','Install-OrcRelease','Remove-OrcOldVersions','Invoke-OrcRollback',
+    'Get-OrcUpdateChannel', 'Get-OrcInstallId', 'Get-OrcUpdateHeaders', 'Test-OrcManifestFresh','Get-OrcUpdateManifest','Get-OrcStagedManifest','ConvertFrom-OrcSignedManifestText','Install-OrcRelease','Remove-OrcOldVersions','Invoke-OrcRollback',
     'Get-OrcDownload','Invoke-OrcArtifactUpdate','Confirm-OrcHealthyBoot','Test-OrcArtifactMode','Get-OrcUpdateSkipReason',
     'Get-OrcBundledNode','Get-OrcNodePath'
 )

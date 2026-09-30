@@ -66,10 +66,11 @@ test('rollout percentages gate correctly', () => {
   }
 });
 
-test('extractKey reads bearer and query forms', () => {
+test('extractKey reads the bearer header only', () => {
   assert.equal(extractKey(req('/stable.json', { authorization: 'Bearer abc123' })), 'abc123');
   assert.equal(extractKey(req('/stable.json', { authorization: 'bearer  spaced  ' })), 'spaced');
-  assert.equal(extractKey(req('/stable.json?key=qk')), 'qk');
+  // A key in the URL lands in logs, so ?key= is no longer read.
+  assert.equal(extractKey(req('/stable.json?key=qk')), null);
   assert.equal(extractKey(req('/stable.json')), null);
 });
 
@@ -137,7 +138,8 @@ test('staged rollout splits installs', async () => {
     const env = baseEnv({ ORC_KV: fakeKv({ 'policy:stable': JSON.stringify({ rolloutPercent: 10 }) }) });
     let served = 0;
     for (let i = 0; i < 300; i++) {
-      const res = await worker.fetch(req('/stable.json', { 'x-orc-install-id': 'id' + i }), env);
+      // Install ids are GUIDs; anything else counts as no id.
+      const res = await worker.fetch(req('/stable.json', { 'x-orc-install-id': `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` }), env);
       if (res.status === 200) served++;
     }
     assert.ok(served > 10 && served < 70, `~30 of 300 expected at 10%, got ${served}`);
@@ -195,9 +197,13 @@ test('/download rejects path traversal', async () => {
     assert.equal(res.status, 404, `${collapsed} should not serve, got ${res.status}`);
   }
 
-  const ok = await worker.fetch(req('/download/2.1.0/orcstrator-2.1.0.zip'), env);
-  assert.equal(ok.status, 302);
-  assert.equal(ok.headers.get('location'), 'https://bucket.test/2.1.0/orcstrator-2.1.0.zip');
+  // A well-formed path is served only once a signed manifest names it.
+  const restore = stubFetch(ENVELOPE);
+  try {
+    const ok = await worker.fetch(req('/download/2.1.0/orcstrator-2.1.0.zip'), env);
+    assert.equal(ok.status, 302);
+    assert.equal(ok.headers.get('location'), 'https://bucket.test/2.1.0/orcstrator-2.1.0.zip');
+  } finally { restore(); }
 });
 
 test('telemetry records and never throws', async () => {
@@ -206,18 +212,19 @@ test('telemetry records and never throws', async () => {
   const res = await worker.fetch(
     new Request('https://updates.test/telemetry', {
       method: 'POST',
-      headers: { 'x-orc-install-id': 'i9', 'content-type': 'application/json' },
-      body: JSON.stringify({ version: '2.1.0', outcome: 'ok' }),
+      // A GUID id and a known outcome (both are validated).
+      headers: { 'x-orc-install-id': '00000000-0000-4000-8000-00000000000a', 'content-type': 'application/json' },
+      body: JSON.stringify({ version: '2.1.0', outcome: 'updated' }),
     }),
     env
   );
   assert.equal(res.status, 204);
-  assert.match(kv.store.get('install:i9'), /2\.1\.0/);
+  assert.match(kv.store.get('install:00000000-0000-4000-8000-00000000000a'), /2\.1\.0/);
 
   const bad = await worker.fetch(
     new Request('https://updates.test/telemetry', {
       method: 'POST',
-      headers: { 'x-orc-install-id': 'i9' },
+      headers: { 'x-orc-install-id': '00000000-0000-4000-8000-00000000000a' },
       body: 'not json',
     }),
     env
@@ -383,7 +390,9 @@ test('/download/latest honours licence enforcement', async () => {
     { 'stable.json': JSON.stringify(INSTALLER_ENVELOPE), '2.1.0/OrcStrator-Setup-2.1.0.exe': 'MZexe' },
     { REQUIRE_KEY: 'true', ORC_KV: fakeKv({ 'licence:vip': JSON.stringify({ owner: 'x' }) }) });
   assert.equal((await worker.fetch(req('/download/latest'), env)).status, 401);
-  assert.equal((await worker.fetch(req('/download/latest?key=vip'), env)).status, 200);
+  // Header only; the same key in the URL is not read.
+  assert.equal((await worker.fetch(req('/download/latest?key=vip'), env)).status, 401);
+  assert.equal((await worker.fetch(req('/download/latest', { authorization: 'Bearer vip' }), env)).status, 200);
 });
 
 test('/download/latest never mutates the stored manifest', async () => {

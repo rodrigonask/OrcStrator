@@ -1,4 +1,5 @@
-import { marked } from 'marked'
+import { marked, type Tokens } from 'marked'
+import { PATH_LINK_MARKER } from './sanitize'
 
 // Every markdown surface in the app — chat bubbles, plan blocks, task descriptions
 // and comments — parses through the same global `marked` singleton, so its config
@@ -8,9 +9,13 @@ import { marked } from 'marked'
 marked.setOptions({ breaks: true })
 
 const renderer = new marked.Renderer()
-renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
-  const titleAttr = title ? ` title="${title}"` : ''
-  return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`
+// The link text goes through the inline parser, so `[**bold**](url)` renders bold instead of
+// showing its asterisks, and href and title are escaped, so a quote in either cannot close
+// the attribute. Every caller sanitizes afterwards; this no longer relies on it.
+renderer.link = function (token: Tokens.Link) {
+  const text = this.parser.parseInline(token.tokens)
+  const titleAttr = token.title ? ` title="${escapeAttr(token.title)}"` : ''
+  return `<a href="${escapeAttr(token.href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`
 }
 
 // Strikethrough takes TWO tildes here. marked follows the GFM spec, where ~one~ tilde
@@ -84,7 +89,8 @@ function protectWinPaths(text: string): { text: string; paths: string[] } {
 // bare-path reading of it, which the click handler retries when the full run misses.
 function anchorOpenTag(p: string): string {
   const alt = p.includes(' ') ? ` data-path-alt="${escapeAttr(p.slice(0, p.indexOf(' ')))}"` : ''
-  return `<a class="auto-path" data-path="${escapeAttr(p)}"${alt} href="#"` +
+  // data-orc-link marks the anchor as the app's own (utils/sanitize.ts).
+  return `<a class="auto-path" data-orc-link="${PATH_LINK_MARKER}" data-path="${escapeAttr(p)}"${alt} href="#"` +
     ` title="Click to open in default app">`
 }
 

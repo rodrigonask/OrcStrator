@@ -2,21 +2,22 @@ import { spawn, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { DATA_DIR, KEEPALIVE_TEXT } from '../config.js'
+import { agentEnvFor } from './api-auth.js'
 import { createStreamParser } from './stream-parser.js'
 import { broadcastEvent, broadcastTerminalLine } from '../ws/handler.js'
 import { db } from '../db.js'
 import { sanitizeSession, healSessionLocation } from './session-sanitizer.js'
 import { canonicalizeCwd } from './canonical-path.js'
-import { scheduleWakeup, cancelPendingForInstance } from './wakeup-scheduler.js'
+import { scheduleWakeup, cancelPendingForInstance, WakeupCapError } from './wakeup-scheduler.js'
 import { surfaceInstance, ackSurface } from './surface.js'
 import { describeOrigin } from './turn-origins.js'
-import type { ClaudeStreamEvent, ClaudeProcessExitEvent, TurnOrigin } from '@orcstrator/shared'
-import { computeCostUsd, resolveContextWindow, AUTOCOMPACT_OPTIONS } from '@orcstrator/shared'
+import type { ClaudeStreamEvent, ClaudeProcessExitEvent, TurnOrigin, MessageContentBlock } from '@orcstrator/shared'
+import { computeCostUsd, resolveContextWindow, AUTOCOMPACT_OPTIONS, redactSecrets } from '@orcstrator/shared'
 import crypto from 'crypto'
-import { processRegistry } from './process-registry.js'
+import { processRegistry, agentSlot, AgentLimitError } from './process-registry.js'
 import { startTurn, addTurnOutput, endTurn } from './turn-progress.js'
 import { markAwaitingInput, clearAwaitingInput, type AwaitingInputKind } from './awaiting-input.js'
-import { resolveClaudeBinary } from './claude-binary.js'
+import { resolveClaudeBinary, CLAUDE_MISSING_MESSAGE } from './claude-binary.js'
 import { promptCache1hEnabled, promptCacheTtl } from './prompt-cache.js'
 import { perTurnCost } from './turn-cost.js'
 import { isWriteTool, extractFilePath, noteEdit, snapshotPreBash, onBashComplete, onTurnEnd as fileLocksTurnEnd, buildUpdateNote, getInstanceDirtyCount, type Conflict } from './file-locks.js'
@@ -24,6 +25,27 @@ import { compactionEnabled, compactionLossless, cliSettingsArgs, readStringSetti
 import { trackPermissionRequest, clearPermissionRequests, oldestPendingPermissionAt, resolvePermissionRequest } from './pending-permissions.js'
 import { armAskOnce, disarmAskOnce } from './ask-once.js'
 import { createStdinCloseTracker, SESSION_STATE_EVENTS_ENV } from './stdin-close.js'
+import { buildTurnFlags } from './turn-flags.js'
+import { reportPersistFailure } from './persist-errors.js'
+import { compactContentForStorage } from './message-media.js'
+import { agentBaseEnv } from './agent-env.js'
+import { claim, claimOrThrow, claimKind, release, holds, isClaimed, attachChild, killClaimChild, chatKey, isCancelled, StartCancelledError, noteSpawn, spawnOf, claimToken, onRelease } from './turn-gate.js'
+
+// A single stdout line longer than this with no newline is a runaway process, not a message:
+// the largest real tool-result line is ~1 MB. Dropped rather than buffered.
+const MAX_PARTIAL_LINE_CHARS = Number(process.env.ORCSTRATOR_MAX_LINE_CHARS) || 32 * 1024 * 1024
+
+/**
+ * Append a decoded chunk to the pending partial line and split on newlines. Only the new chunk
+ * is searched for '\n', so a long line arriving in many chunks is not re-scanned each time.
+ * The last element is always the new partial line (possibly empty).
+ */
+export function splitLines(pending: string, chunk: string): string[] {
+  if (chunk.indexOf('\n') === -1) return [pending + chunk]
+  const parts = chunk.split('\n')
+  parts[0] = pending + parts[0]
+  return parts
+}
 
 // Re-export so other modules (and the startup probe) share one resolved cache.
 export { resolveClaudeBinary } from './claude-binary.js'
@@ -36,10 +58,13 @@ export { resolveClaudeBinary } from './claude-binary.js'
 function requireClaudeBinary(): string {
   const { path: p, hint } = resolveClaudeBinary()
   if (!p) {
-    throw new Error(
-      `Could not find the claude CLI. ${hint}\n` +
+    // The install hint is for the log; the person in the chat gets a plain next step.
+    // 424 keeps this message visible (the error handler masks every 5xx).
+    console.error(
+      `[claude] Could not find the claude CLI. ${hint}\n` +
       `If it is installed in a non-standard location, set ORCSTRATOR_CLAUDE_PATH to its absolute path.`
     )
+    throw Object.assign(new Error(CLAUDE_MISSING_MESSAGE), { statusCode: 424 })
   }
   return p
 }
@@ -127,22 +152,37 @@ interface SendMessageOpts {
   startedBy?: 'user' | 'agent'
   /** origin 'task': the pipeline card this turn was started from. */
   taskId?: string
+  /**
+   * The chat claim (turn-gate.ts) a caller already holds, e.g. /send, which claims before it
+   * stores the message. Without it sendMessage claims the chat itself.
+   */
+  gateToken?: symbol
   /** origin 'routine': the routine that fired. */
   routineId?: string
 }
 
 const ALLOWED_FLAGS = new Set([
   '--dangerously-skip-permissions',
-  '--system-prompt', '--append-system-prompt',
+  // Not --system-prompt, --mcp-config or --strict-mcp-config: the first replaces
+  // the app's own prompt, the second starts any program as an MCP server. The app adds the
+  // system-prompt append itself, after this filter.
+  '--append-system-prompt',
   '--permission-mode', '--model', '--max-tokens',
   '--verbose', '--output-format', '--input-format',
   '--resume', '--session-id', '--no-cache',
-  '--mcp-config', '--strict-mcp-config',
   '--tools', '--allowedTools', '--disallowedTools',
   '--effort', '--max-budget-usd', '--fallback-model',
 ])
 
-function filterFlags(flags: string[]): string[] {
+/** One agent stderr line as it may appear in the server log: capped at 500
+ *  characters, with keys and passwords removed. The caller skips stream-json lines first. */
+export function stderrLogLine(line: string): string {
+  // Redact the whole line first, then cap: capping first could leave half a key behind.
+  const clean = redactSecrets(line).redacted
+  return clean.length > 500 ? clean.slice(0, 500) + '...' : clean
+}
+
+export function filterFlags(flags: string[]): string[] {
   const result: string[] = []
   for (let i = 0; i < flags.length; i++) {
     const flag = flags[i]
@@ -176,7 +216,7 @@ const RETRYABLE_ERROR = /temporarily limiting|not your usage limit|overloaded|se
 // avoids matching the transient "(not your usage limit)" phrasing above.)
 const HARD_LIMIT_ERROR = /usage limit reached|reached your usage limit|\d+\s*-?\s*hour limit|out of (?:quota|credits)|insufficient (?:quota|credit)|credit balance (?:is )?too low|spending limit/i
 
-interface RetryState { failures: number; timer: NodeJS.Timeout | null }
+interface RetryState { failures: number; timer: NodeJS.Timeout | null; armedAt?: number }
 const retryState = new Map<string, RetryState>()
 
 function clearRetryTimer(instanceId: string): void {
@@ -194,7 +234,7 @@ function autoRetryEnabled(): boolean {
   } catch { return true }
 }
 
-interface AutoRetryOpts { instanceId: string; flags: string[]; agentPrompt?: string; resultText?: string; sawAssistantText: boolean }
+interface AutoRetryOpts { instanceId: string; flags: string[]; agentPrompt?: string; resultText?: string; sawAssistantText: boolean; turnStartedAt?: number }
 
 // Called from the exit handler for every finished turn. Resets the streak on success and on
 // non-retryable errors; otherwise schedules a backed-off "Try Again".
@@ -203,6 +243,9 @@ function evaluateAutoRetry(opts: AutoRetryOpts): void {
   const text = resultText || ''
   const retryable = !sawAssistantText && RETRYABLE_ERROR.test(text) && !HARD_LIMIT_ERROR.test(text)
   if (!retryable || !autoRetryEnabled()) { resetRetry(instanceId); return }
+  // The user stopped this chat while (or after) this turn ran: a "Try Again" nobody asked for must
+  // not start it again. A turn that began after the stop (a routine's) retries as usual.
+  if (processRegistry.stoppedByUserSince(instanceId, opts.turnStartedAt ?? 0)) { resetRetry(instanceId); return }
 
   const inst = db.prepare('SELECT id FROM instances WHERE id = ?').get(instanceId) as { id: string } | undefined
   if (!inst) { resetRetry(instanceId); return }
@@ -221,15 +264,19 @@ function evaluateAutoRetry(opts: AutoRetryOpts): void {
   const delay = Math.round(base * (0.75 + Math.random() * 0.5))
   console.log(`[auto-retry] ${instanceId.slice(0, 8)} attempt ${failures}/${RETRY_MAX_ATTEMPTS} scheduled in ${Math.round(delay / 1000)}s (transient error)`)
   const timer = setTimeout(() => { void fireAutoRetry(opts, failures) }, delay)
-  retryState.set(instanceId, { failures, timer })
+  retryState.set(instanceId, { failures, timer, armedAt: Date.now() })
 }
 
 async function fireAutoRetry(opts: AutoRetryOpts, attempt: number): Promise<void> {
   const { instanceId, flags, agentPrompt } = opts
   const s = retryState.get(instanceId); if (s) s.timer = null // timer consumed; keep streak count
-  const inst = db.prepare('SELECT session_id, cwd, process_state FROM instances WHERE id = ?')
-    .get(instanceId) as { session_id: string | null; cwd: string; process_state: string } | undefined
+  const armedAt = s?.armedAt ?? 0
+  const inst = db.prepare('SELECT session_id, cwd, process_state, state FROM instances WHERE id = ?')
+    .get(instanceId) as { session_id: string | null; cwd: string; process_state: string; state: string } | undefined
   if (!inst) { resetRetry(instanceId); return }
+  // Armed before the user pressed Stop, Pause or Reset: the
+  // retry stands down. A message the user sends clears both, and cancels the timer anyway.
+  if (processRegistry.stoppedByUserSince(instanceId, armedAt) || inst.state === 'paused') { resetRetry(instanceId); return }
   // A turn is already running (the user resumed manually, or a prior retry is mid-flight) - stand down.
   if (inst.process_state === 'running') return
 
@@ -240,7 +287,10 @@ async function fireAutoRetry(opts: AutoRetryOpts, attempt: number): Promise<void
   try {
     db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(msgId, instanceId, 'user', JSON.stringify(content), now)
-  } catch { /* non-critical */ }
+  } catch (err) {
+    // Not fatal to the retry itself, but never silent.
+    reportPersistFailure('retry-message', err, { instanceId })
+  }
   broadcastEvent({ type: 'message:added', payload: { instanceId, message: { id: msgId, instanceId, role: 'user', content, createdAt: now } } })
 
   try {
@@ -321,7 +371,10 @@ function recordTurnCost(row: TurnCostRow): { turnIndex: number; cumCost: number;
         last.model,
         promptCacheTtl()
       )
-    } catch { /* non-critical: the restart test runs without it */ }
+    } catch (err) {
+      // The restart test runs without it, so the turn still records; but say so.
+      reportPersistFailure('turn-cost-context', err, { instanceId: row.instanceId, detail: 'last priced model' })
+    }
   }
   const turnCost = perTurnCost({
     cliTotal: row.costUsd,
@@ -345,7 +398,10 @@ function recordTurnCost(row: TurnCostRow): { turnIndex: number; cumCost: number;
         prevCumOutput = prev.cumulative_output
         prevTurnIndex = prev.turn_index
       }
-    } catch { /* non-critical */ }
+    } catch (err) {
+      // The row is still written, but its running totals restart from zero: worth a trace.
+      reportPersistFailure('turn-cost-context', err, { instanceId: row.instanceId, detail: 'previous running total' })
+    }
   }
 
   const turnIndex = prevTurnIndex + 1
@@ -417,18 +473,67 @@ async function pauseOnConflict(instanceId: string, conflict: Conflict): Promise<
   })
 }
 
-function broadcastSystemNote(instanceId: string, text: string): void {
+export function broadcastSystemNote(instanceId: string, text: string): void {
   const message = { id: crypto.randomUUID(), instanceId, role: 'system' as const, content: [{ type: 'text', text }], createdAt: Date.now() }
   try {
     db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(message.id, instanceId, 'system', JSON.stringify(message.content), message.createdAt)
-  } catch { /* non-critical */ }
+  } catch (err) {
+    // The note is still broadcast below, so it shows now; it just will not survive a reload.
+    reportPersistFailure('system-note', err, { instanceId })
+  }
   broadcastEvent({ type: 'message:added', payload: { instanceId, message } })
 }
 
-// In-flight standalone compactions, so a second /compact (or a keep-warm ping) can't
-// race the same session JSONL while one is running.
-const compactingInstances = new Set<string>()
+// A /compact that has not finished by now is hung: it is killed and reported, instead of
+// holding the chat as "compacting" for ever. Env-overridable for tests.
+const COMPACT_TIMEOUT_MS = Number(process.env.ORCSTRATOR_COMPACT_TIMEOUT_MS) || 10 * 60 * 1000
+
+/**
+ * Run `claude --resume <sid> -p /compact` to completion under the chat's claim: the child is
+ * attached to the claim (so Stop and shutdown can reach it) and killed if it runs
+ * past COMPACT_TIMEOUT_MS. Resolves with its stdout, or 'timeout'.
+ */
+async function runCompactChild(opts: { instanceId: string; sessionId: string; cwd: string; token: symbol; label: string }): Promise<{ stdout: string; timedOut: boolean; code: number | null }> {
+  const cmd = requireClaudeBinary()
+  // --verbose IS REQUIRED: `--print` with `--output-format=stream-json` is rejected by the CLI
+  // without it ("requires --verbose"), stdout stays empty, and the compact silently did nothing.
+  const args = ['--resume', opts.sessionId, '-p', '/compact', '--output-format', 'stream-json', '--verbose']
+  const env = agentBaseEnv()
+  Object.assign(env, agentEnvFor(opts.instanceId))
+  const child = spawn(cmd, args, { cwd: opts.cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  attachChild(chatKey(opts.instanceId), opts.token, child)
+  let out = ''
+  let timedOut = false
+  const code = await new Promise<number | null>((resolve, reject) => {
+    let stderrOut = ''
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (c: string) => { out += c })
+    child.stderr?.on('data', (c: string) => { if (stderrOut.length < 64 * 1024) stderrOut += c })
+    const timer = setTimeout(() => {
+      timedOut = true
+      console.warn(`[claude-process] ${opts.label}: still running after ${Math.round(COMPACT_TIMEOUT_MS / 1000)}s, killing it`)
+      void killClaimChild(chatKey(opts.instanceId))
+    }, COMPACT_TIMEOUT_MS)
+    timer.unref?.()
+    let done = false
+    const finish = (c: number | null) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (stderrOut.trim()) console.warn(`[claude-process] ${opts.label} stderr: ${stderrLogLine(stderrOut.trim())}`)
+      resolve(c)
+    }
+    child.once('error', (err) => { if (done) return; done = true; clearTimeout(timer); reject(err) })
+    child.once('close', finish)
+    // 'close' waits for every holder of the pipes; a program the compact left running could
+    // hold stdout open for ever and keep the chat claimed. The process's own exit, plus a
+    // short grace for its last output, is enough.
+    child.once('exit', (c) => { setTimeout(() => finish(c), 2000).unref?.() })
+  })
+  return { stdout: out, timedOut, code }
+}
 
 /**
  * Compact an idle session's context on demand (the standalone twin of the pre-turn
@@ -443,36 +548,22 @@ export async function compactInstance(instanceId: string): Promise<{ ok: boolean
     .get(instanceId) as { cwd: string; session_id: string | null; folder_id: string } | undefined
   if (!inst) return { ok: false, error: 'not-found' }
   if (!inst.session_id) return { ok: false, error: 'no-session' }
-  if (processRegistry.isTracked(instanceId)) return { ok: false, error: 'busy' }
-  if (compactingInstances.has(instanceId)) return { ok: false, error: 'already-compacting' }
+  // The compact claims the chat in the SAME in-flight set every turn start uses, so
+  // a message sent while it runs is refused (409) instead of starting a second agent on the
+  // same conversation, and a compact cannot start while a turn is starting or running.
+  if (processRegistry.isTracked(instanceId) || processRegistry.isAdopted(instanceId)) return { ok: false, error: 'busy' }
+  const token = claim(chatKey(instanceId), 'compact')
+  if (!token) return { ok: false, error: claimKind(chatKey(instanceId)) === 'compact' ? 'already-compacting' : 'busy' }
 
-  compactingInstances.add(instanceId)
   try {
-    const cmd = requireClaudeBinary()
-    // --verbose IS REQUIRED, and leaving it out failed silently for as long as this has
-    // existed. `--print` with `--output-format=stream-json` is rejected by the CLI before it
-    // does anything: "Error: When using --print, --output-format=stream-json requires
-    // --verbose". It goes to stderr, stdout stays empty, recordCompactUsage finds no result
-    // line and returns, and this function returned ok anyway. So every compact this app has
-    // ever run did nothing, while the chat got a "Context compacted" note and the context
-    // gauge was set to zero. The one line below is what the main spawn path at the bottom of
-    // this file has always passed (see the args there); only these two call sites were short.
-    const args = ['--resume', inst.session_id, '-p', '/compact', '--output-format', 'stream-json', '--verbose']
-    const env = { ...process.env }
-    delete env['CLAUDECODE']
-    env['ORCSTRATOR_INSTANCE_ID'] = instanceId
-    const child = spawn(cmd, args, { cwd: inst.cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    let out = ''
-    await new Promise<void>(resolve => {
-      let stderrOut = ''
-      child.stdout?.on('data', (c: Buffer) => { out += c.toString() })
-      child.stderr?.on('data', (c: Buffer) => { stderrOut += c.toString() })
-      child.once('error', () => resolve())
-      child.once('close', () => {
-        if (stderrOut.trim()) console.warn(`[claude-process] compact(manual) stderr: ${stderrOut.trim().slice(0, 200)}`)
-        resolve()
-      })
-    })
+    let out: string
+    try {
+      const r = await runCompactChild({ instanceId, sessionId: inst.session_id, cwd: inst.cwd, token, label: 'compact(manual)' })
+      if (r.timedOut) return { ok: false, error: 'timeout' }
+      out = r.stdout
+    } catch (err) {
+      return { ok: false, error: (err instanceof Error ? err.message : String(err)).slice(0, 160) }
+    }
     // THE RESULT LINE IS THE PROOF IT RAN. Without this test the function reported success
     // whatever happened: the --verbose bug above meant the CLI rejected the invocation
     // before doing anything, stdout came back empty, and this still zeroed the context gauge
@@ -493,11 +584,81 @@ export async function compactInstance(instanceId: string): Promise<{ ok: boolean
     console.warn(`[claude-process] compact(manual) failed for ${instanceId}:`, err)
     return { ok: false, error: String(err).slice(0, 120) }
   } finally {
-    compactingInstances.delete(instanceId)
+    release(chatKey(instanceId), token)
+    // A /btw sent while the compact ran was queued; a compact has no turn exit to flush it.
+    scheduleBtwFlush(instanceId, inst.cwd, inst.session_id ?? undefined, buildTurnFlags({}))
   }
 }
 
+/**
+ * Start a turn on a chat. Claims the chat in the in-flight set (turn-gate.ts) synchronously,
+ * before the first await, and holds the claim until the new process is registered or the
+ * start fails. A second start on the same chat inside that window throws a
+ * BusyError (statusCode 409). A caller that already claimed the chat passes its token.
+ */
+// A routine fire is the user's schedule, but not the user coming back: after a Stop it may run
+// (a paused chat is held back in the scheduler), and it leaves queued notes and retries held.
+const AUTONOMOUS_ORIGINS = new Set<string>(['btw', 'wakeup', 'keepalive', 'retry', 'routine'])
+
+// A user's stop: no pending wake-up and no armed retry may start the chat again on its own.
+processRegistry.onUserStop(id => {
+  resetRetry(id)
+  cancelPendingForInstance(id)
+})
+
 export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: string }> {
+  const key = chatKey(opts.instanceId)
+  const token = holds(key, opts.gateToken) ? opts.gateToken! : claimOrThrow(key, 'turn')
+  // Any start other than a /btw flush is the user (or something on their behalf) moving on
+  // from a Stop, so queued notes may ride again after this turn.
+  // (Not a start a Stop already cancelled: a card Start claims the chat early, and a Stop in
+  // between must keep its queued notes waiting.)
+  // Only a start the user made (or asked for): a wake-up, a keep-warm ping or a retry is not
+  // the user moving on, and must not re-enable the rest.
+  if (!AUTONOMOUS_ORIGINS.has(opts.origin) && !isCancelled(key, token)) processRegistry.clearUserStop(opts.instanceId)
+  try {
+    return await spawnTurn(opts, token)
+  } catch (err) {
+    // A start that failed before a process was registered must not leave the chat reading
+    // "starting" (or, after it replaced a killed turn, "running") for ever. Nothing is alive on
+    // the chat at this point unless the registry or an adoption says so.
+    if (!processRegistry.isTracked(opts.instanceId) && !processRegistry.isAdopted(opts.instanceId)) {
+      try {
+        db.prepare("UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ? AND process_state IN ('spawning', 'running')").run(opts.instanceId)
+      } catch { /* non-critical */ }
+    }
+    // /btw notes queued while this start was being set up would otherwise wait for a turn
+    // exit that never comes. (Not for a btw flush itself: that puts its notes back instead.)
+    if (opts.origin !== 'btw' && !(err instanceof StartCancelledError)) scheduleBtwFlush(opts.instanceId, opts.cwd, opts.sessionId, opts.flags ?? [])
+    throw err
+  } finally {
+    release(key, token)
+  }
+}
+
+// A replaced turn's end-of-turn work, waiting on the claim of the start that replaced it (see
+// the exit handler). Keyed by chat, stamped with that claim's token.
+const deferredFinish = new Map<string, { token: symbol; fn: () => void }>()
+
+function deferFinish(instanceId: string, fn: () => void): void {
+  const token = claimToken(chatKey(instanceId))
+  if (token) deferredFinish.set(instanceId, { token, fn })
+}
+
+// Whoever releases that claim (sendMessage, the /send route after a refusal, a card Start), the
+// replaced turn is settled then: dropped if the start spawned its own turn (whose exit finishes
+// the chat), finished now if it did not. Never later, over some other turn.
+onRelease((key, token) => {
+  if (!key.startsWith('chat:')) return
+  const instanceId = key.slice(5)
+  const entry = deferredFinish.get(instanceId)
+  if (!entry || entry.token !== token) return
+  deferredFinish.delete(instanceId)
+  if (spawnOf(token) || processRegistry.isTracked(instanceId) || isClaimed(key)) return
+  try { entry.fn() } catch (err) { console.error(`[claude-process] finishing the replaced turn on ${instanceId} failed:`, err) }
+})
+
+async function spawnTurn(opts: SendMessageOpts, gateToken: symbol): Promise<{ sessionId: string }> {
   const { instanceId, text, images, sessionId, resume, flags = [], agentPrompt, compact, origin } = opts
   // Spawn with the real on-disk casing. Claude Code bakes the spawn cwd into the session's
   // worktree binding at EnterWorktree time, and a mis-cased cwd makes every later --resume
@@ -509,6 +670,15 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // definition: a turn that ran and showed nothing. Now every turn says what it was.
   console.log(`[claude-process] sendMessage START instance=${instanceId} origin=${describeOrigin(origin)} cwd=${cwd} resume=${!!sessionId} hasPrompt=${!!agentPrompt}`)
 
+  // No usable Claude (a 424): refused before anything below changes state, like the agent
+  // limit, so the chat is left exactly as it was (no "fresh session" note, wake-ups kept).
+  requireClaudeBinary()
+
+  // The agent limit, when the user has switched it on. Checked before anything
+  // below changes state, so a refused start leaves the chat exactly as it was.
+  const slot = agentSlot(instanceId)
+  if (!slot.ok) throw new AgentLimitError(slot.inUse, slot.max)
+
   // Cancel any pending auto-scheduled wake-ups for this instance - fresh activity
   // implicitly supersedes them. Wake-ups that are mid-fire are already marked 'fired'
   // in the DB before they call sendMessage, so this only clears truly pending ones.
@@ -519,10 +689,15 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // escalating if this send also gets rate limited. The streak is reset on a successful turn.
   clearRetryTimer(instanceId)
 
-  // Kill any existing process for this instance (await ensures it's dead before spawning)
-  if (processRegistry.isTracked(instanceId)) {
+  // Kill any existing process for this instance (await ensures it's dead before spawning).
+  // An adopted one (started by the previous server run) counts too. If it will not die, this
+  // start is abandoned: spawning next to a live agent is exactly the double run this prevents.
+  if (processRegistry.isTracked(instanceId) || processRegistry.isAdopted(instanceId)) {
     console.log(`[claude-process] Killing existing process for ${instanceId} before spawning new one`)
-    await processRegistry.killProcess(instanceId)
+    const killed = await processRegistry.killProcess(instanceId)
+    if (!killed) {
+      throw Object.assign(new Error('This chat is still working and could not be stopped, so your message was not sent. Try again, or use Force reset in its ☰ menu.'), { statusCode: 409 })
+    }
   }
 
   // Look up folder_id once for turn_costs denormalization (used by compact + turn rows)
@@ -531,40 +706,14 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
 
   // Pre-compact session context to reduce input tokens on warm sessions
   if (compact && sessionId) {
-    const compactCmd = requireClaudeBinary()
-    // --verbose for the same reason as compactInstance above: without it the CLI refuses the
-    // invocation outright and this pre-turn compact has been a no-op that logged "starting"
-    // and never started.
-    const compactArgs = ['--resume', sessionId, '-p', '/compact', '--output-format', 'stream-json', '--verbose']
-    const compactEnv = { ...process.env }
-    delete compactEnv['CLAUDECODE']
     console.log(`[claude-process] compact: starting for session ${sessionId.slice(0, 8)}`)
     try {
-      const compactChild = spawn(compactCmd, compactArgs, {
-        cwd,
-        env: compactEnv,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-      let compactStdout = ''
-      await new Promise<void>((resolve, reject) => {
-        let stderrOut = ''
-        compactChild.stdout?.on('data', (chunk: Buffer) => { compactStdout += chunk.toString() })
-        compactChild.stderr?.on('data', (chunk: Buffer) => { stderrOut += chunk.toString() })
-        compactChild.once('error', (err) => reject(err))
-        compactChild.once('close', (code) => {
-          if (stderrOut.trim()) {
-            console.warn(`[claude-process] compact stderr: ${stderrOut.trim().slice(0, 200)}`)
-          }
-          if (code !== 0) {
-            console.warn(`[claude-process] compact: exited with code ${code}`)
-          }
-          resolve()
-        })
-      })
+      // Under this turn's own claim, with the same timeout as a standalone compact.
+      const r = await runCompactChild({ instanceId, sessionId, cwd, token: gateToken, label: 'compact' })
+      if (r.code !== 0) console.warn(`[claude-process] compact: exited with code ${r.code}${r.timedOut ? ' (timed out)' : ''}`)
       // Compact runs burn real tokens - parse the result event and persist a
       // turn_costs row (kind='compact') so they stop disappearing from analytics.
-      recordCompactUsage(instanceId, folderId, sessionId, compactStdout)
+      recordCompactUsage(instanceId, folderId, sessionId, r.stdout)
       console.log(`[claude-process] compact: done for session ${sessionId.slice(0, 8)}`)
     } catch (err) {
       console.warn(`[claude-process] compact: failed (non-fatal), continuing with main spawn:`, err)
@@ -659,7 +808,7 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   let updateNote: string | null = null
   try {
     const lastTurn = db.prepare('SELECT MAX(created_at) ts FROM turn_costs WHERE instance_id = ?').get(instanceId) as { ts: number | null } | undefined
-    updateNote = buildUpdateNote(instanceId, cwd, lastTurn?.ts ?? null)
+    updateNote = await buildUpdateNote(instanceId, cwd, lastTurn?.ts ?? null)
     if (updateNote) {
       // Breadcrumb for cache-bust attribution (read by the baseline analysis scripts).
       fs.appendFileSync(
@@ -679,13 +828,13 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     args.push('--append-system-prompt', sanitized)
   }
 
-  // Environment - delete CLAUDECODE to prevent nested session issues
-  const env = { ...process.env }
-  delete env['CLAUDECODE']
+  // Environment: the server's own, minus what must not leak into an agent
+  // (CLAUDECODE and a Claude Code session's identity, npm's variables, the server's settings).
+  const env = agentBaseEnv()
   // Stable per-instance identity for the process and its hooks. Session ids rotate on
   // every --resume, so hooks that need to know WHICH chat instance they run under
   // (e.g. a user-level hook that checks which chat owns a file) key off this instead.
-  env['ORCSTRATOR_INSTANCE_ID'] = instanceId
+  Object.assign(env, agentEnvFor(instanceId))
   // Trigger auto-compaction to prevent runaway context growth (CLI default is ~80-95%)
   env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = '80'
   // Native task list. Claude Code 2.1.233 stopped registering the task tools
@@ -715,6 +864,12 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // Resolved BEFORE the surface below: a missing binary is a failure, and a failure must
   // never leave a bright "waiting on you" behind on a chat where nothing ran.
   const cmd = requireClaudeBinary()
+
+  // Stop was pressed while this start was being set up (the awaits above): nothing spawns.
+  if (isCancelled(chatKey(instanceId), gateToken)) {
+    console.log(`[claude-process] start on ${instanceId.slice(0, 8)} cancelled by Stop before it spawned`)
+    throw new StartCancelledError()
+  }
 
   // -- SURFACE ----------------------------------------------------------------
   // The single place that decides whether a chat pulls itself into the grid. Every Claude
@@ -771,6 +926,8 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // file), and it fails ASYNCHRONOUSLY via the 'error' event below for ENOENT. The first
   // shape is the one that slipped through when only the await was guarded.
   let child: ChildProcess
+  // When this turn began: a user's stop after it holds back its automatic retry.
+  const turnStartedAt = Date.now()
   try {
     child = spawn(cmd, args, {
       cwd,
@@ -784,13 +941,13 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   }
 
   // Transition: reserved → spawning (version-checked)
-  const spawnTransition = db.prepare(
-    `UPDATE instances SET process_state = 'spawning', state = 'running', version = version + 1
-     WHERE id = ? AND process_state IN ('reserved', 'idle')`
+  // Unconditional: this start holds the chat's claim (turn-gate.ts) and any previous process
+  // was confirmed dead above, so it owns the row. The old version check only logged
+  // "REJECTED" and carried on, and then the running transition below matched nothing, which
+  // left the row on the dead process's PID.
+  db.prepare(
+    `UPDATE instances SET process_state = 'spawning', state = 'running', version = version + 1 WHERE id = ?`
   ).run(instanceId)
-  if (spawnTransition.changes === 0) {
-    console.warn(`[claude-process] State transition to spawning REJECTED for ${instanceId}`)
-  }
 
   // Wait for 'spawn' event to confirm PID before registering. A rejection here means no
   // process exists (a bad cwd, a removed worktree, ENOENT), so nothing is "waiting on you":
@@ -816,12 +973,15 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
 
   // Register in ProcessRegistry (only after confirmed spawn)
   processRegistry.registerProcess(instanceId, child)
+  noteSpawn(gateToken, child)
+  deferredFinish.delete(instanceId) // this new turn's own exit finishes the chat from now on
 
-  // Transition: spawning → running + set PID
+  // Transition: spawning → running + set PID, and WHEN it started: after a restart
+  // the PID alone cannot tell this agent apart from a program later given the same number.
   db.prepare(
-    `UPDATE instances SET process_state = 'running', state = 'running', process_pid = ?, version = version + 1
-     WHERE id = ? AND process_state = 'spawning'`
-  ).run(child.pid, instanceId)
+    `UPDATE instances SET process_state = 'running', state = 'running', process_pid = ?, process_started_at = ?, version = version + 1
+     WHERE id = ?`
+  ).run(child.pid, Date.now(), instanceId)
   broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'running' } })
 
   // A turn is running again, so nothing is waiting on the user any more. Cleared HERE, at
@@ -842,6 +1002,12 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // heal-forced fresh start doesn't carry the dead id into stdin/DB - the system event delivers
   // the CLI's new id.
   let resolvedSessionId = resumeSessionId || ''
+  // The session id this process last wrote to the row, and the last one it sent to the tabs.
+  // Both start empty, so the first system event of a process always writes and
+  // announces once; the repeats after it (every hook and status event carries the same id)
+  // write nothing and ride the normal batch instead of forcing a flush each.
+  let persistedSessionId: string | undefined
+  let announcedSessionId: string | undefined
   let lastCostUsd: number | undefined
   // What THIS process spent: the sum of its turns' own costs. lastCostUsd is the CLI's
   // running total, which on 2.1.278+ includes the whole session's earlier spend, so it must
@@ -923,8 +1089,11 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
       broadcastTerminalLine(instanceId, { instanceId, events: [event] })
       return
     }
-    // System events and results are sent immediately
-    if (event.type === 'system' || event.type === 'result' || event.type === 'error' || event.type === 'permission-request') {
+    // Results, errors, permission requests and a NEW session id are sent immediately. A system
+    // event that only repeats the id already announced is ordinary traffic.
+    const newSession = event.type === 'system' && !!event.sessionId && event.sessionId !== announcedSessionId
+    if (newSession && event.type === 'system') announcedSessionId = event.sessionId
+    if (newSession || event.type === 'result' || event.type === 'error' || event.type === 'permission-request') {
       flushBatch()
       broadcastEvent({ type: 'claude:output-batch', payload: { instanceId, events: [event] } })
       return
@@ -971,6 +1140,9 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     // Brief delay lets the CLI flush the tool_result to the session JSONL so the resumed
     // turn sees a complete tool_use/tool_result pair.
     setTimeout(() => {
+      // Only this turn's own process: if it has already gone and the chat moved on, a kill by
+      // chat id here would hit the NEXT turn.
+      if (!processRegistry.isCurrent(instanceId, child)) return
       processRegistry.killProcess(instanceId).then(killed => {
         // The kill can fail (the codebase handles a surviving process explicitly elsewhere).
         // If it did, the turn carries on past the question and finishes normally, and there
@@ -987,14 +1159,32 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   // Decides when stdin may end. NOT on the first `result`: see stdin-close.ts.
   const stdinCloser = createStdinCloseTracker()
 
-  // Read stdout line by line
+  // Read stdout line by line. Decoded as UTF-8 by the stream: a Buffer chunk
+  // turned into a string on its own splits an accented letter or an emoji that straddles two
+  // chunks into two replacement characters. The partial line is capped, so a process that
+  // never writes a newline cannot grow server memory without limit.
   let stdoutBuffer = ''
-  child.stdout?.on('data', (chunk: Buffer) => {
+  child.stdout?.setEncoding('utf8')
+  // Set while the rest of an over-long line is being thrown away, up to its newline: its tail
+  // must not be read as a line of its own.
+  let discardingLine = false
+  child.stdout?.on('data', (raw: string) => {
     try {
       resetTimeout()
-      stdoutBuffer += chunk.toString()
-      const lines = stdoutBuffer.split('\n')
+      let chunk = raw
+      if (discardingLine) {
+        const nl = chunk.indexOf('\n')
+        if (nl === -1) return
+        chunk = chunk.slice(nl + 1)
+        discardingLine = false
+      }
+      const lines = splitLines(stdoutBuffer, chunk)
       stdoutBuffer = lines.pop() || ''
+      if (stdoutBuffer.length > MAX_PARTIAL_LINE_CHARS) {
+        console.warn(`[claude-process] stdout line over ${MAX_PARTIAL_LINE_CHARS} chars without a newline for ${instanceId.slice(0, 8)}, dropped`)
+        stdoutBuffer = ''
+        discardingLine = true
+      }
 
       for (const line of lines) {
         // Parse each line ONCE - the same object is handed to parseLine() below,
@@ -1072,12 +1262,13 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
               if (b.type === 'tool_use' && typeof b.name === 'string' && isWriteTool(b.name)) {
                 const fp = extractFilePath(b.name, (b.input as Record<string, unknown>) ?? {})
                 if (fp) {
-                  try {
-                    const conflict = noteEdit(instanceId, cwd, fp)
-                    if (conflict) void pauseOnConflict(instanceId, conflict)
-                  } catch (e) {
+                  // Async: the git re-check runs off the stream handler. By the time it
+                  // answers, this process must still be the chat's, or the pause is not ours to do.
+                  noteEdit(instanceId, cwd, fp).then(conflict => {
+                    if (conflict && processRegistry.isCurrent(instanceId, child)) void pauseOnConflict(instanceId, conflict)
+                  }).catch(e => {
                     console.warn('[file-locks] noteEdit failed:', e)
-                  }
+                  })
                 }
               }
               // Bash can write files outside the Edit/Write tools. Snapshot dirty state
@@ -1100,7 +1291,12 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
                 const delaySeconds = Number(input.delaySeconds)
                 const prompt = typeof input.prompt === 'string' ? input.prompt : ''
                 const reason = typeof input.reason === 'string' ? input.reason : undefined
-                if (Number.isFinite(delaySeconds) && delaySeconds > 0 && prompt) {
+                // A turn the user stopped (or the app is killing) schedules nothing: its output can
+                // still be read for a moment after the Stop began, and a wake-up made then would start
+                // the chat again on its own.
+                const stoppedTurn = processRegistry.wasStoppedByApp(child) || processRegistry.stoppedByUserSince(instanceId, turnStartedAt)
+                if (stoppedTurn) console.log(`[wakeup] not scheduled: the turn on ${instanceId.slice(0, 8)} that asked for it was stopped`)
+                if (!stoppedTurn && Number.isFinite(delaySeconds) && delaySeconds > 0 && prompt) {
                   try {
                     scheduleWakeup({
                       instanceId,
@@ -1111,25 +1307,37 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
                     })
                   } catch (e) {
                     console.warn(`[claude-process] Failed to schedule wakeup:`, e)
+                    // Too many already waiting: say so in the chat, where it can be seen.
+                    if (e instanceof WakeupCapError) broadcastSystemNote(instanceId, `⏰ ${e.message}`)
                   }
                 }
               }
             }
             const parentToolUseId = typeof raw.parent_tool_use_id === 'string' ? raw.parent_tool_use_id : undefined
-            const content = raw.message.content.map((b: Record<string, unknown>) => {
+            // Stored and broadcast in the chat's shape, with each tool payload capped per field:
+            // a Write of a large file used to put the whole file in the row, and
+            // every tab and every scroll of history carried it again. The full text stays in the
+            // CLI's own transcript.
+            const content = compactContentForStorage(raw.message.content.map((b: Record<string, unknown>) => {
               if (b.type === 'text') return { type: 'text', text: b.text }
               if (b.type === 'thinking') return { type: 'thinking', thinking: b.thinking }
               if (b.type === 'tool_use') return { type: 'tool-call', toolId: b.id, toolName: b.name, input: JSON.stringify(b.input), ...(parentToolUseId ? { parentToolUseId } : {}) }
               return b
-            })
+            }) as Array<Record<string, unknown>>) as unknown as MessageContentBlock[]
             if (raw.message.content.some((b: Record<string, unknown>) => b.type === 'text' && typeof b.text === 'string' && (b.text as string).trim())) {
               sawAssistantText = true
             }
             const createdAt = Date.now()
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
-              VALUES (?, ?, ?, ?, ?)
-            `).run(msgId, instanceId, 'assistant', JSON.stringify(content), createdAt)
+            try {
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+              `).run(msgId, instanceId, 'assistant', JSON.stringify(content), createdAt)
+            } catch (err) {
+              // The reply is still broadcast below, so it shows now, but a reload would lose it.
+              // That used to happen with no trace at all.
+              reportPersistFailure('assistant-message', err, { instanceId, detail: `message ${msgId.slice(0, 8)}` })
+            }
 
             // Broadcast the saved message so the client can display it immediately
             enqueueEvent({
@@ -1138,8 +1346,10 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
               message: { id: msgId, instanceId, role: 'assistant', content, createdAt }
             })
           }
-        } catch {
-          // assistant handling failed (bad shape / DB error) - fall through to parseLine
+        } catch (err) {
+          // Assistant handling failed on something other than the save (a bad shape): the line
+          // still falls through to parseLine, but the failure is logged, never swallowed.
+          console.error(`[claude-process] assistant event handling failed [${instanceId.slice(0, 8)}]:`, err)
         }
 
         // Forward raw line to client for terminal stream view
@@ -1194,7 +1404,17 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
           }
           if (event.type === 'system' && event.sessionId) {
             resolvedSessionId = event.sessionId
-            try { db.prepare('UPDATE instances SET session_id = ? WHERE id = ?').run(resolvedSessionId, instanceId) } catch { /* non-critical */ }
+            // Written only when it changes. The CLI repeats its session id on every
+            // system event (init, hooks, status), and each one used to rewrite the same value.
+            if (event.sessionId !== persistedSessionId) {
+              try {
+                db.prepare('UPDATE instances SET session_id = ? WHERE id = ?').run(resolvedSessionId, instanceId)
+                persistedSessionId = event.sessionId
+              } catch (err) {
+                // Left unset on failure, so the next system event tries again.
+                reportPersistFailure('session-id', err, { instanceId })
+              }
+            }
           }
 
           if (event.type === 'compaction') {
@@ -1213,8 +1433,8 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
             console.log(`[claude-process] Result for ${instanceId}: in=${lastInputTokens} out=${lastOutputTokens} cli_total=$${lastCostUsd} cache_create=${lastCacheCreation} cache_read=${lastCacheRead}`)
 
             // --- Per-turn cost tracking ---
-            // Recorded BEFORE the token_usage write below, because that write reports this
-            // process's spend, which is the sum of the per-turn costs this produces.
+            // Recorded first: this process's spend (processSpendUsd) is the sum of the
+            // per-turn costs this produces.
             const turnCliTotal = event.costUsd ?? 0
             const turnInput = event.inputTokens ?? 0
             const turnOutput = event.outputTokens ?? 0
@@ -1229,7 +1449,10 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
             try {
               const taskRow = db.prepare('SELECT active_task_id FROM instances WHERE id = ?').get(instanceId) as { active_task_id: string | null } | undefined
               currentTaskId = taskRow?.active_task_id ?? null
-            } catch { /* non-critical */ }
+            } catch (err) {
+              // The cost row is still written, without its card.
+              reportPersistFailure('turn-cost-context', err, { instanceId, detail: 'active card' })
+            }
 
             // The CLI's raw running total lands in cli_total_usd, this turn's own share of it
             // in cost_usd, and a locally computed API-equivalent cost in computed_cost_usd.
@@ -1246,47 +1469,42 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
             // and a ping stalled behind rate-limit retries could set max_turn_ms and become
             // that chat's permanent, unerasable "longest turn".
             const isKeepAlivePing = text.trim() === KEEPALIVE_TEXT
+            // The turn's cost row and the message's own cost are ONE write: a crash
+            // between them used to leave a turn cost with no message cost, or the reverse.
+            // (The `token_usage` UPDATE that sat here is gone: nothing has written a
+            // token_usage row for months, so it matched nothing, twice per turn.)
             try {
-              const rec = recordTurnCost({
-                instanceId,
-                folderId,
-                sessionId: sid,
-                messageId: lastAssistantMessageId || null,
-                taskId: currentTaskId,
-                kind: turnKind,
-                inputTokens: turnInput,
-                outputTokens: turnOutput,
-                cacheCreationTokens: turnCacheCreation,
-                cacheReadTokens: turnCacheRead,
-                costUsd: turnCliTotal,
-                durationMs: event.durationMs ?? null,
-                model: event.model ?? lastSeenModel ?? null,
-              })
-              effectiveTurnCost = rec.effectiveCost
-              cumCost = rec.cumCost
-              processSpendUsd += rec.turnCost
+              let turnSpend = 0
+              db.transaction(() => {
+                const rec = recordTurnCost({
+                  instanceId,
+                  folderId,
+                  sessionId: sid,
+                  messageId: lastAssistantMessageId || null,
+                  taskId: currentTaskId,
+                  kind: turnKind,
+                  inputTokens: turnInput,
+                  outputTokens: turnOutput,
+                  cacheCreationTokens: turnCacheCreation,
+                  cacheReadTokens: turnCacheRead,
+                  costUsd: turnCliTotal,
+                  durationMs: event.durationMs ?? null,
+                  model: event.model ?? lastSeenModel ?? null,
+                })
+                if (lastAssistantMessageId) {
+                  db.prepare('UPDATE messages SET input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?')
+                    .run(turnInput, turnOutput, rec.effectiveCost, lastAssistantMessageId)
+                }
+                effectiveTurnCost = rec.effectiveCost
+                cumCost = rec.cumCost
+                turnSpend = rec.turnCost
+              })()
+              processSpendUsd += turnSpend
             } catch (err) {
-              console.error(`[claude-process] Failed to insert turn_costs for ${instanceId}:`, err)
+              // Logged with context and shown to the user: a lost cost row makes the
+              // usage figures quietly low, which nobody can spot afterwards.
+              reportPersistFailure('turn-cost', err, { instanceId, detail: `session ${sid?.slice(0, 8) ?? 'none'}` })
             }
-
-            // Eagerly persist token data NOW - protects against server crash before exit handler runs
-            try {
-              db.prepare(
-                `UPDATE token_usage
-                 SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
-                     cache_creation_tokens = ?, cache_read_tokens = ?
-                 WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)`
-              ).run(
-                resolvedSessionId || null,
-                lastInputTokens || 0,
-                lastOutputTokens || 0,
-                processSpendUsd,
-                lastCacheCreation || 0,
-                lastCacheRead || 0,
-                instanceId,
-                instanceId
-              )
-            } catch { /* non-critical - exit handler will retry */ }
 
             // Final word on context occupancy for this turn. It must be the LAST request's
             // prompt size and nothing else.
@@ -1343,14 +1561,6 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
               }
             }
 
-            // Update the message row with per-turn cost data
-            if (lastAssistantMessageId) {
-              try {
-                db.prepare('UPDATE messages SET input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?')
-                  .run(turnInput, turnOutput, effectiveTurnCost, lastAssistantMessageId)
-              } catch { /* non-critical */ }
-            }
-
             // Attach delta fields to the event for real-time client display
             event.deltaCostUsd = effectiveTurnCost
             event.deltaInputTokens = turnInput
@@ -1379,18 +1589,22 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
   let stderrBuffer = ''
   const stderrTail: string[] = []
   const STDERR_TAIL_MAX = 20
-  child.stderr?.on('data', (chunk: Buffer) => {
+  child.stderr?.setEncoding('utf8')
+  child.stderr?.on('data', (chunk: string) => {
     try {
-      stderrBuffer += chunk.toString()
-      const lines = stderrBuffer.split('\n')
+      const lines = splitLines(stderrBuffer, chunk)
       stderrBuffer = lines.pop() || ''
+      if (stderrBuffer.length > MAX_PARTIAL_LINE_CHARS) stderrBuffer = ''
       for (const line of lines) {
         if (line.trim()) {
-          console.error(`[claude-process] stderr [${instanceId.slice(0, 8)}]:`, line)
           // Skip stream-json blobs the CLI mirrors to stderr (init frames etc.) - they are
-          // noise in a user-facing error and can be megabytes.
+          // noise in a user-facing error and can be megabytes. That skip now comes
+          // BEFORE the log line, and what is logged is capped and has keys and passwords
+          // removed, because the server log is a plain file on disk.
           if (!line.trimStart().startsWith('{')) {
-            stderrTail.push(line.length > 500 ? line.slice(0, 500) + '…' : line)
+            const logged = stderrLogLine(line)
+            console.error(`[claude-process] stderr [${instanceId.slice(0, 8)}]:`, logged)
+            stderrTail.push(logged)
             if (stderrTail.length > STDERR_TAIL_MAX) stderrTail.shift()
           }
           enqueueEvent({ type: 'raw-line', instanceId, line, isStderr: true })
@@ -1534,33 +1748,23 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
       batchTimer = null
     }
 
-    // Unregister from ProcessRegistry (no-op if already removed by killProcess)
-    processRegistry.unregisterProcess(instanceId)
+    // Did a newer turn take this chat over while this process was dying? Its exit then must
+    // not touch the chat's state: unregistering, marking idle or clearing its cards would act
+    // on the NEW turn. Its own tokens and messages are still recorded below.
+    const superseded = (processRegistry.isTracked(instanceId) && !processRegistry.isCurrent(instanceId, child))
+      || isClaimed(chatKey(instanceId))
 
-    // Persist token usage to DB for monitoring
+    // Unregister from ProcessRegistry (no-op if already removed by killProcess, or if a newer
+    // process is the one registered now)
+    processRegistry.unregisterProcess(instanceId, child)
+
+    // Token summary for the log. (Its `token_usage` UPDATE is gone: no row has been
+    // inserted there for months, so it matched nothing. turn_costs is the record.)
     if (lastInputTokens || lastOutputTokens) {
       const cacheRatio = lastInputTokens
         ? Math.round(((lastCacheRead || 0) / lastInputTokens) * 100)
         : 0
       console.log(`[claude-process] Token summary ${instanceId}: cost=$${processSpendUsd.toFixed(4)} (cli_total=$${(lastCostUsd || 0).toFixed(4)}) cache_hit=${cacheRatio}% (read=${lastCacheRead || 0} create=${lastCacheCreation || 0})`)
-      try {
-        db.prepare(
-          `UPDATE token_usage
-           SET session_id = ?, input_tokens = ?, output_tokens = ?, cost_usd = ?,
-               cache_creation_tokens = ?, cache_read_tokens = ?, is_overdrive_session = ?
-           WHERE instance_id = ? AND created_at = (SELECT MAX(created_at) FROM token_usage WHERE instance_id = ?)`
-        ).run(
-          resolvedSessionId || null,
-          lastInputTokens || 0,
-          lastOutputTokens || 0,
-          processSpendUsd,
-          lastCacheCreation || 0,
-          lastCacheRead || 0,
-          sessionId ? 1 : 0,
-          instanceId,
-          instanceId
-        )
-      } catch { /* non-critical */ }
     } else {
       console.warn(`[claude-process] No token data captured for ${instanceId} - result event may not have arrived`)
     }
@@ -1576,7 +1780,9 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     // otherwise trigger this warning. The user then gets steered to that chat by its amber
     // chip and reads "this message got no reply" directly above a live, answerable question
     // card. The turn did reply, with a question.
-    if (!sawAssistantText && !lastResultText && code !== 0 && !askHardStopDone) {
+    // Nor after a Stop: a process the app killed exits non-zero with no result by definition, and
+    // "exited without starting a turn" read as a failure right after the user pressed Stop.
+    if (!sawAssistantText && !lastResultText && code !== 0 && !askHardStopDone && !processRegistry.wasStoppedByApp(child)) {
       const detail = stderrTail.length
         ? stderrTail.join('\n')
         : `No output was produced before the process exited.`
@@ -1590,10 +1796,16 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     if (!sawAssistantText && lastResultText) {
       const syntheticId = crypto.randomUUID()
       const syntheticContent = JSON.stringify([{ type: 'text', text: lastResultText }])
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(syntheticId, instanceId, 'assistant', syntheticContent, Date.now())
+      // Guarded: a throw here used to abort the rest of this exit handler, which
+      // is what returns the chat to idle.
+      try {
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, instance_id, role, content, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(syntheticId, instanceId, 'assistant', syntheticContent, Date.now())
+      } catch (err) {
+        reportPersistFailure('final-message', err, { instanceId })
+      }
     }
 
     // Broadcast exit event
@@ -1612,64 +1824,74 @@ export async function sendMessage(opts: SendMessageOpts): Promise<{ sessionId: s
     const tokens: ProcessExitTokens | undefined = (lastInputTokens || lastOutputTokens)
       ? { inputTokens: lastInputTokens || 0, outputTokens: lastOutputTokens || 0, costUsd: processSpendUsd, cacheReadTokens: lastCacheRead, cacheCreationTokens: lastCacheCreation }
       : undefined
-    endTurn(instanceId) // stop the live elapsed/token tracking for this turn
-    // The process is gone, so nothing can answer a request it was blocked on, and a one-time
-    // question it was spawned with and never raised must not wait for some later command.
-    clearPermissionRequests(instanceId)
-    disarmAskOnce(instanceId)
-    // Drop the cache-touch throttle so the next turn's first cache read pings immediately
-    // instead of being swallowed by the previous turn's window.
-    lastCacheTouchAt.delete(instanceId)
-    // Disarm any in-flight 1500ms fallback timer. It targets the INSTANCE, not this PID, so
-    // a timer left armed past exit could re-mark a chat amber after the next turn already
-    // cleared it, and then kill that fresh turn 60ms later.
     pendingAskKill.clear()
-    db.prepare(
-      `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?`
-    ).run(instanceId)
-    broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
+    // Everything a finished turn does to the chat: idle, cards, locks, subscribers, /btw.
+    const finishTurn = (): void => {
+      endTurn(instanceId) // stop the live elapsed/token tracking for this turn
+      // The process is gone, so nothing can answer a request it was blocked on, and a one-time
+      // question it was spawned with and never raised must not wait for some later command.
+      clearPermissionRequests(instanceId)
+      disarmAskOnce(instanceId)
+      // Drop the cache-touch throttle so the next turn's first cache read pings immediately
+      // instead of being swallowed by the previous turn's window.
+      lastCacheTouchAt.delete(instanceId)
+      // Disarm any in-flight 1500ms fallback timer. It targets the INSTANCE, not this PID, so
+      // a timer left armed past exit could re-mark a chat amber after the next turn already
+      // cleared it, and then kill that fresh turn 60ms later.
+      pendingAskKill.clear()
+      db.prepare(
+        `UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?`
+      ).run(instanceId)
+      broadcastEvent({ type: 'instance:state', payload: { instanceId, state: 'idle' } })
 
-    // File locks: capture Bash-side writes, release committed files (async, non-blocking).
-    // Once locks settle, push the fresh per-instance uncommitted count so the sidebar
-    // ⚠ badge reflects this turn's edits without any extra git polling.
-    void fileLocksTurnEnd(instanceId, cwd)
-      .catch(() => {})
-      .then(() => {
-        try {
-          broadcastEvent({ type: 'instance:updated', payload: { id: instanceId, dirtyCount: getInstanceDirtyCount(instanceId) } })
-        } catch { /* non-critical */ }
-      })
+      // File locks: capture Bash-side writes, release committed files (async, non-blocking).
+      // Once locks settle, push the fresh per-instance uncommitted count so the sidebar
+      // ⚠ badge reflects this turn's edits without any extra git polling.
+      void fileLocksTurnEnd(instanceId, cwd)
+        .catch(() => {})
+        .then(() => {
+          try {
+            broadcastEvent({ type: 'instance:updated', payload: { id: instanceId, dirtyCount: getInstanceDirtyCount(instanceId) } })
+          } catch { /* non-critical */ }
+        })
 
-    // Notify turn-complete subscribers (routine-scheduler finalizes run rows here)
-    notifyTurnComplete(instanceId, tokens, code)
+      // Notify turn-complete subscribers (routine-scheduler finalizes run rows here)
+      notifyTurnComplete(instanceId, tokens, code)
 
-    // Auto-retry transient server errors (rate limit / overload) on normal chat instances.
-    // Runs after the idle transition so the rescheduled "Try Again" turn can spawn cleanly.
-    try {
-      evaluateAutoRetry({ instanceId, flags, agentPrompt, resultText: lastResultText, sawAssistantText })
-    } catch (err) {
-      console.error(`[auto-retry] evaluate failed for ${instanceId}:`, err)
+      // Auto-retry transient server errors (rate limit / overload) on normal chat instances.
+      // Runs after the idle transition so the rescheduled "Try Again" turn can spawn cleanly.
+      try {
+        evaluateAutoRetry({ instanceId, flags, agentPrompt, resultText: lastResultText, sawAssistantText, turnStartedAt })
+      } catch (err) {
+        console.error(`[auto-retry] evaluate failed for ${instanceId}:`, err)
+      }
+
+      // Best-effort session sanitization. Skipped when the chat is already running again: the new
+      // turn sanitized the file itself before it resumed it, and rewriting it now would race the
+      // CLI appending to it. The two passes also share a per-file lock in the sanitizer.
+      if (resolvedSessionId && cwd) {
+        setTimeout(() => {
+          if (processRegistry.isTracked(instanceId) || isClaimed(chatKey(instanceId))) return
+          sanitizeSession(cwd, resolvedSessionId).catch(() => {})
+        }, 0)
+      }
+
+      // /btw delivery: run any note the user queued while this turn was active as a
+      // fresh follow-up turn, reusing this turn's flags (model/effort/permission) for
+      // continuity. Deferred briefly so the just-exited process is fully torn down
+      // before we respawn; if the user already kicked off a new turn, re-queue so that
+      // turn's exit flushes it instead of clobbering it.
+      scheduleBtwFlush(instanceId, cwd, resolvedSessionId || undefined, flags)
     }
-
-    // Best-effort session sanitization
-    if (resolvedSessionId && cwd) {
-      sanitizeSession(cwd, resolvedSessionId).catch(() => {})
+    if (superseded) {
+      // Replaced by a start that has not registered its process yet. If that start never gets
+      // there (Stop cancelled it, or it failed), nothing else would ever finish this turn: its
+      // card hand-off, its live timer and its locks would be left behind. It runs this instead.
+      if (!processRegistry.isTracked(instanceId)) deferFinish(instanceId, finishTurn)
+      console.log(`[claude-process] EXIT of a replaced process for ${instanceId.slice(0, 8)} (PID ${child.pid}): the newer turn keeps the chat's state`)
+      return
     }
-
-    // /btw delivery: run any note the user queued while this turn was active as a
-    // fresh follow-up turn, reusing this turn's flags (model/effort/permission) for
-    // continuity. Deferred briefly so the just-exited process is fully torn down
-    // before we respawn; if the user already kicked off a new turn, re-queue so that
-    // turn's exit flushes it instead of clobbering it.
-    const followupNotes = takePendingBtwNotes(instanceId)
-    if (followupNotes.length) {
-      const combined = followupNotes.join('\n\n')
-      setTimeout(() => {
-        if (processRegistry.isTracked(instanceId)) { queueBtwNote(instanceId, combined); return }
-        sendMessage({ instanceId, text: combined, cwd, sessionId: resolvedSessionId || undefined, flags, origin: 'btw' })
-          .catch(err => console.error(`[btw] follow-up send failed for ${instanceId}:`, err))
-      }, 250)
-    }
+    finishTurn()
 
   })
 
@@ -1740,6 +1962,37 @@ export function queueBtwNote(instanceId: string, note: string): boolean {
   arr.push(note)
   pendingBtwNotes.set(instanceId, arr)
   return true
+}
+
+/**
+ * Send the chat's queued /btw notes as their own turn, once nothing else holds the chat.
+ * A turn running or starting will flush them when IT ends, so they wait for that; a /compact
+ * has no exit hook, so the flush retries until the compact is done. A send that fails puts
+ * the notes back rather than dropping them (they are already visible in the chat).
+ */
+export function scheduleBtwFlush(instanceId: string, cwd: string, sessionId: string | undefined, flags: string[], delayMs = 250): void {
+  if (!pendingBtwNotes.has(instanceId)) return
+  setTimeout(() => {
+    // The user pressed Stop: the notes stay queued (and visible in the chat) until they start
+    // the chat again. Stopping must not be followed by a turn nobody asked for.
+    if (processRegistry.wasStoppedByUser(instanceId)) return
+    // An agent adopted after a restart is still working: its watcher flushes when it exits.
+    if (processRegistry.isTracked(instanceId) || processRegistry.isAdopted(instanceId) || claimKind(chatKey(instanceId)) === 'turn') return
+    if (claimKind(chatKey(instanceId)) === 'compact') { scheduleBtwFlush(instanceId, cwd, sessionId, flags, 2000); return }
+    const notes = takePendingBtwNotes(instanceId)
+    if (!notes.length) return
+    sendMessage({ instanceId, text: notes.join('\n\n'), cwd, sessionId, flags, origin: 'btw' })
+      .catch(err => {
+        console.error(`[btw] follow-up send failed for ${instanceId}, notes kept for the next turn:`, (err as Error).message)
+        // Back at the front, in their original order, ahead of anything queued meanwhile.
+        pendingBtwNotes.set(instanceId, [...notes, ...(pendingBtwNotes.get(instanceId) ?? []).filter(n => !notes.includes(n))])
+      })
+  }, delayMs)
+}
+
+/** True when a /btw follow-up is queued for this chat, so it is about to be used again. */
+export function hasPendingBtwNotes(instanceId: string): boolean {
+  return (pendingBtwNotes.get(instanceId)?.length ?? 0) > 0
 }
 
 export function takePendingBtwNotes(instanceId: string): string[] {

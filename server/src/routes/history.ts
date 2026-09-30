@@ -1,15 +1,17 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
+import { clampLimit } from '../services/limits.js'
 import { broadcastEvent } from '../ws/handler.js'
 import crypto from 'crypto'
 import type { ChatMessage, MessageContentBlock } from '@orcstrator/shared'
+import { mediaNamesForInstances, releaseMedia } from '../services/message-media.js'
 
 export default async function historyRoutes(app: FastifyInstance): Promise<void> {
   // Get paginated message history for an instance
   app.get('/instances/:id/history', async (request) => {
     const { id } = request.params as { id: string }
     const query = request.query as { limit?: string; before?: string }
-    const limit = Math.min(parseInt(query.limit || '50', 10), 200)
+    const limit = clampLimit(query.limit, 50, 200) // a negative LIMIT is unlimited in SQLite
     const before = query.before ? parseInt(query.before, 10) : undefined
 
     let sql = 'SELECT * FROM messages WHERE instance_id = ?'
@@ -29,7 +31,11 @@ export default async function historyRoutes(app: FastifyInstance): Promise<void>
       id: r.id as string,
       instanceId: r.instance_id as string,
       role: r.role as ChatMessage['role'],
-      content: safeJsonParse<MessageContentBlock[]>(r.content as string, []),
+      // Coerced on read too: a row stored before the POST checked shapes must not crash the chat.
+      content: (() => {
+        const c = safeJsonParse<unknown>(r.content as string, [])
+        return (Array.isArray(c) ? c.filter(b => b && typeof b === 'object' && typeof (b as { type?: unknown }).type === 'string') : []) as MessageContentBlock[]
+      })(),
       inputTokens: r.input_tokens as number | undefined,
       outputTokens: r.output_tokens as number | undefined,
       costUsd: r.cost_usd as number | undefined,
@@ -42,12 +48,25 @@ export default async function historyRoutes(app: FastifyInstance): Promise<void>
   // Add a message to history
   app.post('/instances/:id/history', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as {
+    const body = (request.body ?? {}) as {
       role: string
       content: MessageContentBlock[]
       inputTokens?: number
       outputTokens?: number
       costUsd?: number
+    }
+
+    // A message is a list of content blocks. Anything else is stored forever and renders as a
+    // crash on every open of this chat, so it is refused here.
+    const validRoles = ['user', 'assistant', 'system']
+    if (!body || !Array.isArray(body.content) || body.content.some(b => !b || typeof b !== 'object' || typeof (b as { type?: unknown }).type !== 'string')) {
+      return reply.code(400).send({ error: 'content must be a list of blocks, each with a type' })
+    }
+    if (typeof body.role !== 'string' || !validRoles.includes(body.role)) {
+      return reply.code(400).send({ error: `role must be one of ${validRoles.join(', ')}` })
+    }
+    if (!db.prepare('SELECT id FROM instances WHERE id = ?').get(id)) {
+      return reply.code(404).send({ error: 'Chat not found' })
     }
 
     const msgId = crypto.randomUUID()
@@ -79,7 +98,9 @@ export default async function historyRoutes(app: FastifyInstance): Promise<void>
   // Clear all messages for an instance
   app.delete('/instances/:id/history', async (request) => {
     const { id } = request.params as { id: string }
+    const media = mediaNamesForInstances([id])
     db.prepare('DELETE FROM messages WHERE instance_id = ?').run(id)
+    releaseMedia(media) // cleared history takes its stored screenshots with it
     broadcastEvent({ type: 'history:cleared', payload: { instanceId: id } })
     return { ok: true }
   })

@@ -5,17 +5,31 @@ import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { resolveClaudeBinary } from './claude-binary.js'
+import { resolveClaudeBinary, CLAUDE_MISSING_MESSAGE } from './claude-binary.js'
 import { clearAwaitingInput } from './awaiting-input.js'
 import { scanSkills, type ProjectRoot } from './skill-scanner.js'
 import { MODEL_ID_MAP, MODEL_OPTIONS } from '@orcstrator/shared'
+import { getAdminToken } from './api-auth.js'
+import { PORT } from '../config.js'
+import { cliSettingsArgs } from './hook-injector.js'
+import { redactSecrets } from '@orcstrator/shared'
+import { claudeProjectsDir } from './claude-paths.js'
 
 // Resolve once per call; we don't cache locally since claude-binary already does.
-function claudeBin(): string {
-  const { path: p } = resolveClaudeBinary()
-  // If null, spawn will throw a clear ENOENT - the startup probe in index.ts already
-  // logged the loud install hint, so we don't repeat it here.
-  return p ?? (process.platform === 'win32' ? 'claude.exe' : 'claude')
+// Null when there is no usable binary. Never fall back to a bare "claude.exe": that is a
+// PATH and cwd search, which would run exactly the unverified copy the launcher refused
+// through ORCSTRATOR_CLAUDE_PATH.
+function claudeBin(): string | null {
+  return resolveClaudeBinary().path
+}
+
+/** The server's own `{ error }` message when it sent one (it is written for people), else the status. */
+export function readableError(body: string, status: number): string {
+  try {
+    const e = (JSON.parse(body) as { error?: unknown }).error
+    if (typeof e === 'string' && e) return e
+  } catch { /* not JSON */ }
+  return `HTTP ${status} ${body.slice(0, 120)}`
 }
 
 // === Types ===
@@ -206,13 +220,15 @@ export async function dispatchCommand(
 
   // If no registered entry, use the strategy override (fallback to skill pass-through)
   if (!entry) {
-    if (strategyOverride === 'skill') return handleSkill(command, fullCtx)
+    if (strategyOverride === 'skill') return handleSessionTurn(command, fullCtx)
     return { ok: false, result: `Unknown command: ${name}. Type /help to see available commands.` }
   }
 
   switch (entry.strategy) {
     case 'skill':
-      return handleSkill(command, fullCtx)
+      // A skill is an ordinary turn, so the chat's managed settings, fences and
+      // permission mode apply. It used to run as a detached `claude --resume -p` without them.
+      return handleSessionTurn(command, fullCtx)
     case 'cli-subcommand':
       return handleCliSubcommand(entry, fullCtx)
     case 'native':
@@ -246,75 +262,24 @@ export async function dispatchCommand(
 // none, so a prompt-shaped command can BE the first message of a chat. The old guard
 // ("send a message first") forced a throwaway warm-up message before every /goal.
 async function handleSessionTurn(command: string, ctx: CommandContext): Promise<CommandResponse> {
-  const port = process.env.PORT || '3334'
-  const resp = await fetch(`http://127.0.0.1:${port}/api/instances/${ctx.instanceId}/send`, {
+  const resp = await fetch(`http://127.0.0.1:${PORT}/api/instances/${ctx.instanceId}/send`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // The server calling itself carries the admin token like the page does.
+    headers: { 'Content-Type': 'application/json', 'X-OrcStrator-Token': getAdminToken() },
     body: JSON.stringify({ text: command, flags: ctx.flags ?? [] })
   })
   if (resp.status >= 400) {
-    return { ok: false, result: `Could not start: HTTP ${resp.status} ${(await resp.text()).slice(0, 120)}` }
+    return { ok: false, result: `Could not start: ${readableError(await resp.text(), resp.status)}` }
   }
   return { ok: true, result: 'Running - progress streams into the chat.' }
 }
 
 // === Strategy Handlers ===
 
-// A: Skill pass-through - send via claude --resume -p
-async function handleSkill(command: string, ctx: CommandContext): Promise<CommandResponse> {
-  // First message of a chat - there's no session id to --resume, and a detached
-  // `claude -p` would strand its session outside this instance. Run it as a normal
-  // turn instead: that starts the session, attached, and streams into the chat.
-  if (!ctx.sessionId) {
-    return handleSessionTurn(command, ctx)
-  }
-  // Sanitize on all platforms to prevent command injection
-  const sanitized = sanitizeArgs(command)
-  const cmd = claudeBin()
-  const args = ['--resume', ctx.sessionId, '-p', sanitized]
-  const env = { ...process.env }
-  delete env['CLAUDECODE']
-
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, {
-      cwd: ctx.cwd,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    let resolved = false
-
-    // Skills can take a while but shouldn't hang forever
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        child.kill()
-        resolve({ ok: false, result: `Skill timed out after 120s. Output so far:\n${stdout.trim() || stderr.trim() || 'none'}` })
-      }
-    }, 120_000)
-
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    child.once('close', (code) => {
-      if (resolved) return
-      resolved = true
-      clearTimeout(timer)
-      resolve({ ok: code === 0, result: stdout.trim() || stderr.trim() || 'Done.' })
-    })
-    child.once('error', () => {
-      if (resolved) return
-      resolved = true
-      clearTimeout(timer)
-      resolve({ ok: false, result: 'Failed to execute command.' })
-    })
-  })
-}
-
 // B: CLI subcommand proxy - spawn standalone claude subcommand
 async function handleCliSubcommand(entry: CommandEntry, ctx: CommandContext): Promise<CommandResponse> {
   const cmd = claudeBin()
+  if (!cmd) return { ok: false, result: CLAUDE_MISSING_MESSAGE }
   const env = { ...process.env }
   delete env['CLAUDECODE']
 
@@ -398,10 +363,10 @@ async function handleNative(entry: CommandEntry, ctx: CommandContext): Promise<C
     case '/release-notes': return nativeReleaseNotes()
     case '/skills':  return nativeSkills()
     case '/add-dir': return nativeAddDir(ctx)
-    case '/hooks':   return nativeHooks()
-    case '/config':  return nativeConfig()
-    case '/permissions': return nativePermissions()
-    case '/allowed-tools': return nativeAllowedTools()
+    case '/hooks':   return nativeHooks(ctx)
+    case '/config':  return nativeConfig(ctx)
+    case '/permissions': return nativePermissions(ctx)
+    case '/allowed-tools': return nativeAllowedTools(ctx)
     case '/tasks':   return nativeTasks(ctx)
     case '/bashes':  return nativeBashes()
     case '/plugin':  return nativePlugin()
@@ -466,7 +431,8 @@ async function handleClientOnly(entry: CommandEntry, ctx: CommandContext): Promi
 async function handleSessionMgmt(entry: CommandEntry, ctx: CommandContext): Promise<CommandResponse> {
   switch (entry.name) {
     case '/reset': {
-      await processRegistry.killProcess(ctx.instanceId)
+      const [stopped] = await processRegistry.stopChats([ctx.instanceId])
+      if (!stopped) return { ok: false, result: 'This chat is still working and could not be stopped, so the session was not reset. Try again, or open the chat and use Force reset in its \u2630 menu.' }
       db.prepare("UPDATE instances SET session_id = NULL, state = 'idle', process_state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?")
         .run(ctx.instanceId)
       // The session is gone, so any question it was waiting on is gone with it.
@@ -567,6 +533,7 @@ async function nativeDoctor(ctx: CommandContext): Promise<CommandResponse> {
   // 1. Version
   const version = await new Promise<string>((resolve) => {
     const cmd = claudeBin()
+    if (!cmd) { resolve('not set up'); return }
     const child = spawn(cmd, ['--version'], {
       cwd: ctx.cwd, windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -577,7 +544,7 @@ async function nativeDoctor(ctx: CommandContext): Promise<CommandResponse> {
     child.once('error', () => resolve('unknown'))
     setTimeout(() => { child.kill(); resolve('timeout') }, 10_000)
   })
-  checks.push(`[✓] Claude Code version: ${version}`)
+  checks.push(version === 'not set up' ? `[✗] ${CLAUDE_MISSING_MESSAGE}` : `[✓] Claude Code version: ${version}`)
 
   // 2. ripgrep
   const hasRg = await new Promise<boolean>((resolve) => {
@@ -753,7 +720,7 @@ function nativeUsage(): CommandResponse {
 
 function nativeStats(): CommandResponse {
   const rows = db.prepare(`
-    SELECT date(created_at / 1000, 'unixepoch') as day,
+    SELECT date(created_at / 1000, 'unixepoch', 'localtime') as day,
            COUNT(*) as sessions,
            SUM(input_tokens) as inp,
            SUM(output_tokens) as out,
@@ -777,7 +744,7 @@ function nativeStats(): CommandResponse {
 
 async function nativeDiff(ctx: CommandContext): Promise<CommandResponse> {
   return new Promise((resolve) => {
-    const child = spawn('git', ['diff', '--stat'], {
+    const child = spawn('git', ['--no-optional-locks', 'diff', '--stat'], {
       cwd: ctx.cwd,
       shell: process.platform === 'win32',
       windowsHide: true,
@@ -861,7 +828,7 @@ function nativeExport(ctx: CommandContext): CommandResponse {
   if (!ctx.sessionId) return { ok: false, result: 'No active session.' }
 
   // Find the session JSONL file
-  const claudeDir = path.join(os.homedir(), '.claude', 'projects')
+  const claudeDir = claudeProjectsDir()
   if (!fs.existsSync(claudeDir)) {
     return { ok: false, result: 'No Claude projects directory found.' }
   }
@@ -939,63 +906,98 @@ function nativeAddDir(ctx: CommandContext): CommandResponse {
   return { ok: true, result: `Directory noted: ${resolved}\nIt will be added via --add-dir on the next message.`, action: 'add-dir', value: resolved }
 }
 
-function nativeHooks(): CommandResponse {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    const hooks = settings.hooks
-    if (!hooks || Object.keys(hooks).length === 0) {
-      return { ok: true, result: 'No hooks configured in ~/.claude/settings.json.' }
-    }
-    return { ok: true, result: `Configured Hooks\n\n${JSON.stringify(hooks, null, 2)}` }
-  } catch {
-    return { ok: true, result: 'No hooks configured (settings.json not found or invalid).' }
-  }
+// /hooks, /config, /permissions and /allowed-tools. They used to read only
+// ~/.claude/settings.json, so /permissions said "Allow: none" while the chat ran with
+// OrcStrator's own rules, and hook commands with inline tokens were printed into the chat.
+// Now each view shows both layers the CLI merges for THIS chat: the settings file OrcStrator
+// passes with --settings, and the user's own file. Everything shown is redacted.
+
+function readJson(file: string): Record<string, unknown> | null {
+  try { return JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown> } catch { return null }
 }
 
-function nativeConfig(): CommandResponse {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+/** The two settings layers for a chat: OrcStrator's managed file (written at every spawn) and the user's. */
+function settingsLayers(ctx: CommandContext): { managed: Record<string, unknown> | null; user: Record<string, unknown> | null } {
+  let managed: Record<string, unknown> | null = null
   try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    // Redact sensitive fields
-    const safe = { ...settings }
+    // The same call the spawn makes, so this is what the next turn will run with.
+    const args = cliSettingsArgs(ctx.instanceId)
+    const file = args[0] === '--settings' ? args[1] : null
+    if (file) managed = readJson(file)
+  } catch { /* no managed layer */ }
+  return { managed, user: readJson(path.join(os.homedir(), '.claude', 'settings.json')) }
+}
+
+/** Text safe to print into a chat: known key formats removed, then any long token-shaped run. */
+export function redactForChat(text: string): string {
+  return redactSecrets(text).redacted
+    .replace(/(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]{24,})(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{24,}/g, '[hidden]')
+}
+
+function show(value: unknown): string {
+  return redactForChat(JSON.stringify(value, null, 2))
+}
+
+function nativeHooks(ctx: CommandContext): CommandResponse {
+  const { managed, user } = settingsLayers(ctx)
+  const parts: string[] = []
+  if (managed?.hooks && Object.keys(managed.hooks as object).length) parts.push('Set by OrcStrator for this chat\n' + show(managed.hooks))
+  if (user?.hooks && Object.keys(user.hooks as object).length) parts.push('From ~/.claude/settings.json\n' + show(user.hooks))
+  if (!parts.length) return { ok: true, result: 'No hooks configured for this chat.' }
+  return { ok: true, result: 'Configured Hooks\n\n' + parts.join('\n\n') }
+}
+
+function nativeConfig(ctx: CommandContext): CommandResponse {
+  const { managed, user } = settingsLayers(ctx)
+  const strip = (o: Record<string, unknown> | null) => {
+    if (!o) return null
+    const safe = { ...o }
     delete safe.env
-    return { ok: true, result: `Claude Code Settings (~/.claude/settings.json)\n\n${JSON.stringify(safe, null, 2)}` }
-  } catch {
-    return { ok: true, result: 'No settings.json found. Using defaults.' }
+    return safe
+  }
+  const parts: string[] = []
+  if (managed) parts.push('Set by OrcStrator for this chat\n' + show(strip(managed)))
+  if (user) parts.push('From ~/.claude/settings.json (environment values not shown)\n' + show(strip(user)))
+  if (!parts.length) return { ok: true, result: 'No settings found. Using defaults.' }
+  return { ok: true, result: 'Claude Code Settings\n\n' + parts.join('\n\n') }
+}
+
+type Perms = { allow?: string[]; deny?: string[]; ask?: string[]; defaultMode?: string }
+
+function mergedPermissions(ctx: CommandContext): Required<Omit<Perms, 'defaultMode'>> & { mode: string } {
+  const { managed, user } = settingsLayers(ctx)
+  const m = (managed?.permissions ?? {}) as Perms
+  const u = (user?.permissions ?? {}) as Perms
+  const uniq = (a?: string[], b?: string[]) => Array.from(new Set([...(a ?? []), ...(b ?? [])]))
+  let mode = 'default'
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
+    const flags = row ? (JSON.parse(row.value) as string[]) : []
+    if (flags.includes('--dangerously-skip-permissions')) mode = 'bypassPermissions'
+    const pm = flags.find(f => f.startsWith('--permission-mode='))
+    if (pm) mode = pm.split('=')[1]
+  } catch { /* default */ }
+  return { allow: uniq(m.allow, u.allow), deny: uniq(m.deny, u.deny), ask: uniq(m.ask, u.ask), mode }
+}
+
+function nativePermissions(ctx: CommandContext): CommandResponse {
+  const p = mergedPermissions(ctx)
+  const list = (xs: string[]) => (xs.length ? xs.join(', ') : 'none')
+  return {
+    ok: true,
+    result: redactForChat('Permission Rules (OrcStrator\'s rules for this chat plus ~/.claude/settings.json)\n\n' +
+      `  App default mode: ${p.mode} (a chat or card can pick its own)\n` +
+      `  Allow: ${list(p.allow)}\n` +
+      `  Deny:  ${list(p.deny)}\n` +
+      `  Ask:   ${list(p.ask)}`),
   }
 }
 
-function nativePermissions(): CommandResponse {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    const perms = settings.permissions || {}
-    return {
-      ok: true,
-      result: `Permission Rules\n\n` +
-        `  Allow: ${(perms.allow || []).join(', ') || 'none'}\n` +
-        `  Deny:  ${(perms.deny || []).join(', ') || 'none'}\n` +
-        `  Ask:   ${(perms.ask || []).join(', ') || 'none'}`
-    }
-  } catch {
-    return { ok: true, result: 'No permission rules configured.' }
-  }
-}
-
-function nativeAllowedTools(): CommandResponse {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    const tools = settings.permissions?.allow || settings.allowedTools || []
-    return {
-      ok: true,
-      result: tools.length
-        ? `Allowed Tools\n\n  ${tools.join('\n  ')}`
-        : 'No explicitly allowed tools configured.'
-    }
-  } catch {
-    return { ok: true, result: 'No settings found.' }
+function nativeAllowedTools(ctx: CommandContext): CommandResponse {
+  const { allow } = mergedPermissions(ctx)
+  return {
+    ok: true,
+    result: allow.length ? redactForChat(`Allowed Tools\n\n  ${allow.join('\n  ')}`) : 'No explicitly allowed tools configured.',
   }
 }
 
@@ -1052,16 +1054,4 @@ function nativePlugin(): CommandResponse {
   } catch {
     return { ok: true, result: 'No plugins installed.' }
   }
-}
-
-// === Utilities ===
-
-function sanitizeArgs(cmd: string): string {
-  const spaceIdx = cmd.indexOf(' ')
-  if (spaceIdx === -1) return cmd
-  const name = cmd.slice(0, spaceIdx)
-  // Strip shell metacharacters that could enable command injection
-  // Covers: pipes, redirects, command chaining, subshells, variable expansion, quotes
-  const args = cmd.slice(spaceIdx + 1).replace(/[&|><^%!`;"'$(){}[\]\n\r\\]/g, '')
-  return `${name} ${args}`
 }

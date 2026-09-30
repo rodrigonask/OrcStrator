@@ -10,14 +10,17 @@
 //   the transcript records every EnterWorktree/ExitWorktree tool RESULT verbatim
 //   created minus removed  =  what this session is about to abandon
 //
-// The slug is the cwd with every : \ / . turned into a dash, but the file also moves
-// when a session writes from inside a worktree, so the derived path is only a fast
-// path and a full scan of the projects directory is the fallback.
+// The slug is the cwd with every character that is not a letter or a digit turned into a
+// dash (claude-paths.ts, the one encoder), but the file also moves when a session
+// writes from inside a worktree, so the derived path is only a fast path and a full scan of
+// the projects directory is the fallback. The old encoder here made "C:\" into "C-" instead
+// of the CLI's "C--", so the fast path never hit and every close paid for the full scan.
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
 import readline from 'readline'
 import { execFile } from 'child_process'
+import { isValidSessionId } from './session-id.js'
+import { cwdToSlug, CLAUDE_PROJECTS_DIR } from './claude-paths.js'
 
 export interface WorktreeOrphan {
   /** Absolute path of the worktree directory, as the transcript recorded it. */
@@ -45,14 +48,11 @@ function unescapeJsonPath(s: string): string {
   return s.replace(/\\\\/g, '\\').replace(/\\"/g, '"').trim()
 }
 
-function slugForCwd(cwd: string): string {
-  return cwd.replace(/[:\\/.]/g, '-')
-}
-
 /** The transcript for a session id, or null. Derived path first, full scan second. */
 function findTranscript(cwd: string, sessionId: string): string | null {
-  const root = path.join(os.homedir(), '.claude', 'projects')
-  const direct = path.join(root, slugForCwd(cwd), `${sessionId}.jsonl`)
+  if (!isValidSessionId(sessionId)) return null
+  const root = CLAUDE_PROJECTS_DIR
+  const direct = path.join(root, cwdToSlug(cwd), `${sessionId}.jsonl`)
   if (fs.existsSync(direct)) return direct
   let dirs: string[]
   try {
@@ -100,7 +100,8 @@ async function readTranscriptWorktrees(file: string): Promise<{ created: Map<str
 
 function git(cwd: string, args: string[]): Promise<string | null> {
   return new Promise(resolve => {
-    execFile('git', args, { cwd, timeout: 10_000 }, (err, stdout) => {
+    // --no-optional-locks: a background read must never take index.lock under an agent.
+    execFile('git', ['--no-optional-locks', ...args], { cwd, timeout: 10_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }, (err, stdout) => {
       resolve(err ? null : stdout)
     })
   })

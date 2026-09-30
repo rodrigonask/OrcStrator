@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { useMessages } from '../context/MessagesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 
@@ -56,9 +56,9 @@ function isPermissionPrompt(label: string, detail: string, data: Record<string, 
 }
 
 export function CliPromptBanner({ instanceId }: { instanceId: string }) {
-  const { cliPrompts } = useMessages()
+  const prompt = useMessagesSelector(s => s.cliPrompts[instanceId])
   const { dispatch } = useAppDispatch()
-  const prompt = cliPrompts[instanceId]
+
   const [response, setResponse] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 

@@ -5,23 +5,32 @@ import fastifyStatic from '@fastify/static'
 import path from 'path'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
-import { initDb, db, closeDb } from './db.js'
+import { initDb, db, closeDb, dbReadOnlyReason } from './db.js'
+import { DataDirLockedError } from './data-dir-lock.js'
+import { snapshotProcesses } from './services/process-tree.js'
+import { warnIfApiKeyInherited } from './services/agent-env.js'
 import { safeJsonParse } from './services/task-manager.js'
 import { registerWebSocket, broadcastEvent } from './ws/handler.js'
-import { onTurnComplete } from './services/claude-process.js'
+import { onTurnComplete, scheduleBtwFlush } from './services/claude-process.js'
+import { buildTurnFlags } from './services/turn-flags.js'
 import { resolveClaudeBinary, probeClaudeVersion } from './services/claude-binary.js'
-import { processRegistry, isProcessAlive, setMaxConcurrentProcesses, getMaxConcurrentProcesses } from './services/process-registry.js'
-import treeKill from 'tree-kill'
+import { processRegistry, isProcessAlive, setMaxConcurrentProcesses, getMaxConcurrentProcesses, verifyAgentIdentity, setAgentLimitEnforced } from './services/process-registry.js'
 import { startWakeupScheduler, stopWakeupScheduler } from './services/wakeup-scheduler.js'
 import { startTaskRunner, stopTaskRunner } from './services/task-runner.js'
 import { initFileLocks } from './services/file-locks.js'
 import { startTaskScheduler, stopTaskScheduler } from './services/task-scheduler.js'
 import { startCacheAdvisor, stopCacheAdvisor } from './services/cache-advisor.js'
 import { startPolling, fetchUsage } from './services/usage-monitor.js'
-import { PORT, ALLOWED_ORIGINS, BIND_HOST, isAllowedHost, isAllowedOrigin } from './config.js'
+import { PORT, ALLOWED_ORIGINS, BIND_HOST } from './config.js'
+import { installSecurityHooks } from './security.js'
+import { installErrorHandler } from './error-handler.js'
+import { serverOptions } from './app-options.js'
+import { getScriptToken } from './services/api-auth.js'
+import { reencryptLegacySecrets } from './services/secret-box.js'
+import { runRetention } from './services/data-retention.js'
+import { ingestCompactionLog } from './services/compaction-savings.js'
 import { resetOverdriveForAll } from './services/overdrive.js'
 import { startNativeTaskWatcher } from './services/native-tasks.js'
-import { cloudSync } from './services/cloud-sync.js'
 
 // Route modules
 import stateRoutes from './routes/state.js'
@@ -35,17 +44,36 @@ import profileRoutes from './routes/profile.js'
 import agentRoutes from './routes/agents.js'
 import skillRoutes from './routes/skills.js'
 import fsRoutes from './routes/fs.js'
-import mcpRoutes from './routes/mcp.js'
 import sessionsRoutes from './routes/sessions.js'
-import syncRoutes from './routes/sync.js'
 import activityRoutes from './routes/activity.js'
+import authRoutes from './routes/auth.js'
 import { backfillClosedInstanceNames } from './services/closed-instance-backfill.js'
+import { installProcessErrorHandlers } from './services/process-errors.js'
+import { sweepUnreferencedMedia } from './services/message-media.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 async function main(): Promise<void> {
-  // Initialize database
-  initDb()
+  // Initialize database. Takes the data dir's single-owner lock first: a second
+  // server on the same folder stops here with a plain message instead of sharing the DB.
+  try {
+    await initDb({ port: PORT })
+  } catch (err) {
+    if (err instanceof DataDirLockedError) {
+      console.error(`[server] ${err.message}`)
+      process.exit(1)
+    }
+    throw err
+  }
+  warnIfApiKeyInherited()
+
+  // The pre-migration backup failed, so the database is open read-only and was not updated.
+  // Serve the app so the user can see their chats and the reason, refuse every
+  // write, and start nothing that writes (no schedulers, no startup repairs).
+  if (dbReadOnlyReason) {
+    await startReadOnly(dbReadOnlyReason)
+    return
+  }
 
   // Read max concurrent processes from settings (env var overrides)
   if (!process.env.ORCSTRATOR_MAX_PROCESSES) {
@@ -57,6 +85,11 @@ async function main(): Promise<void> {
       }
     } catch { /* use default */ }
   }
+  // Enforced only when switched on in Settings. Absent means off.
+  try {
+    const onRow = db.prepare("SELECT value FROM settings WHERE key = 'maxConcurrentLimitOn'").get() as { value: string } | undefined
+    if (onRow && JSON.parse(onRow.value) === true) setAgentLimitEnforced(true)
+  } catch { /* off */ }
 
   // WAL checkpoint to keep DB file size bounded
   const runMaintenance = () => {
@@ -66,9 +99,21 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error('[maintenance] WAL checkpoint error:', err)
     }
+    // Hand free pages back to the disk a few at a time. Only does anything once
+    // scripts/vacuum-db.mjs has switched the database to incremental auto-vacuum; a no-op before.
+    try {
+      if (db.pragma('auto_vacuum', { simple: true }) === 2) db.pragma('incremental_vacuum(2000)')
+    } catch (err) {
+      console.error('[maintenance] incremental vacuum error:', err)
+    }
   }
   runMaintenance()
   setInterval(runMaintenance, 6 * 60 * 60 * 1000)
+  // Stored screenshots no message points at any more (a path that deleted rows without releasing
+  // them), older than an hour so an image mid-paste is never taken. At boot and then
+  // with the rest of the maintenance.
+  try { sweepUnreferencedMedia() } catch (err) { console.error('[maintenance] media sweep error:', err) }
+  setInterval(() => { try { sweepUnreferencedMedia() } catch { /* logged inside */ } }, 6 * 60 * 60 * 1000)
 
   // Sweep expired overdrive indicators at startup and every 5 minutes
   try { resetOverdriveForAll() } catch (err) { console.error('[maintenance] Overdrive sweep error:', err) }
@@ -137,20 +182,30 @@ async function main(): Promise<void> {
 
   // Read all instances with non-idle process_state
   const nonIdle = db.prepare(
-    "SELECT id, session_id, folder_id, process_pid, process_state FROM instances WHERE process_state != 'idle'"
-  ).all() as { id: string; session_id: string | null; folder_id: string; process_pid: number | null; process_state: string }[]
+    "SELECT id, session_id, folder_id, process_pid, process_started_at, process_state FROM instances WHERE process_state != 'idle'"
+  ).all() as { id: string; session_id: string | null; folder_id: string; process_pid: number | null; process_started_at: number | null; process_state: string }[]
 
   const adoptedIds = new Set<string>()
+
+  // A live PID is only this chat's agent if it is claude and started when the
+  // chat's process did. After a reboot the same number can belong to anything (VS Code, a dev
+  // server), which used to be adopted, shown as "running" for ever, and killed by Stop.
+  const snapshot = nonIdle.some(i => i.process_pid != null && isProcessAlive(i.process_pid)) ? await snapshotProcesses() : null
 
   // Single transaction: classify each non-idle instance as alive or dead
   db.transaction(() => {
     for (const inst of nonIdle) {
       const alive = inst.process_pid != null && isProcessAlive(inst.process_pid)
-      if (alive) {
+      // 'unknown' (the process table could not be read) is adopted: it may be a live agent,
+      // and starting a second one next to it is the worse mistake. Stop re-checks before it
+      // kills anything, and refuses when it still cannot tell.
+      const identity = alive ? verifyAgentIdentity(inst.process_pid!, inst.process_started_at, snapshot) : 'stranger'
+      if (alive && identity !== 'stranger') {
         // Adopt: keep process_state='running' in DB, no ChildProcess handle
         adoptedIds.add(inst.id)
-        console.log(`[startup] Adopting alive process PID ${inst.process_pid} → instance ${inst.id}`)
+        console.log(`[startup] Adopting alive process PID ${inst.process_pid} → instance ${inst.id}${identity === 'unknown' ? ' (identity unverified)' : ''}`)
       } else {
+        if (alive) console.warn(`[startup] PID ${inst.process_pid} of instance ${inst.id} now belongs to another program; not adopted, not killed`)
         // Reset dead instance to idle. If it was mid-way through a pipeline task, the task
         // has to be released too: the in_review hand-off only ever fires from
         // onTurnComplete, and that process died with the server, so the task would sit in
@@ -174,25 +229,26 @@ async function main(): Promise<void> {
     }
   })()
 
-  // Kill orphaned OS processes that are NOT adopted
-  const orphanPids: number[] = []
-  for (const inst of nonIdle) {
-    if (inst.process_pid != null && !adoptedIds.has(inst.id) && isProcessAlive(inst.process_pid)) {
-      orphanPids.push(inst.process_pid)
-    }
-  }
-  if (orphanPids.length > 0) {
-    console.warn(`[startup] KILLING ${orphanPids.length} orphaned processes: [${orphanPids.join(', ')}]`)
-    await Promise.all(orphanPids.map(pid => new Promise<void>(resolve => {
-      treeKill(pid, 'SIGKILL', (err) => {
-        if (err) console.warn(`[startup] tree-kill error for orphan PID ${pid}:`, err.message)
-        else console.log(`[startup] Killed orphan PID ${pid}`)
-        resolve()
-      })
-    })))
-  }
-
+  // (A non-adopted PID that is still alive belongs to another program by now, see above, so
+  // nothing here kills it. The old tree-kill of "orphans" at this point could only ever hit
+  // a stranger that had been given a dead agent's number.)
   if (adoptedIds.size > 0) {
+    // No ChildProcess handle means no 'exit' event: watch them, and hand the chat back when
+    // the agent finishes, instead of it reading "running" until the next restart.
+    for (const inst of nonIdle) {
+      if (!adoptedIds.has(inst.id)) continue
+      processRegistry.watchAdopted(inst.id, inst.process_pid!, inst.process_started_at, (id) => {
+        const strandedTaskId = releaseStrandedTask(id)
+        db.prepare(
+          "UPDATE instances SET process_state = 'idle', state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ? AND process_pid = ?"
+        ).run(id, inst.process_pid)
+        broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'idle' } })
+        console.log(`[startup] adopted agent PID ${inst.process_pid} of instance ${id.slice(0, 8)} has exited; chat is idle${strandedTaskId ? `, task ${strandedTaskId.slice(0, 8)} released` : ''}`)
+        // A /btw sent while it was running waited for it; send it now as its own turn.
+        const row = db.prepare('SELECT cwd, session_id FROM instances WHERE id = ?').get(id) as { cwd: string; session_id: string | null } | undefined
+        if (row) scheduleBtwFlush(id, row.cwd, row.session_id ?? undefined, buildTurnFlags({}))
+      })
+    }
     console.log(`[startup] ${adoptedIds.size} agents still running — leaving undisturbed`)
   }
 
@@ -244,9 +300,49 @@ async function main(): Promise<void> {
   startTaskRunner()
   startCacheAdvisor()
   await initFileLocks()
-  cloudSync.initialize()
+  // Create <data dir>/agent-token now, so a script can read it before any chat has run.
+  getScriptToken()
+  // Old stored tool outputs, orphan settings files and an oversized compaction
+  // log are cleared at boot and once a day after.
+  runRetention(ingestCompactionLog)
+  setInterval(() => runRetention(ingestCompactionLog), 24 * 60 * 60 * 1000).unref()
+  // Stored secrets still in the old hostname-keyed format are rewritten under the
+  // new key, once. Idempotent; a failure leaves them readable through the old path.
+  try {
+    const n = reencryptLegacySecrets(db)
+    if (n > 0) console.log(`[startup] re-encrypted ${n} stored secret(s) under the new key`)
+  } catch (err) {
+    console.warn('[startup] secret re-encryption skipped:', (err as Error).message)
+  }
 
-  const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 * 20 }) // 20MB to support screenshot attachments
+  await serve(null)
+}
+
+/** The app with its database opened read-only: see initDb and serve. */
+async function startReadOnly(reason: string): Promise<void> {
+  await serve(reason)
+}
+
+/**
+ * Build the HTTP/WS server and listen. With `readOnlyReason` set, every write to the API is
+ * refused with that reason (503), so the UI shows why instead of failing piecemeal.
+ */
+async function serve(readOnlyReason: string | null): Promise<void> {
+  // 1 MB bodies by default and no per-request log lines (app-options.ts).
+  const app = Fastify(serverOptions())
+  installErrorHandler(app)
+  if (readOnlyReason) {
+    app.addHook('onRequest', async (request, reply) => {
+      if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') return
+      // The page's own token handshake writes nothing, and without it the app cannot even
+      // connect to show the user why it is read-only.
+      if (request.url.split('?')[0] === '/api/auth/session') return
+      return reply.code(503).send({
+        error: 'read-only',
+        message: `OrcStrator opened its database read-only, so nothing can be changed right now. ${readOnlyReason}`,
+      })
+    })
+  }
 
   // Anti-DNS-rebinding + cross-origin guard. Runs before EVERY request, including
   // the /ws upgrade, and before any route logic touches the DB or spawns anything.
@@ -256,16 +352,9 @@ async function main(): Promise<void> {
   // sidesteps origin checks entirely by making the attacker's page same-origin with
   // us. Validating Host closes that: a rebound request still carries the attacker's
   // hostname, which is not in ALLOWED_HOSTS. See config.ts for the full rationale.
-  app.addHook('onRequest', async (request, reply) => {
-    if (!isAllowedHost(request.headers.host)) {
-      console.warn(`[security] rejected request with Host: ${request.headers.host} (${request.method} ${request.url})`)
-      return reply.code(403).send({ error: 'Forbidden: invalid Host header' })
-    }
-    if (!isAllowedOrigin(request.headers.origin)) {
-      console.warn(`[security] rejected request from Origin: ${request.headers.origin} (${request.method} ${request.url})`)
-      return reply.code(403).send({ error: 'Forbidden: origin not allowed' })
-    }
-  })
+  //
+  // On top of that: the cross-site GET block and the API token. security.ts.
+  installSecurityHooks(app)
 
   // Register plugins
   await app.register(fastifyCors, {
@@ -291,10 +380,9 @@ async function main(): Promise<void> {
     await api.register(agentRoutes)
     await api.register(skillRoutes)
     await api.register(fsRoutes)
-    await api.register(mcpRoutes)
     await api.register(sessionsRoutes)
-    await api.register(syncRoutes)
     await api.register(activityRoutes)
+    await api.register(authRoutes)
   }, { prefix: '/api' })
 
   // In production, serve the client build as static files
@@ -331,8 +419,9 @@ async function main(): Promise<void> {
     }, 20_000)
     forceExit.unref()
 
-    // Kill all processes and WAIT for them to die
-    await processRegistry.killAll()
+    // Kill all processes and WAIT for them to die, including a /compact, which runs outside
+    // the registry
+    await processRegistry.shutdownAgents()
     console.log('[server] All processes confirmed dead')
 
     await app.close()
@@ -342,9 +431,10 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
-  process.on('unhandledRejection', (reason) => {
-    console.error('[server] Unhandled promise rejection:', reason)
-  })
+  // A stray rejection or exception is logged and shown to the user, and the server keeps
+  // running. The reasoning, and why that is the right call here, is in
+  // services/process-errors.ts.
+  installProcessErrorHandlers()
 
   // Probe the native claude binary once before listening. We never block startup on
   // this — if claude is missing, chats will fail loudly, but the server stays up so

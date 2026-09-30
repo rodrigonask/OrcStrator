@@ -21,6 +21,16 @@ RELEASE_PUBLIC_KEY = "<YOUR_RELEASE_PUBLIC_KEY_RSA_XML>"
 binding = "ORC_KV"
 id = "<YOUR_KV_NAMESPACE_ID>"
 
+# Rate limiting: telemetry, and licence lookups once REQUIRE_KEY is on, per
+# client IP. The code runs without it (no binding = no limit). namespace_id is
+# any positive integer you choose, unique within your account.
+[[ratelimits]]
+name = "ORC_RATE_LIMITER"
+namespace_id = "<YOUR_RATE_LIMIT_NAMESPACE_ID>"
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
 # Release bucket. Keep it private and let the Worker be the only reader.
 [[r2_buckets]]
 binding = "ORC_RELEASES"

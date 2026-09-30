@@ -10,5 +10,14 @@ and their full license texts are in its THIRD_PARTY_LICENSES file.
 OrcStrator is not affiliated with Anthropic. It requires your own Claude
 account and the official Claude Code CLI.
 
+Other software OrcStrator sets up for you: OrcStrator works through Claude
+Code (shown as "Claude AI" in OrcStrator), a separate program made by
+Anthropic, PBC. If Claude Code is not already on this computer, OrcStrator
+downloads and runs Anthropic's official installer
+(https://claude.ai/install.ps1) to install it, and then checks that the
+installed program is digitally signed by Anthropic before using it. Claude
+Code is Anthropic's software: its use is governed by Anthropic's own terms,
+and you sign in to it with your own Claude (Anthropic) account.
+
 THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTIES OF ANY KIND, AS SET OUT
 IN THE LICENSE.

@@ -27,9 +27,9 @@ export const EFFORT_LEVELS = [
  * would be two names for a difference nobody can act on.
  */
 export const CARD_PERMISSION_MODES = [
-  { id: 'bypassPermissions', label: 'Bypass (never asks)' },
-  { id: 'acceptEdits', label: 'Accept edits' },
   { id: 'auto', label: 'Auto' },
+  { id: 'acceptEdits', label: 'Accept edits' },
   { id: 'plan', label: 'Plan only' },
   { id: 'default', label: 'Ask every time' },
+  { id: 'bypassPermissions', label: 'Bypass (never asks, for unattended routines)' },
 ]

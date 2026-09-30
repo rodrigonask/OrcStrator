@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useUI } from '../context/UIContext'
-import { useMessages } from '../context/MessagesContext'
-import { useInstances } from '../context/InstancesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
+import { useInstance } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { CliPromptBanner } from './CliPromptBanner'
 import { PermissionBanner } from './PermissionBanner'
@@ -11,21 +11,19 @@ import { composerFocused } from '../systems/composer-focus'
 import { formatModelBadge, permModeColor } from '../utils/modelBadge'
 import { ModelSwitchWarning } from './ModelSwitchWarning'
 import { isCacheWarm } from '../hooks/useCacheWarm'
-import { PERM_KEY, permissionModeFlag } from '../utils/permMode'
+import { permissionModeFlag } from '../utils/permMode'
+import { PERM_KEY, DRAFT_KEY, MODEL_KEY, EFFORT_KEY, SWITCH_NOTE_KEY } from '../utils/chatStorage'
 import { api } from '../api'
+import { sendFailureText } from '../utils/sendFailure'
 import type { ChatMessage, PermissionMode } from '@shared/types'
-import { resolveModelId, switchLosesThinking, DEFAULT_MODEL_ID, DEFAULT_EFFORT } from '@shared/constants'
+import { resolveModelId, switchLosesThinking, DEFAULT_MODEL_ID, DEFAULT_EFFORT, effectivePermissionMode } from '@shared/constants'
 
 // Both lists live in utils/modelOptions so the composer and the task modal offer exactly
 // the same choices. A second copy drifts the first time a model ships.
 import { MODELS, EFFORT_LEVELS } from '../utils/modelOptions'
 
-const DRAFT_KEY = (id: string) => 'draft-' + id
-const MODEL_KEY = (id: string) => 'model-' + id
-const EFFORT_KEY = (id: string) => 'effort-' + id
 // The post-compaction "now on X" note outlives a re-render: the turn:complete history
 // refetch remounts the tile, which would wipe a plain useState note before it is read.
-const SWITCH_NOTE_KEY = (id: string) => 'switch-note-' + id
 const SWITCH_NOTE_MS = 6000
 
 function readSwitchNote(instanceId: string | null | undefined): string | null {
@@ -111,9 +109,14 @@ const PH_KEY = 'composer-ph-index'
  */
 export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {}) {
   const autoFocusAtMount = useRef(autoFocus)
-  const { selectedInstanceId: instanceId, settings, sessionCosts } = useUI()
-  const { streamingContent, pendingCommand, pendingWakeups } = useMessages()
-  const { instances } = useInstances()
+  const { selectedInstanceId: instanceId, settings } = useUI()
+  const sessionCost = useSessionCost(instanceId)
+  useRenderCount(`input:${instanceId}`)
+  // This chat's entries only.
+  const isStreaming = useMessagesSelector(s => (instanceId ? !!s.streamingContent[instanceId] : false))
+  const runningCommand = useMessagesSelector(s => (instanceId ? s.pendingCommand[instanceId] : undefined))
+  const wakeups = useMessagesSelector(s => (instanceId ? s.pendingWakeups[instanceId] : undefined))
+  const thisInstance = useInstance(instanceId)
   const { dispatch, sendMessage } = useAppDispatch()
   const compact = useCompact()
   // The model / effort / permission-mode picker is a single popover card opened
@@ -132,7 +135,8 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
     if (!instanceId) return ''
     return sessionStorage.getItem(DRAFT_KEY(instanceId)) ?? ''
   })
-  const defaultPermMode: PermissionMode = settings.permissionMode ?? 'bypassPermissions'
+  // Stored mode, else what the stored flags say, else Auto. Never a silent bypass.
+  const defaultPermMode: PermissionMode = effectivePermissionMode(settings)
   const [permMode, setPermModeRaw] = useState<PermissionMode>(() => {
     if (!instanceId) return defaultPermMode
     return (readPref(PERM_KEY(instanceId)) as PermissionMode) || defaultPermMode
@@ -199,11 +203,11 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
   const requestModelChange = useCallback((v: string) => {
     if (queuedModel) return
     if (!instanceId || v === model) { setModel(v); return }
-    const inst = instances.find(i => i.id === instanceId)
+    const inst = thisInstance
     if (!inst?.sessionId) { setModel(v); return }
-    if (!isCacheWarm(sessionCosts[instanceId], settings.promptCache1h)) { setModel(v); return }
+    if (!isCacheWarm(sessionCost, settings.promptCache1h)) { setModel(v); return }
     setPendingModel(v)
-  }, [instanceId, model, instances, setModel, queuedModel, sessionCosts, settings.promptCache1h])
+  }, [instanceId, model, thisInstance, setModel, queuedModel, sessionCost, settings.promptCache1h])
 
   // Runs /compact on the CURRENT model, which is still cached and therefore cheap to
   // read. Deliberately does not switch afterwards: compacting on the new model would
@@ -252,11 +256,11 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const prevInstanceRef = useRef<string | null>(instanceId ?? null)
 
-  const isStreaming = instanceId ? !!streamingContent?.[instanceId] : false
-  const runningCommand = instanceId ? pendingCommand?.[instanceId] : undefined
+
+
   const isCommandPending = !!runningCommand
 
-  const selectedInstance = instanceId ? instances.find(i => i.id === instanceId) : null
+  const selectedInstance = instanceId ? thisInstance : null
   const isRunning = selectedInstance?.state === 'running'
   // `/btw …` is the one input allowed to send mid-run — it steers the live turn
   // (see handleSend) instead of starting a new one, so it bypasses the streaming gate.
@@ -401,7 +405,7 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
         setPermMode('plan')
         break
       case 'new-instance': {
-        const inst = instances.find(i => i.id === instanceId)
+        const inst = thisInstance
         if (inst) {
           api.createInstance({ folderId: inst.folderId }).then(newInst => {
             dispatch({ type: 'ADD_INSTANCE', payload: newInst })
@@ -423,7 +427,7 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
         if (res.value) navigator.clipboard.writeText(res.value)
         break
     }
-  }, [instanceId, dispatch, instances, requestModelChange, setEffort, permMode, setPermMode, model])
+  }, [instanceId, dispatch, thisInstance, requestModelChange, setEffort, permMode, setPermMode, model])
 
   const handleSend = useCallback(() => {
     if (!instanceId || (!text.trim() && images.length === 0)) return
@@ -456,7 +460,11 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
           content: [{ type: 'text', text: note }],
           createdAt: Date.now(),
         } })
-        api.btw(instanceId, note, turnFlags).catch(err => window.alert(`Couldn't queue your note: ${err.message}`))
+        // A note that never got through says so in the chat, like any other failed send.
+        api.btw(instanceId, note, turnFlags).catch(err => dispatch({ type: 'ADD_MESSAGE', payload: {
+          id: crypto.randomUUID(), instanceId, role: 'system',
+          content: [{ type: 'text', text: sendFailureText('your note', err) }], createdAt: Date.now(),
+        } }))
       }
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
       sessionStorage.removeItem(DRAFT_KEY(instanceId))
@@ -487,10 +495,10 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
         }
         dispatch({ type: 'ADD_MESSAGE', payload: assistantMsg })
         processCommandAction(res)
-      }).catch(() => {
+      }).catch((err) => {
         dispatch({ type: 'ADD_MESSAGE', payload: {
-          id: crypto.randomUUID(), instanceId, role: 'assistant',
-          content: [{ type: 'text', text: 'Command failed.' }], createdAt: Date.now(),
+          id: crypto.randomUUID(), instanceId, role: 'system',
+          content: [{ type: 'text', text: sendFailureText('that command', err, 'run', 'It did not run.') }], createdAt: Date.now(),
         }})
       }).finally(() => {
         dispatch({ type: 'CLEAR_PENDING_COMMAND', payload: instanceId })
@@ -695,7 +703,7 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
           </button>
         </div>
       )}
-      {instanceId && pendingWakeups?.[instanceId]?.map(w => (
+      {instanceId && wakeups?.map(w => (
         <WakeupBanner key={w.id} wakeup={w} instanceId={instanceId} />
       ))}
       <div
@@ -824,6 +832,8 @@ export function MessageInput({ autoFocus = true }: { autoFocus?: boolean } = {})
 }
 
 import type { ScheduledWakeup } from '../context/MessagesContext'
+import { useRenderCount } from '../utils/renderCount'
+import { useSessionCost } from '../context/LiveStatsContext'
 
 // Live "running for X · ↓ N tokens" chip in the composer, mirroring the Claude CLI's
 // footer. Elapsed ticks client-side off the server-provided turn start; the token count

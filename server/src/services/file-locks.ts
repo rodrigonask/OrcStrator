@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from 'child_process'
+import { execFile } from 'child_process'
 import path from 'path'
 import crypto from 'crypto'
 import { db } from '../db.js'
@@ -48,46 +48,67 @@ function norm(p: string): string {
  * source of cross-instance false-positive locks. The conflict we guard against is
  * clobbering another instance's uncommitted edits to a *tracked* file.
  */
-function parsePorcelain(cwd: string, stdout: string): Set<string> {
+/**
+ * Every git call this layer makes, in one place:
+ *   - `--no-optional-locks` and GIT_OPTIONAL_LOCKS=0: a plain `git status` takes
+ *     index.lock to refresh the index, and doing that in the background at the moment an
+ *     agent runs `git add`/`git commit` made the agent's own command fail with
+ *     "index.lock exists".
+ *   - async: a synchronous git call on this path froze every chat's streaming.
+ *   - a large maxBuffer: the default 1 MB overflowed on a big working tree and read as an error.
+ * Resolves with stdout, or null when git failed or timed out.
+ */
+function git(cwd: string, args: string[], timeoutMs = 10_000): Promise<string | null> {
+  return new Promise(resolve => {
+    execFile('git', ['--no-optional-locks', ...args], {
+      cwd, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    }, (err, stdout) => resolve(err ? null : String(stdout)))
+  })
+}
+
+/**
+ * Parse `git status --porcelain -z`. Without -z, git quotes and octal-escapes any
+ * path with a non-ASCII character (`ação.ts` prints as `"a\303\247\303\243o.ts"`), which never
+ * matched the real path, so a Portuguese-named file's lock was dropped as "clean". With -z
+ * paths are raw and NUL-separated; a rename is `R  new\0old\0`.
+ */
+export function parsePorcelainZ(stdout: string): Array<{ xy: string; rel: string }> {
+  const out: Array<{ xy: string; rel: string }> = []
+  const parts = stdout.split('\0')
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]
+    if (entry.length < 4) continue
+    const xy = entry.slice(0, 2)
+    out.push({ xy, rel: entry.slice(3) })
+    if (xy.includes('R') || xy.includes('C')) i++ // skip the original path
+  }
+  return out
+}
+
+/** Tracked-dirty absolute paths, or null when git failed (callers must not read null as "clean"). */
+function parseTracked(cwd: string, stdout: string): Set<string> {
   const files = new Set<string>()
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue
-    const xy = line.slice(0, 2)
+  for (const { xy, rel } of parsePorcelainZ(stdout)) {
     if (xy === '??') continue // untracked — not lockable
-    let rel = line.slice(3).trim().replace(/^"|"$/g, '')
-    // Renames render as `old -> new`; the on-disk path is the new name.
-    if (xy.includes('R') && rel.includes(' -> ')) {
-      rel = rel.split(' -> ').pop()!.trim().replace(/^"|"$/g, '')
-    }
     if (rel) files.add(norm(path.resolve(cwd, rel)))
   }
   return files
 }
 
-function gitPorcelain(cwd: string): Promise<Set<string>> {
-  return new Promise(resolve => {
-    execFile('git', ['status', '--porcelain'], { cwd, timeout: 10_000 }, (err, stdout) => {
-      if (err) { resolve(new Set()); return }
-      resolve(parsePorcelain(cwd, stdout))
-    })
-  })
+async function gitPorcelain(cwd: string): Promise<Set<string> | null> {
+  const out = await git(cwd, ['status', '--porcelain', '-z'])
+  return out === null ? null : parseTracked(cwd, out)
 }
 
 /** Is a single path still dirty (tracked-modified) right now? Used to re-validate a
  *  conflict before disrupting a sibling. On error, assume dirty (fail toward protection). */
-function isPathDirty(cwd: string, absolutePath: string): boolean {
-  try {
-    const rel = path.relative(cwd, absolutePath) || absolutePath
-    const out = execFileSync('git', ['status', '--porcelain', '--', rel], { cwd, timeout: 5_000 }).toString()
-    for (const line of out.split('\n')) {
-      if (!line.trim()) continue
-      if (line.slice(0, 2) === '??') continue // untracked doesn't count as a real conflict
-      return true
-    }
-    return false
-  } catch {
-    return true
-  }
+async function isPathDirty(cwd: string, absolutePath: string): Promise<boolean> {
+  const rel = path.relative(cwd, absolutePath) || absolutePath
+  const out = await git(cwd, ['status', '--porcelain', '-z', '--', rel], 5_000)
+  if (out === null) return true
+  // untracked doesn't count as a real conflict
+  return parsePorcelainZ(out).some(e => e.xy !== '??')
 }
 
 /**
@@ -98,23 +119,10 @@ function isPathDirty(cwd: string, absolutePath: string): boolean {
  * Each entry keeps the original-case relative path (for display) plus its normalized
  * absolute form (for matching against the lock table).
  */
-function gitPorcelainAll(cwd: string): Promise<Array<{ rel: string; absNorm: string }> | null> {
-  return new Promise(resolve => {
-    execFile('git', ['status', '--porcelain'], { cwd, timeout: 10_000 }, (err, stdout) => {
-      if (err) { resolve(null); return }
-      const out: Array<{ rel: string; absNorm: string }> = []
-      for (const line of stdout.split('\n')) {
-        if (!line.trim()) continue
-        const xy = line.slice(0, 2)
-        let rel = line.slice(3).trim().replace(/^"|"$/g, '')
-        if (xy.includes('R') && rel.includes(' -> ')) {
-          rel = rel.split(' -> ').pop()!.trim().replace(/^"|"$/g, '')
-        }
-        if (rel) out.push({ rel, absNorm: norm(path.resolve(cwd, rel)) })
-      }
-      resolve(out)
-    })
-  })
+async function gitPorcelainAll(cwd: string): Promise<Array<{ rel: string; absNorm: string }> | null> {
+  const stdout = await git(cwd, ['status', '--porcelain', '-z'])
+  if (stdout === null) return null
+  return parsePorcelainZ(stdout).filter(e => e.rel).map(e => ({ rel: e.rel, absNorm: norm(path.resolve(cwd, e.rel)) }))
 }
 
 export interface CloseGitStatus {
@@ -223,8 +231,9 @@ function claimDirty(instanceId: string, cwd: string, absolutePath: string): void
 
 export interface Conflict { holderInstanceId: string; holderName: string; path: string }
 
-/** Record a live Edit/Write. Returns a conflict if another instance holds the file. */
-export function noteEdit(instanceId: string, cwd: string, filePath: string): Conflict | null {
+/** Record a live Edit/Write. Resolves with a conflict if another instance holds the file.
+ *  Async only when a sibling holds a lock: the git re-check no longer blocks the server. */
+export async function noteEdit(instanceId: string, cwd: string, filePath: string): Promise<Conflict | null> {
   const absolute = norm(path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath))
   const lock = db.prepare('SELECT * FROM file_locks WHERE path = ?').get(absolute) as LockRow | undefined
 
@@ -234,7 +243,7 @@ export function noteEdit(instanceId: string, cwd: string, filePath: string): Con
       // Re-validate before disrupting a sibling: the lock is only real if the file is
       // STILL dirty. A stale lock (holder committed/reverted, or it was an attribution
       // artifact) is silently reclaimed rather than paused on.
-      if (isPathDirty(lock.cwd || cwd, absolute)) {
+      if (await isPathDirty(lock.cwd || cwd, absolute)) {
         return { holderInstanceId: lock.instance_id, holderName: holder.name, path: absolute }
       }
     }
@@ -250,7 +259,11 @@ export function noteEdit(instanceId: string, cwd: string, filePath: string): Con
  *  whole turn). Keyed by tool_use id so concurrent siblings never share a baseline. */
 export async function snapshotPreBash(instanceId: string, toolUseId: string, cwd: string): Promise<void> {
   if (!cwd || !toolUseId) return
-  try { preBashDirty.set(toolUseId, { instanceId, cwd, before: await gitPorcelain(cwd) }) } catch { /* non-critical */ }
+  try {
+    const before = await gitPorcelain(cwd)
+    // No baseline (git failed): claim nothing for this command rather than everything.
+    if (before) preBashDirty.set(toolUseId, { instanceId, cwd, before })
+  } catch { /* non-critical */ }
 }
 
 /** A Bash tool call completed — lock the files it newly dirtied to the instance that
@@ -261,6 +274,7 @@ export async function onBashComplete(toolUseId: string): Promise<void> {
   preBashDirty.delete(toolUseId)
   try {
     const after = await gitPorcelain(snap.cwd)
+    if (!after) return
     for (const p of after) {
       if (!snap.before.has(p)) claimDirty(snap.instanceId, snap.cwd, p)
     }
@@ -281,7 +295,16 @@ export async function onTurnEnd(instanceId: string, cwd: string): Promise<void> 
   } catch { /* non-critical */ }
 }
 
-function releaseCleanLocks(cwdNorm: string, dirtyNow: Set<string>): void {
+/**
+ * Release the locks in `cwdNorm` whose files git no longer reports dirty. `null` means git
+ * failed or timed out, and then NOTHING is released: an empty set used to stand in
+ * for an error, which read as "every file is clean" and dropped every lock without a word.
+ */
+function releaseCleanLocks(cwdNorm: string, dirtyNow: Set<string> | null): void {
+  if (!dirtyNow) {
+    console.warn(`[file-locks] git status failed in ${cwdNorm}; keeping its locks`)
+    return
+  }
   const locks = db.prepare('SELECT * FROM file_locks WHERE cwd = ?').all(cwdNorm) as LockRow[]
   for (const lock of locks) {
     if (!dirtyNow.has(lock.path)) {
@@ -291,7 +314,7 @@ function releaseCleanLocks(cwdNorm: string, dirtyNow: Set<string>): void {
 }
 
 /** Sibling activity note for a fresh turn — commits + locked files since the instance last ran. */
-export function buildUpdateNote(instanceId: string, cwd: string, sinceTs: number | null): string | null {
+export async function buildUpdateNote(instanceId: string, cwd: string, sinceTs: number | null): Promise<string | null> {
   if (!cwd) return null
   const lines: string[] = []
   const siblings = db.prepare(
@@ -310,11 +333,9 @@ export function buildUpdateNote(instanceId: string, cwd: string, sinceTs: number
     }
   }
   if (sinceTs) {
-    try {
-      const out = execFileSync('git', ['rev-list', '--count', `--since=${Math.floor(sinceTs / 1000)}`, 'HEAD'], { cwd, timeout: 5_000 }).toString().trim()
-      const n = parseInt(out, 10)
-      if (n > 0) lines.push(`- This repo received ${n} new commit(s) since your last turn`)
-    } catch { /* no git or no HEAD */ }
+    const out = await git(cwd, ['rev-list', '--count', `--since=${Math.floor(sinceTs / 1000)}`, 'HEAD'], 5_000)
+    const n = out === null ? 0 : parseInt(out.trim(), 10) // null: no git or no HEAD
+    if (n > 0) lines.push(`- This repo received ${n} new commit(s) since your last turn`)
   }
   if (lines.length === 0) return null
   return `[OrcStrator] Updates in this repo since your last turn:\n${lines.slice(0, 10).join('\n')}\nThis is FYI only — never wait for, defer to, or pause because of another instance. The ONLY constraint: do not edit the specific files listed as another instance's uncommitted edits. Every other file is yours to work on freely, in parallel; different files never conflict. If your task genuinely requires one of those exact files, tell the user instead of waiting.`

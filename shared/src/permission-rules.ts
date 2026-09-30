@@ -129,6 +129,24 @@ export function ruleSubjects(toolName: string, input: Record<string, unknown> | 
   return parts.length > 1 ? [full, ...parts] : [full]
 }
 
+/** PowerShell aliases the CLI maps to their cmdlet before matching a rule. */
+const POWERSHELL_ALIASES: Record<string, string> = {
+  ri: 'remove-item', rd: 'remove-item', del: 'remove-item', rm: 'remove-item', erase: 'remove-item', rmdir: 'remove-item',
+  gci: 'get-childitem', ls: 'get-childitem', dir: 'get-childitem', cat: 'get-content', gc: 'get-content', type: 'get-content',
+  cp: 'copy-item', copy: 'copy-item', cpi: 'copy-item', mv: 'move-item', move: 'move-item', mi: 'move-item',
+  ren: 'rename-item', rni: 'rename-item', sls: 'select-string', cd: 'set-location', sl: 'set-location', chdir: 'set-location',
+}
+
+/** A PowerShell command, lower-cased, with a leading alias replaced by its cmdlet. */
+function canonicalPowerShell(command: string): string {
+  const c = command.toLowerCase()
+  // The command word ends at a space, a `:` (the `:*` rule suffix) or a `*`.
+  const m = /^([^\s:*]+)(.*)$/s.exec(c)
+  if (!m) return c
+  const cmdlet = POWERSHELL_ALIASES[m[1]]
+  return cmdlet ? cmdlet + m[2] : c
+}
+
 /** `*` is the only wildcard in the CLI's rule syntax. Everything else is a literal. */
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*')
@@ -146,10 +164,19 @@ export function ruleMatches(rule: string, toolName: string, candidates: string[]
   const parsed = parseRule(rule)
   if (!parsed || parsed.toolName !== toolName) return false
   if (parsed.content === null) return true
+  // PowerShell rules match case-insensitively in the CLI, and common aliases are mapped to their
+  // cmdlet before matching (both documented), so they do here too.
+  if (toolName === 'PowerShell') {
+    // Both sides: a rule written with an alias (`PowerShell(ls:*)`, which deriveAllowRules and
+    // askOnceRuleFor produce) must still match its own command.
+    return ruleMatches(`Bash(${canonicalPowerShell(parsed.content)})`, 'Bash', candidates.map(canonicalPowerShell))
+  }
   const spec = parsed.content
   if (spec.endsWith(':*')) {
+    // A word boundary, like the CLI's own `:*`: `Bash(tr:*)` covers `tr a b` and
+    // `tr`, never `tree -o notes.md`.
     const prefix = spec.slice(0, -2)
-    return candidates.some(c => c.startsWith(prefix))
+    return candidates.some(c => c === prefix || c.startsWith(prefix + ' '))
   }
   const re = globToRegExp(spec)
   return candidates.some(c => re.test(c))
@@ -158,10 +185,19 @@ export function ruleMatches(rule: string, toolName: string, candidates: string[]
 // === Auto mode ===
 
 /** Programs whose blanket allow rule auto mode drops for Bash. */
-const BASH_BLANKET_PROGRAMS: readonly string[] = [
-  'python', 'python3', 'python2', 'node', 'deno', 'tsx', 'ruby', 'perl', 'php', 'lua',
+const BASH_BLANKET_BASE: readonly string[] = [
+  'python', 'python3', 'python2', 'py', 'node', 'deno', 'tsx', 'ruby', 'perl', 'php', 'lua',
   'npx', 'bunx', 'npm run', 'yarn run', 'pnpm run', 'bun run',
   'bash', 'sh', 'ssh', 'zsh', 'fish', 'eval', 'exec', 'env', 'xargs', 'sudo',
+  // Windows shells, reachable from Git Bash exactly like bash is. A whole-shell grant
+  // spelled `Bash(cmd:*)` or `Bash(powershell:*)` is the same hole as `Bash(bash:*)`.
+  'cmd', 'powershell', 'pwsh', 'wsl', 'cscript', 'wscript', 'mshta',
+]
+
+/** Every single-word program above, also as `name.exe` and `name.cmd`, the way Windows spells them. */
+const BASH_BLANKET_PROGRAMS: readonly string[] = [
+  ...BASH_BLANKET_BASE,
+  ...BASH_BLANKET_BASE.filter(p => !p.includes(' ')).flatMap(p => [`${p}.exe`, `${p}.cmd`]),
 ]
 
 /**
@@ -179,15 +215,31 @@ const POWERSHELL_BLANKET_PROGRAMS: readonly string[] = [
 /** `python -m http.server:*` survives; `python -m pytest:*` does not. The dot is the difference. */
 const DOTTED_PYTHON_MODULE = /^-m\s+[a-z_]\w*(\.[a-z_]\w*)+(:\*|\s*\*)$/
 
+/** True when `c` starts with program `p` as a whole word. */
+function startsWithProgram(c: string, p: string): boolean {
+  return c === p || c.startsWith(`${p} `) || c.startsWith(`${p}:`) || c.startsWith(`${p}*`)
+}
+
+/** Windows launchers whose `/c`-style switch means "run this command line". */
+const SLASH_SWITCH_PROGRAMS = new Set(['cmd', 'cmd.exe'])
+
 function isBlanketRule(content: string | null, programs: readonly string[]): boolean {
-  const c = (content ?? '').trim().toLowerCase()
-  if (/^[\s*]*$/.test(c)) return true
+  const raw = (content ?? '').trim().toLowerCase()
+  if (/^[\s*]*$/.test(raw)) return true
+  // A program named by its full path is that program (`C:/Windows/System32/cmd.exe:*`), but only
+  // when the last path segment IS one of the programs: a script or tool path stays what it is
+  // (`node /c/proj/build.js *` and `C:/tools/*` are ordinary grants).
+  const stripped = raw.replace(/^"?(?:[a-z]:)?[\\/](?:[^\s:"\\/]*[\\/])*/, '').replace(/"(?=[\s:*]|$)/, '')
+  const c = stripped !== raw && programs.some(p => startsWithProgram(stripped, p)) ? stripped : raw
   for (const p of programs) {
     if (c === p || c === `${p}:*` || c === `${p}*` || c === `${p} *`) return true
     if (c.startsWith(`${p} `) && c.endsWith('*')) {
       const rest = c.slice(p.length + 1).trimStart()
       const dottedModule = p.startsWith('python') && DOTTED_PYTHON_MODULE.test(rest)
       if (rest.startsWith('-') && !dottedModule) return true
+      // `cmd /c:*` is `bash -c:*` in Windows spelling: a one-letter switch, then anything. Only for
+      // the Windows launchers, so `node /c/proj/build.js *` (a Git Bash path) is still a script.
+      if (SLASH_SWITCH_PROGRAMS.has(p) && /^\/[a-z](?:[\s:*]|$)/.test(rest)) return true
     }
   }
   return false

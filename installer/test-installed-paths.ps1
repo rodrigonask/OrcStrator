@@ -1,4 +1,4 @@
-# Installed mode vs the developer checkout (installer plan s6 B6, D14):
+# Installed mode vs the developer checkout:
 #   - data root: ORCSTRATOR_DATA_DIR wins; a .git checkout keeps
 #     %USERPROFILE%\.orcstrator-v2; an installed copy uses %LOCALAPPDATA%\OrcStrator
 #   - this repo checkout still takes the git + dev path

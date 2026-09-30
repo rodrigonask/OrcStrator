@@ -342,7 +342,7 @@ export function windowLengthMinutes(value: string | null | undefined): number | 
  * True when the cadence is too long to fit inside its window twice, so the card fires
  * exactly ONCE per opening, at the window open, however large the number is.
  *
- * This is a consequence of anchoring on the window open (D4) rather than on the last fire,
+ * This is a consequence of anchoring on the window open rather than on the last fire,
  * and it is a trap worth naming: "every 2 days" with no window has a 1439-minute window
  * (00:00 to 23:59), so it fires every day at midnight, not every other day. The pill and
  * the modal hint both say the EFFECT rather than the number, because a card that says

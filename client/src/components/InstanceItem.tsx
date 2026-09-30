@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import type { InstanceConfig, ChatMessage } from '@shared/types'
 import { useUI } from '../context/UIContext'
-import { useMessages } from '../context/MessagesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useOverdriveLevel } from '../hooks/useOverdriveLevel'
 import { sounds } from '../utils/sounds'
@@ -10,6 +10,8 @@ import { resolveAnimTier, resolveSoundTier } from '../hooks/useVFX'
 import { useInstanceContextMenu } from '../hooks/useInstanceContextMenu'
 import { flashTile } from '../systems/tile-flash'
 import './instance-extras.css'
+import { useRenderCount } from '../utils/renderCount'
+import { useSessionCost } from '../context/LiveStatsContext'
 
 interface InstanceItemProps {
   instance: InstanceConfig
@@ -49,14 +51,17 @@ function playMegamanJingle() {
   }
 }
 
+const EMPTY_MESSAGES: ChatMessage[] = []
 
 export function InstanceItem({ instance, dragHandleProps, extraClass }: InstanceItemProps) {
-  const { selectedInstanceId, view, settings, gridInstanceIds, sessionCosts } = useUI()
-  const { messages: allMessages, unreadCounts, cliPrompts } = useMessages()
+  useRenderCount(`sidebar:${instance.id}`)
+  const { selectedInstanceId, view, settings, gridInstanceIds } = useUI()
+  // This row's own entries only, so another chat streaming does not re-render it.
+  const messages: ChatMessage[] = useMessagesSelector(s => s.messages[instance.id]) || EMPTY_MESSAGES
+  const unread = useMessagesSelector(s => s.unreadCounts[instance.id] || 0)
+  const hasCliPrompt = useMessagesSelector(s => !!s.cliPrompts[instance.id])
   const { dispatch, selectInstance, addToGrid } = useAppDispatch()
   const isSelected = selectedInstanceId === instance.id
-  const messages: ChatMessage[] = allMessages[instance.id] || []
-  const unread = unreadCounts?.[instance.id] || 0
 
   const { onContextMenu, menu, isOpen: contextOpen } = useInstanceContextMenu(instance)
 
@@ -83,7 +88,7 @@ export function InstanceItem({ instance, dragHandleProps, extraClass }: Instance
   )
 
   // Cache indicator (computed before the effect that depends on it)
-  const sessionCost = sessionCosts[instance.id]
+  const sessionCost = useSessionCost(instance.id)
   const cacheTtlMs = settings.promptCache1h !== false ? 3_600_000 : 300_000
   const cacheRatio = sessionCost && sessionCost.totalInput > 0
     ? Math.round(sessionCost.totalCacheRead / sessionCost.totalInput * 100)
@@ -184,7 +189,7 @@ export function InstanceItem({ instance, dragHandleProps, extraClass }: Instance
     : instance.surfacedAt != null && instance.state !== 'running' ? ' inst-scheduled'
     : !isOpenInGrid ? ''
     : instance.state === 'running' ? ' inst-running'
-    : cliPrompts?.[instance.id] ? ' inst-input-needed'
+    : hasCliPrompt ? ' inst-input-needed'
     : unread > 0 ? ' inst-unread'
     : ' inst-open-idle'
 

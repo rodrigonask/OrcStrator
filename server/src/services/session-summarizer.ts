@@ -25,6 +25,7 @@ import { getAnthropicKey } from './instance-namer.js'
 import { readNativeTasks } from './native-tasks.js'
 import * as taskManager from './task-manager.js'
 import type { NativeTask } from '@orcstrator/shared'
+import { redactSecrets } from '@orcstrator/shared'
 
 const SUMMARY_MODEL = 'claude-haiku-4-5'   // authoritative API id (claude-api skill)
 const TAIL_MESSAGES = 20                   // measured: ~2,950 tokens median, ~$0.005 a close
@@ -145,7 +146,9 @@ export function captureForSummary(instanceId: string): CapturedSession | null {
 
     const transcript = rows
       .reverse()   // query is newest-first; a transcript reads oldest-first
-      .map(r => ({ role: r.role, text: blocksToText(r.content).slice(0, MAX_CHARS_PER_MESSAGE) }))
+      // Redacted here, before anything else sees it: this text is sent to a model for
+      // the close summary and lands in a task comment.
+      .map(r => ({ role: r.role, text: redactSecrets(blocksToText(r.content)).redacted.slice(0, MAX_CHARS_PER_MESSAGE) }))
       .filter(m => m.text.length > 0)
 
     const span = readWorkSpan(instanceId, inst.session_id)
@@ -188,7 +191,7 @@ function buildPrompt(captured: CapturedSession): string {
       parts.push(`- [${t.status}] ${t.subject}`)
     }
   }
-  return parts.join('\n\n')
+  return redactSecrets(parts.join('\n\n')).redacted
 }
 
 /** One Haiku call → a short summary, or null on any failure. Never throws. */
@@ -260,6 +263,35 @@ function postComment(taskId: string, author: string, body: string): void {
 }
 
 /**
+ * A card with a schedule keeps its close summaries in its RUN HISTORY, not its comments.
+ * A daily routine would otherwise file one comment a day, and the comments a human wrote
+ * would be buried under them. Lands on the newest run this chat did, else the card's newest
+ * run. False when there is no run to hold it (the caller then posts a comment, so the
+ * summary is never simply dropped).
+ */
+function attachToRun(taskId: string, instanceId: string, body: string): boolean {
+  try {
+    const card = db.prepare('SELECT schedule_kind FROM pipeline_tasks WHERE id = ?').get(taskId) as
+      | { schedule_kind: string | null } | undefined
+    if (!card?.schedule_kind) return false
+    const run = (db.prepare(
+      'SELECT id FROM task_runs WHERE task_id = ? AND instance_id = ? ORDER BY started_at DESC LIMIT 1'
+    ).get(taskId, instanceId) ?? db.prepare(
+      'SELECT id FROM task_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1'
+    ).get(taskId)) as { id: string } | undefined
+    if (!run) return false
+    db.prepare('UPDATE task_runs SET summary = ? WHERE id = ?').run(body.slice(0, MAX_SUMMARY_CHARS), run.id)
+    // Bumped so an open card panel sees a change and refetches its runs.
+    db.prepare('UPDATE pipeline_tasks SET updated_at = ? WHERE id = ?').run(Date.now(), taskId)
+    broadcastEvent({ type: 'pipeline:updated', payload: { action: 'updated', taskId } })
+    return true
+  } catch (err) {
+    console.error('[session-summarizer] could not attach summary to a run:', err)
+    return false
+  }
+}
+
+/**
  * File a closed chat that came from no task AS a task, so nothing worked on goes
  * unrecorded. Only under Session Summary = 'all'; that mode's whole point is that the
  * record is the deliverable, and a summary with nowhere to live is not a record.
@@ -296,6 +328,7 @@ function logClosedChatAsTask(captured: CapturedSession, body: string): string | 
  *
  * Where the result goes depends on whether the session came from a task:
  *   - from a task  -> a comment on that task, keeping the task's history in one place
+ *   - from a routine -> the summary of its newest run (see attachToRun), never a comment
  *   - from no task -> a NEW task in that project carrying the summary (mode 'all' only)
  *
  * Either way something is written even when the call fails. Silence would read as "the
@@ -316,7 +349,7 @@ export async function summarizeInBackground(captured: CapturedSession): Promise<
       // A task that ran this chat gets the span too, widened rather than overwritten:
       // the same task is often picked up again in a second chat days later.
       taskManager.recordWorkSpan(captured.taskId, captured.workStartedAt, captured.workEndedAt)
-      postComment(captured.taskId, author, body)
+      if (!attachToRun(captured.taskId, captured.instanceId, body)) postComment(captured.taskId, author, body)
     } else if (getSummaryMode() === 'all') {
       loggedTaskId = logClosedChatAsTask(captured, body)
       if (loggedTaskId) broadcastEvent({ type: 'pipeline:updated', payload: { action: 'created', taskId: loggedTaskId } })

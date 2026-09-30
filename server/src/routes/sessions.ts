@@ -7,10 +7,11 @@ import type { SessionFile } from '@orcstrator/shared'
 import { getSessionIndex, findSessionEntry, readSessionCwd, type SessionEntry } from '../services/session-index.js'
 import { findFolderForCwd, importSessionTail } from '../services/session-adopt.js'
 import { canonicalizeCwd } from '../services/canonical-path.js'
-import { cwdToSlug } from '../services/session-sanitizer.js'
+import { cwdToSlug } from '../services/claude-paths.js'
 import { prettySlug } from '../services/pretty-slug.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { rowToInstance } from './instances.js'
+import { claim, release, sessionKey } from '../services/turn-gate.js'
 
 /** Page size when the client does not ask for one. The full list is 6,000+ rows. */
 const DEFAULT_LIMIT = 50
@@ -36,7 +37,7 @@ const statsCache = new Map<string, { size: number; mtime: number; stats: Session
  * Aggregate token/cost totals for one transcript.
  *
  * Streamed a line at a time, and only lines that could carry usage are handed to
- * JSON.parse — the big files here run past 300 MB, where parsing every line was the
+ * JSON.parse: the big files here run past 300 MB, where parsing every line was the
  * whole cost of this endpoint.
  */
 async function parseSessionFile(filePath: string): Promise<SessionStats> {
@@ -55,7 +56,7 @@ async function parseSessionFile(filePath: string): Promise<SessionStats> {
       const obj = JSON.parse(line) as Record<string, any>
       // Where the CLI actually records spend: assistant turns carry message.usage in the
       // API's own field names. The old code read obj.inputTokens/obj.costUsd, which no
-      // entry in a Claude Code transcript has — every session reported 0 in / 0 out.
+      // entry in a Claude Code transcript has: every session reported 0 in / 0 out.
       const usage = obj?.message?.usage
       if (usage) {
         inputTokens += (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0)
@@ -107,7 +108,7 @@ export default async function sessionsRoutes(app: FastifyInstance): Promise<void
     return { projects }
   })
 
-  // List session files (paginated — the client must never render all of them at once)
+  // List session files (paginated: the client must never render all of them at once)
   app.get('/sessions', async (request) => {
     const query = request.query as {
       limit?: string; offset?: string; q?: string
@@ -218,20 +219,37 @@ export default async function sessionsRoutes(app: FastifyInstance): Promise<void
   /**
    * Resume a session file: give it a chat to live in.
    *
-   * Binding the session id to an instance is all it takes — every send already spawns
+   * Binding the session id to an instance is all it takes: every send already spawns
    * `claude --resume <session_id>` in the instance's cwd. A brand new chat also gets the
    * tail of the transcript imported so the pane is not blank.
    */
   app.post('/sessions/:sessionId/resume', async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string }
+    // A double-click or two tabs used to pass the "already open?" check together
+    // (several awaits sit between it and the INSERT) and bind two chats to one conversation.
+    // One resume per session at a time: a second waits for the first, then finds its chat.
+    const key = sessionKey(sessionId)
+    let token = claim(key, 'resume')
+    for (let i = 0; !token && i < 100; i++) {
+      await new Promise(r => setTimeout(r, 100))
+      token = claim(key, 'resume')
+    }
+    if (!token) { reply.code(409); return { error: 'This session is being opened already. Try again in a moment.' } }
+    try {
+      return await resumeSession(sessionId, reply)
+    } finally {
+      release(key, token)
+    }
+  })
 
+  async function resumeSession(sessionId: string, reply: import('fastify').FastifyReply) {
     const entry = await findSessionEntry(sessionId)
     if (!entry) {
       reply.code(404)
       return { error: 'Session file not found' }
     }
 
-    // Already open somewhere — hand back that chat rather than making a second one
+    // Already open somewhere: hand back that chat rather than making a second one
     // pointed at the same session (two chats resuming one session id corrupt each other).
     const existing = db.prepare('SELECT id FROM instances WHERE session_id = ?').get(sessionId) as { id: string } | undefined
     if (existing) return { instanceId: existing.id, created: false, imported: 0 }
@@ -240,7 +258,7 @@ export default async function sessionsRoutes(app: FastifyInstance): Promise<void
     // can --resume. Binding one to a chat would produce a tab that dies on first send.
     if (entry.isSubagent) {
       reply.code(422)
-      return { error: 'Sub-agent runs cannot be resumed — open the session that spawned it instead.', parentSessionId: entry.parentSessionId }
+      return { error: 'Sub-agent runs cannot be resumed. Open the session that spawned it instead.', parentSessionId: entry.parentSessionId }
     }
 
     const rawCwd = await readSessionCwd(entry.filePath)
@@ -268,13 +286,20 @@ export default async function sessionsRoutes(app: FastifyInstance): Promise<void
 
     const id = crypto.randomUUID()
     const now = Date.now()
-    const nextOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM instances WHERE folder_id = ?')
-      .get(folder.id) as { n: number }).n
-
-    db.prepare(`
-      INSERT INTO instances (id, folder_id, name, cwd, session_id, state, idle_restart_minutes, sort_order, created_at)
-      VALUES (?, ?, ?, ?, ?, 'idle', 0, ?, ?)
-    `).run(id, folder.id, `Resumed ${sessionId.slice(0, 8)}`, cwd, sessionId, nextOrder, now)
+    // Checked again right before the INSERT, in one synchronous transaction: any other path
+    // that bound this session to a chat during the awaits above wins, and is handed back.
+    const boundTo = db.transaction(() => {
+      const again = db.prepare('SELECT id FROM instances WHERE session_id = ?').get(sessionId) as { id: string } | undefined
+      if (again) return again.id
+      const nextOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM instances WHERE folder_id = ?')
+        .get(folder.id) as { n: number }).n
+      db.prepare(`
+        INSERT INTO instances (id, folder_id, name, cwd, session_id, state, idle_restart_minutes, sort_order, created_at)
+        VALUES (?, ?, ?, ?, ?, 'idle', 0, ?, ?)
+      `).run(id, folder.id, `Resumed ${sessionId.slice(0, 8)}`, cwd, sessionId, nextOrder, now)
+      return null
+    }).immediate()
+    if (boundTo) return { instanceId: boundTo, created: false, imported: 0 }
 
     const { title, imported } = await importSessionTail(entry.filePath, id)
     if (title) {
@@ -286,12 +311,12 @@ export default async function sessionsRoutes(app: FastifyInstance): Promise<void
     broadcastEvent({ type: 'instance:created', payload: instance })
 
     return { instanceId: id, created: true, imported, cwd, relocated }
-  })
+  }
 
   // Request summary via idle agent
   app.post('/sessions/:sessionId/request-summary', async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string }
-    const body = request.body as { instanceId: string; startedBy?: unknown }
+    const body = (request.body ?? {}) as { instanceId: string; startedBy?: unknown }
     // The UI says 'user'; anything that does not is treated as an agent and surfaces.
     const startedBy = body?.startedBy === 'user' ? 'user' : 'agent'
 

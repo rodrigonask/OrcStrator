@@ -82,9 +82,11 @@ function buildMakeRecurringPrompt(instanceId: string, projectId: string): string
     '',
     'Once I have confirmed, create it as a scheduled card on this project pipeline board, aimed at THIS chat, so it fires again right here:',
     '',
-    `curl.exe -s -X POST http://127.0.0.1:3334/api/pipelines/${projectId}/tasks -H "Content-Type: application/json" -d '{"title":"<short title>","description":"<the full instruction the future run should receive>","scheduleKind":"times","scheduleValue":"09:00","targetInstanceId":"${instanceId}","rawPrompt":true}'`,
+    `curl.exe -s -X POST "http://127.0.0.1:$env:ORCSTRATOR_PORT/api/pipelines/${projectId}/tasks" -H "X-OrcStrator-Token: $env:ORCSTRATOR_AGENT_TOKEN" -H "Content-Type: application/json" -d '{"title":"<short title>","description":"<the full instruction the future run should receive>","scheduleKind":"times","scheduleValue":"09:00","targetInstanceId":"${instanceId}","rawPrompt":true}'`,
     '',
     'Use curl.exe, not curl: in PowerShell curl is an alias for Invoke-WebRequest and will not take those flags.',
+    '',
+    'The X-OrcStrator-Token header is required: without it the app answers 401. ORCSTRATOR_AGENT_TOKEN and ORCSTRATOR_PORT are already set in this chat\'s environment (in bash, write them as $ORCSTRATOR_AGENT_TOKEN and $ORCSTRATOR_PORT). Do not add a permissionMode field: the app refuses it from a chat.',
     '',
     `There is no routines endpoint any more. A schedule is a property of a card, so this is the ordinary create-task call with the schedule fields in the same body. The project is ${projectId}, which goes in the URL and not in the body.`,
     '',
@@ -173,9 +175,9 @@ export function useInstanceContextMenu(instance: InstanceConfig | undefined) {
       /* task lookup unavailable, fall through and close as before */
     }
     if (!(await deletePendingScheduled())) return
-    if (soundEnabled) sounds.remove()
-    // Close + permanently scrub API keys / passwords from the transcript file.
-    secureCloseInstance(instance.id, instance.name)
+    // Close + permanently scrub API keys / passwords from the transcript file. The "removed"
+    // sound only once it really closed (a chat whose agent would not stop stays).
+    if (await secureCloseInstance(instance.id, instance.name) && soundEnabled) sounds.remove()
   }, [instance, soundEnabled, secureCloseInstance, deletePendingScheduled])
 
   // The rest of the close flow, after the worktree check: the uncommitted-work guard, then
@@ -374,8 +376,7 @@ export function useInstanceContextMenu(instance: InstanceConfig | undefined) {
       onConfirm={async (status: CloseStatus) => {
         setCloseTask(null)
         if (!(await deletePendingScheduled())) return
-        if (soundEnabled) sounds.remove()
-        secureCloseInstance(instance.id, instance.name, status)
+        if (await secureCloseInstance(instance.id, instance.name, status) && soundEnabled) sounds.remove()
       }}
     />
   ) : null

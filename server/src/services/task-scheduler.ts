@@ -2,14 +2,21 @@ import crypto from 'crypto'
 import fs from 'fs'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { processRegistry } from './process-registry.js'
-import { setSurfaceSilent } from './surface.js'
+import { processRegistry, agentSlot } from './process-registry.js'
+import { setSurfaceSilent, surfaceInstance } from './surface.js'
+import { SELF_CLOSE_INSTRUCTION, withSelfCloseFooter, type Verdict } from './verdict.js'
+import { readRunVerdict } from './run-verdict.js'
 import { releaseLocksForInstance } from './file-locks.js'
 import { buildTurnFlags, applyTaskCliSettings } from './turn-flags.js'
-import { buildKickoffPrompt, loadComments, sendsVerbatim, hasPrompt, NO_PROMPT_MESSAGE } from './kickoff-prompt.js'
+import { buildKickoffPrompt, kickoffComments, sendsVerbatim, hasPrompt, NO_PROMPT_MESSAGE } from './kickoff-prompt.js'
 import * as taskManager from './task-manager.js'
+import { claim, release, taskKey, isClaimed, chatKey } from './turn-gate.js'
+import { reportPersistFailure } from './persist-errors.js'
 import { formatInstant, computeNextRun, validateScheduleSpec, describeSchedule, describeEvery, isInsideActiveWindow } from '@orcstrator/shared'
 import type { TaskRun, TaskScheduleKind, ScheduleSpec } from '@orcstrator/shared'
+import { mediaNamesForInstances, releaseMedia } from './message-media.js'
+import { scrubSessionSecrets } from './secret-scrubber.js'
+import { deleteChatSettingsFile } from './data-retention.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Task scheduler: pipeline cards that carry a schedule, fired on a chat instance
@@ -107,6 +114,8 @@ export interface ScheduledTaskRow {
   budget_cap_usd: number | null
   auto_compact: number
   auto_close: number
+  /** 1 = the run must end with RESULT: OK to count as a success and close its chat (verdict.ts). */
+  self_close: number
   resume_session_id: string | null
   /** null | 'finished' | 'failed' | 'over_budget' */
   schedule_state: string | null
@@ -139,6 +148,7 @@ export interface TaskRunRow {
   cost_usd: number
   input_tokens: number
   output_tokens: number
+  summary: string | null
 }
 
 export function rowToRun(r: TaskRunRow): TaskRun {
@@ -153,6 +163,7 @@ export function rowToRun(r: TaskRunRow): TaskRun {
     costUsd: r.cost_usd ?? 0,
     inputTokens: r.input_tokens ?? 0,
     outputTokens: r.output_tokens ?? 0,
+    summary: r.summary ?? null,
   }
 }
 
@@ -214,7 +225,9 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 let unsubscribeTurnComplete: (() => void) | null = null
 // One in-flight scheduled run per instance. A second due card on the same instance
 // waits (see queueOrExpire) rather than double-firing.
-const activeRunByInstance = new Map<string, { runId: string; taskId: string }>()
+// openedChat: this run OPENED the chat (a fresh spawn). Only such a chat is a self-closing
+// card's to close; a pinned or hand-picked chat holds history that is not the card's.
+const activeRunByInstance = new Map<string, { runId: string; taskId: string; openedChat?: boolean }>()
 // First time we saw an instance sitting at 'spawning' with no pid and no tracked process.
 const spawningSeenAt = new Map<string, number>()
 
@@ -223,7 +236,7 @@ const SCHEDULED_COLUMNS = `
   schedule_kind, schedule_value, schedule_enabled, silent, raw_prompt,
   schedule_days, schedule_window, schedule_tz, schedule_until, schedule_max_runs,
   run_count, catchup_policy, consecutive_failures, disarm_after_failures,
-  max_run_minutes, budget_cap_usd, auto_compact, auto_close, resume_session_id,
+  max_run_minutes, budget_cap_usd, auto_compact, auto_close, self_close, resume_session_id,
   schedule_state,
   last_run_at, next_run_at, queued_since, "column" AS "column",
   model, effort, permission_mode, max_budget_usd, fallback_model, output_style, language
@@ -635,10 +648,11 @@ interface FireTarget {
   session_id: string | null
   process_state: string
   process_pid: number | null
+  state?: string | null
 }
 
 function getFireTarget(instanceId: string): FireTarget | undefined {
-  return db.prepare('SELECT id, cwd, session_id, process_state, process_pid FROM instances WHERE id = ?')
+  return db.prepare('SELECT id, cwd, session_id, process_state, process_pid, state FROM instances WHERE id = ?')
     .get(instanceId) as FireTarget | undefined
 }
 
@@ -650,6 +664,11 @@ function getFireTarget(instanceId: string): FireTarget | undefined {
  * interval on a dead target would otherwise spawn a new instance every poll and run
  * concurrently with itself.
  */
+/** Is a recorded run of this scheduled card still in flight? (Starts in progress are the claim's job.) */
+export function isRunInFlight(taskId: string): boolean {
+  return !!inFlightRun(taskId)
+}
+
 function inFlightRun(taskId: string): { instanceId: string; runId: string } | undefined {
   for (const [instanceId, active] of activeRunByInstance) {
     if (active.taskId === taskId) return { instanceId, runId: active.runId }
@@ -724,7 +743,7 @@ function spawnFireInstance(task: ScheduledTaskRow): ReplacementResult {
     ? task.title.slice(0, Math.max(1, room - 1)) + '…'
     : task.title
   const name = base + suffix
-  // THE THREAD SURVIVES THE CHAT (D19).
+  // THE THREAD SURVIVES THE CHAT.
   //
   // A card with auto_close on closes its chat after every run, so without this each night's
   // run would start from nothing and a routine whose whole value is "carry on from
@@ -771,21 +790,41 @@ function spawnFireInstance(task: ScheduledTaskRow): ReplacementResult {
 }
 
 /**
+ * Fire a scheduled card, holding the card's claim (turn-gate.ts) for the whole fire.
+ * A manual Start of the same card takes the same claim before its first await, so the two can
+ * no longer both pass their "is a run in flight?" checks while each other's run is still
+ * being set up: whichever claims second backs off. A scheduled fire that finds the card being
+ * started by hand declines without touching its slot; the next poll sees the manual run.
+ */
+async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {}): Promise<{ ok: boolean; reason?: string; runId?: string }> {
+  const key = taskKey(task.id)
+  const token = claim(key, 'task')
+  if (!token) {
+    console.log(`[task-schedule] "${task.title}" is being started right now; ${opts.manual ? 'run-now refused' : 'this fire waits for the next poll'}`)
+    return { ok: false, reason: opts.manual ? 'instance-busy' : 'card-starting' }
+  }
+  try {
+    return await fireTaskClaimed(task, opts)
+  } finally {
+    release(key, token)
+  }
+}
+
+/**
  * Fire a scheduled card: persist the prompt as a user message (so the chat history is
  * coherent), create a task_runs row, move the card to In Progress, and spawn the turn via
  * sendMessage, mirroring how wakeup-scheduler.fire and the auto-retry path do it.
  */
-async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {}): Promise<{ ok: boolean; reason?: string; runId?: string }> {
+async function fireTaskClaimed(task: ScheduledTaskRow, opts: { manual?: boolean } = {}): Promise<{ ok: boolean; reason?: string; runId?: string }> {
   const now = Date.now()
 
-  // The exact text the CLI will receive. Built by the SAME builder the manual start uses,
-  // so a card cannot mean one thing when clicked and another at 3am. Both bypasses apply
-  // here: raw_prompt (every migrated routine carries it) and the slash-command
-  // passthrough, which is why a parked /goal fires as /goal on a scheduled run too.
-  const fullTask = taskManager.getTask(task.id)
-  const prompt = fullTask ? buildKickoffPrompt(fullTask, sendsVerbatim(fullTask) ? [] : loadComments(task.id)) : (task.description ?? '')
-
   // AN EMPTY PROMPT NEVER REACHES THE CLI, and this is checked before everything else.
+  //
+  // Checked on the ROW, without building the prompt. A card waiting on a busy chat
+  // is polled every 30 s, and the full build (the card, its comments, the template) used to
+  // run on every poll only to be thrown away by the busy check below. Only a card that sends
+  // its description verbatim can come out empty (the template always carries the title), so
+  // the row alone answers the question here; the built prompt is checked again once it exists.
   //
   // A raw_prompt card whose description has been blanked would otherwise fire anyway: the CLI
   // answers "Ready. What do you need?" and the run costs money for nothing. Asked here, ahead
@@ -795,7 +834,8 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
   // Run now refuses and writes nothing, exactly like a busy chat: the user is looking at the
   // screen and gets the sentence. A scheduled fire is recorded as a failure (see
   // recordNoPromptFailure), because nobody is watching and the card is genuinely broken.
-  if (!hasPrompt(prompt)) {
+  const verbatim = sendsVerbatim({ description: task.description, rawPrompt: !!task.raw_prompt })
+  if (verbatim && !hasPrompt(task.description)) {
     if (opts.manual) {
       console.log(`[task-schedule] Run-now for "${task.title}" refused: the card has no prompt`)
       return { ok: false, reason: 'no-prompt' }
@@ -825,6 +865,7 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
   // Note this reads target_instance_id and never instance_id. instance_id is where the last
   // run happened to land, which is emphatically not where the next one should be aimed.
   let instance = task.target_instance_id ? getFireTarget(task.target_instance_id) : undefined
+  let openedChat = false
   if (!instance) {
     const fallback = spawnFireInstance(task)
     if (!fallback.ok) {
@@ -835,6 +876,7 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
       return { ok: false, reason: 'instance-deleted' }
     }
     instance = fallback.instance
+    openedChat = true
   }
 
   // The instance that actually runs this fire: target_instance_id on the normal path, the
@@ -864,6 +906,13 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
   // while a user turn starts up, and firing into that gap would kill the user's turn).
   const busy = !strandedSpawn && (
     instance.process_state !== 'idle' || activeRunByInstance.has(instance.id) || processRegistry.isTracked(instance.id)
+    // A turn starting on the chat right now (turn-gate.ts): firing would be refused anyway.
+    || isClaimed(chatKey(instance.id))
+    // The agent limit is full: wait in the queue for a slot like a busy chat.
+    || !agentSlot(instance.id).ok
+    // The user paused this chat: a schedule waits (and expires like any wait) instead of
+    // starting it again on its own. Run now is the user asking, so it still goes.
+    || (!opts.manual && instance.state === 'paused')
   )
   if (busy) {
     if (opts.manual) {
@@ -875,13 +924,32 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
     return queueOrExpire(task, instance.id, now)
   }
 
+  // The exact text the CLI will receive, built only now that the fire is really going ahead.
+  // Built by the SAME builder the manual start uses, so a card cannot mean one
+  // thing when clicked and another at 3am. Both bypasses apply here: raw_prompt (every
+  // migrated routine carries it) and the slash-command passthrough, which is why a parked
+  // /goal fires as /goal on a scheduled run too.
+  const fullTask = taskManager.getTask(task.id)
+  const built = fullTask ? buildKickoffPrompt(fullTask, kickoffComments(fullTask)) : (task.description ?? '')
+  // A self-closing card also carries the verdict instruction at the END of the message, because
+  // the system-prompt copy alone was not enough (verdict.ts). Never in front: a verbatim /goal
+  // keeps its command at character zero.
+  const prompt = task.self_close && hasPrompt(built) ? withSelfCloseFooter(built) : built
+  // The row check above covers every card that can build an empty prompt; this is the belt to
+  // its braces (a card edited between the two reads), and it refuses the same way.
+  if (!hasPrompt(prompt)) {
+    if (opts.manual) return { ok: false, reason: 'no-prompt' }
+    recordNoPromptFailure(task, now)
+    return { ok: false, reason: 'no-prompt' }
+  }
+
   // Create the run row first so a crash mid-fire still leaves a trace.
   const runId = crypto.randomUUID()
   db.prepare(`
     INSERT INTO task_runs (id, task_id, instance_id, started_at, status, kind)
     VALUES (?, ?, ?, ?, 'running', ?)
   `).run(runId, task.id, targetInstanceId, now, opts.manual ? 'manual' : 'scheduled')
-  activeRunByInstance.set(targetInstanceId, { runId, taskId: task.id })
+  activeRunByInstance.set(targetInstanceId, { runId, taskId: task.id, openedChat })
 
   const late = task.next_run_at != null && !opts.manual ? now - task.next_run_at : 0
   console.log(
@@ -923,7 +991,11 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
       type: 'message:added',
       payload: { instanceId: targetInstanceId, message: { id: msgId, instanceId: targetInstanceId, role: 'user', content, createdAt: now } },
     })
-  } catch { /* non-critical */ }
+  } catch (err) {
+    // The run still goes ahead (the prompt reaches the agent through sendMessage below), but
+    // the chat will not show what it was asked, and that is now said instead of swallowed.
+    reportPersistFailure('routine-message', err, { instanceId: targetInstanceId, detail: `card ${task.id.slice(0, 8)}` })
+  }
 
   // A card firing on an EXISTING chat re-stamps that chat's silence to match itself, so
   // toggling Silent on the card takes effect on the very next fire. Done HERE, once the
@@ -956,6 +1028,9 @@ async function fireTask(task: ScheduledTaskRow, opts: { manual?: boolean } = {})
       // and a 3am fire that tripped a prompt sat blocked behind a banner nobody was awake
       // to click. Same builder as the manual start now, so the two cannot drift again.
       flags: buildTurnFlags(task),
+      // A self-closing card is told how to prove it succeeded (verdict.ts). Through the system
+      // prompt, never the message, so a verbatim /goal keeps its command at character zero.
+      agentPrompt: task.self_close ? SELF_CLOSE_INSTRUCTION : undefined,
       origin: 'routine',
       taskId: task.id,
     })
@@ -991,12 +1066,36 @@ export function settleScheduledColumn(taskId: string): void {
   // A card that has run out of runs is finished work, not standing work, so it lands in
   // Done beside the one-offs rather than back in Backlog claiming a next slot it has not got.
   const finished = row.schedule_kind === 'once' || row.schedule_state === 'finished'
-  const target = finished ? 'done' : 'backlog'
+  let target: 'done' | 'backlog' | 'in_review' = finished ? 'done' : 'backlog'
+  // A SELF-CLOSING card that is finishing is Done only on proof: a last run that did not settle
+  // 'ok' (a missing or failed verdict, a crash, a kill, an interrupt) sends it to In Review, so
+  // the board never shows green for a run that failed. A run still 'running' here is settled by
+  // finalizeRun, which re-checks (see reviewFailedSelfClose).
+  if (target === 'done' && row.self_close && lastRunFailed(taskId)) target = 'in_review'
   if (row.column === target) return
   try {
     taskManager.moveTask(taskId, target, 'orcstrator')
   } catch (err) {
     console.error(`[task-schedule] could not settle card ${taskId.slice(0, 8)} into ${target}:`, err)
+  }
+}
+
+/** The card's latest run ended as anything but 'ok' (still running does not count). */
+function lastRunFailed(taskId: string): boolean {
+  const r = db.prepare('SELECT status FROM task_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1').get(taskId) as { status: string } | undefined
+  return !!r && r.status !== 'ok' && r.status !== 'running'
+}
+
+/**
+ * finalizeRun's half of the rule in settleScheduledColumn: the column may already have been
+ * settled to Done while the run row still said 'running' (the two turn-complete listeners run in
+ * either order). A self-closing card whose run then settles as failed is moved to In Review.
+ */
+function reviewFailedSelfClose(taskId: string): void {
+  const row = getScheduledTask(taskId)
+  if (!row?.self_close || row.column !== 'done' || !lastRunFailed(taskId)) return
+  try { taskManager.moveTask(taskId, 'in_review', 'orcstrator') } catch (err) {
+    console.error(`[task-schedule] could not move card ${taskId.slice(0, 8)} to in_review:`, err)
   }
 }
 
@@ -1024,7 +1123,7 @@ export function isScheduledCard(taskId: string): boolean {
  * and so does one that is switched off, because a disarmed card has no slot to spend and
  * counting the run would push it toward a limit it is no longer running against.
  */
-export function noteManualStart(taskId: string, instanceId: string): void {
+export function noteManualStart(taskId: string, instanceId: string, openedChat = false): void {
   const task = getScheduledTask(taskId)
   if (!task) return
 
@@ -1037,7 +1136,7 @@ export function noteManualStart(taskId: string, instanceId: string): void {
       INSERT INTO task_runs (id, task_id, instance_id, started_at, status, kind)
       VALUES (?, ?, ?, ?, 'running', 'manual')
     `).run(runId, taskId, instanceId, now)
-    activeRunByInstance.set(instanceId, { runId, taskId })
+    activeRunByInstance.set(instanceId, { runId, taskId, openedChat })
     const run = db.prepare('SELECT * FROM task_runs WHERE id = ?').get(runId) as TaskRunRow
     broadcastEvent({ type: 'task:run-started', payload: rowToRun(run) })
   }
@@ -1067,7 +1166,7 @@ function resetStrandedSpawn(instanceId: string): void {
  * and records WHY, so a card that has broken three times in a row stops burning a Claude
  * process every slot until somebody looks at it.
  *
- * What counts is deliberately narrow (D11). A spawn that failed, a process that exited
+ * What counts is deliberately narrow. A spawn that failed, a process that exited
  * non-zero, a run killed for going over its budget or its maximum duration: those are the
  * card's own failures. A run cut short because the SERVER restarted is 'interrupted' and
  * touches nothing, because three restarts in a row would otherwise switch off a routine
@@ -1128,8 +1227,40 @@ function recordRunOutcome(taskId: string, status: 'ok' | 'error', kind: string):
   broadcastTaskUpdated(taskId)
 }
 
+/** How long a self-closing close waits for a follow-up turn to claim the chat first. */
+export const SELF_CLOSE_SETTLE_MS = Number(process.env.ORCSTRATOR_SELF_CLOSE_SETTLE_MS) || 2000
+
 /**
- * Tidy up the chat after a scheduled run, if the card asked for it (D17, D18, D19).
+ * Why a finished chat is about to be used again, or null. The questions postRunHygiene's own
+ * busy test cannot answer: a turn being started on it right now, a /btw note queued for it, or
+ * a wake-up the run scheduled on it. Closing it would throw each of those away.
+ */
+export async function chatAboutToBeUsed(instanceId: string): Promise<string | null> {
+  if (isClaimed(chatKey(instanceId))) return 'is being started again'
+  const { hasPendingBtwNotes } = await import('./claude-process.js')
+  if (hasPendingBtwNotes(instanceId)) return 'has a /btw note waiting to run'
+  const { getPendingForInstance } = await import('./wakeup-scheduler.js')
+  if (getPendingForInstance(instanceId).length > 0) return 'has a wake-up scheduled on it'
+  return null
+}
+
+/**
+ * A self-closing run that did not prove success: the chat stays, and it SHOWS, even on a silent
+ * card (the silence is for runs that worked). The next fire re-stamps the card's own silence.
+ */
+function surfaceForReview(task: ScheduledTaskRow, instanceId: string, verdict: Verdict | undefined): void {
+  const reason = verdict && !verdict.ok ? verdict.reason : 'the run did not finish'
+  console.warn(`[task-schedule] "${task.title}": needs review (${reason}); chat ${instanceId.slice(0, 8)} kept open`)
+  try {
+    setSurfaceSilent(instanceId, false)
+    surfaceInstance(instanceId, 'routine')
+  } catch (err) {
+    console.warn(`[task-schedule] "${task.title}": could not surface chat ${instanceId.slice(0, 8)} for review: ${(err as Error).message}`)
+  }
+}
+
+/**
+ * Tidy up the chat after a scheduled run, if the card asked for it.
  *
  * COMPACT FIRST, THEN CLOSE, and the order is not arbitrary. Compacting works by resuming
  * the session and sending /compact, so a closed chat cannot be compacted: reversing these
@@ -1142,10 +1273,18 @@ function recordRunOutcome(taskId: string, status: 'ok' | 'error', kind: string):
  * be tidied is untidy, not broken, and turning that into a failure would count toward the
  * disarm ceiling and eventually switch off a card whose actual work succeeded every time.
  */
-async function postRunHygiene(taskId: string, instanceId: string): Promise<void> {
+async function postRunHygiene(taskId: string, instanceId: string, verdict?: Verdict, openedChat = false): Promise<void> {
   const task = getScheduledTask(taskId)
   if (!task) return
-  if (!task.auto_compact && !task.auto_close) return
+  // A SELF-CLOSING CARD CLOSES ON PROOF, AND ONLY ON PROOF. Its chat closes when the run ended
+  // with a parsed `RESULT: OK` (verdict.ts), whether or not auto_close is ticked, and is KEPT
+  // on anything else even when auto_close is ticked: a run that failed leaves its chat as the
+  // evidence, and it surfaces, silent card or not, because somebody has to look at it. No
+  // verdict at all (a kill, a spawn error, a restart) is the same as a failed one.
+  const selfClose = !!task.self_close
+  const closeWanted = selfClose ? verdict?.ok === true : !!task.auto_close
+  if (selfClose && !verdict?.ok) surfaceForReview(task, instanceId, verdict)
+  if (!task.auto_compact && !closeWanted) return
 
   // A CHAT THE CARD DID NOT OPEN IS NOT THE CARD'S TO THROW AWAY.
   //
@@ -1177,7 +1316,7 @@ async function postRunHygiene(taskId: string, instanceId: string): Promise<void>
     }
   }
 
-  if (!task.auto_close) return
+  if (!closeWanted) return
 
   if (pinnedHere) {
     console.log(
@@ -1187,6 +1326,31 @@ async function postRunHygiene(taskId: string, instanceId: string): Promise<void>
     return
   }
 
+  // A self-closing close waits a moment first, so a /btw follow-up or a retry that is about to
+  // start on this chat has claimed it by the time it is asked, and asks a few more questions.
+  // And it closes only a chat this run OPENED: a card started by hand on a chat the user picked
+  // would otherwise take that chat's own history with it (reproduced).
+  if (selfClose) {
+    if (!openedChat) {
+      console.log(`[task-schedule] "${task.title}": chat ${instanceId.slice(0, 8)} was not opened by this run, so it was not closed`)
+      return
+    }
+    await new Promise(r => setTimeout(r, SELF_CLOSE_SETTLE_MS))
+    const soon = await chatAboutToBeUsed(instanceId)
+    if (soon) {
+      console.warn(`[task-schedule] "${task.title}": chat ${instanceId.slice(0, 8)} ${soon}, so it was left open rather than closed`)
+      return
+    }
+  }
+  await closeFinishedChat(taskId, task.title, instanceId, { keepSession: true, secure: selfClose })
+}
+
+/**
+ * Close a chat whose run has finished: the ONE close path for auto_close and self_close, so the
+ * guards below cannot drift between them. Returns true only when the chat is really gone.
+ * `keepSession` carries the session forward to the card's next fire (auto_close's thread).
+ */
+export async function closeFinishedChat(taskId: string, title: string, instanceId: string, opts: { keepSession: boolean; secure?: boolean }): Promise<boolean> {
   // IS ANYTHING USING THIS CHAT RIGHT NOW? Asked HERE, immediately before the kill, and not
   // at the top of the function.
   //
@@ -1202,50 +1366,73 @@ async function postRunHygiene(taskId: string, instanceId: string): Promise<void>
   // alternative costs the user work they were in the middle of.
   const live = db.prepare('SELECT state, process_state FROM instances WHERE id = ?').get(instanceId) as
     | { state: string | null; process_state: string | null } | undefined
-  if (!live) return
-  if (processRegistry.isTracked(instanceId) || live.state === 'running' || live.process_state === 'running') {
+  if (!live) return false
+  // A self-closing close also refuses a chat a start has just claimed (it would cancel it).
+  if (processRegistry.isTracked(instanceId) || live.state === 'running' || live.process_state === 'running' || (opts.secure && isClaimed(chatKey(instanceId)))) {
     console.warn(
-      `[task-schedule] "${task.title}": chat ${instanceId.slice(0, 8)} is busy again, so it was left open rather than closed. ` +
+      `[task-schedule] "${title}": chat ${instanceId.slice(0, 8)} is busy again, so it was left open rather than closed. ` +
       'Something started using it while the run was being tidied up.'
     )
-    return
+    return false
   }
 
   // CAPTURE THE SESSION BEFORE THE ROW GOES, and read it fresh rather than from anything
   // held earlier: the session id is written when the CLI answers, which is after this card
   // was last selected. `messages` is ON DELETE CASCADE from `instances`, so everything
   // below the DELETE is gone and there is no second chance to look.
-  const inst = db.prepare('SELECT session_id FROM instances WHERE id = ?').get(instanceId) as { session_id: string | null } | undefined
-  if (!inst) return
+  const inst = db.prepare('SELECT cwd, session_id FROM instances WHERE id = ?').get(instanceId) as { cwd: string; session_id: string | null } | undefined
+  if (!inst) return false
 
   // KILL FIRST, AND BELIEVE THE ANSWER. enforceMaxRunDuration goes to some trouble not to
   // touch the row unless the kill was confirmed, because marking a live agent's row idle
   // hides it and throws away the pid needed to try again. Deleting the row outright is
   // strictly worse: a surviving process would be left billing with no row, no pid and no
   // handle to reach it by. An unconfirmed kill therefore leaves everything exactly as it is.
-  const dead = await processRegistry.killProcess(instanceId)
-  if (!dead && processRegistry.isTracked(instanceId)) {
+  // The chat is closed below, so the programs its agent started are ended too (sweep): nothing
+  // would be left to reach them from.
+  const dead = await processRegistry.killProcess(instanceId, { sweep: true })
+  // Not only a tracked chat: an adopted agent (after a restart) is not tracked, and a kill it
+  // survived must leave its row too.
+  if (!dead) {
     console.warn(
-      `[task-schedule] "${task.title}": chat ${instanceId.slice(0, 8)} would not die, so it was NOT closed. ` +
+      `[task-schedule] "${title}": chat ${instanceId.slice(0, 8)} would not die, so it was NOT closed. ` +
       'Its row and pid are left alone so the process can still be found and stopped.'
     )
-    return
+    return false
   }
 
-  if (inst.session_id) {
+  if (!opts.keepSession) {
+    // Nothing to carry: a manual card does not resume anything on its next start.
+  } else if (inst.session_id) {
     db.prepare('UPDATE pipeline_tasks SET resume_session_id = ?, updated_at = ? WHERE id = ?').run(inst.session_id, Date.now(), taskId)
   } else {
     // No session means the CLI never got far enough to start one, so there is nothing to
     // carry forward. Keeping the PREVIOUS resume id is right: one run that died before it
     // said anything should not cost the card its whole thread.
-    console.warn(`[task-schedule] "${task.title}": chat ${instanceId.slice(0, 8)} has no session to carry forward; keeping the one from the run before`)
+    console.warn(`[task-schedule] "${title}": chat ${instanceId.slice(0, 8)} has no session to carry forward; keeping the one from the run before`)
   }
 
+  // NOTHING ASYNC BETWEEN THE KILL AND THE DELETE. Once the kill returns the chat looks free,
+  // so an await here would let a new turn start on it and then lose its row under a live
+  // process. The row goes first; the scrub below runs on a chat that no
+  // longer exists, so nothing can start on it meanwhile.
+  const media = mediaNamesForInstances([instanceId])
   db.prepare('DELETE FROM instances WHERE id = ?').run(instanceId)
+  releaseMedia(media)
   releaseLocksForInstance(instanceId)
+  if (opts.secure) deleteChatSettingsFile(instanceId)
   broadcastEvent({ type: 'instance:deleted', payload: { id: instanceId } })
   broadcastTaskUpdated(taskId)
-  console.log(`[task-schedule] "${task.title}": closed chat ${instanceId.slice(0, 8)} now the run has finished`)
+  console.log(`[task-schedule] "${title}": closed chat ${instanceId.slice(0, 8)} now the run has finished`)
+  // A self-closing close is a close nobody watched, so it does what the UI's secure close does:
+  // keys and passwords scrubbed from the transcript (the settings file went above).
+  // Best effort: the chat is already closed.
+  if (opts.secure) {
+    try { await scrubSessionSecrets(inst.cwd, inst.session_id) } catch (err) {
+      console.warn(`[task-schedule] "${title}": could not scrub chat ${instanceId.slice(0, 8)}'s transcript: ${(err as Error).message}`)
+    }
+  }
+  return true
 }
 
 /**
@@ -1293,8 +1480,9 @@ function finalizeRun(
   runId: string,
   instanceId: string,
   status: 'ok' | 'error',
-  data: { error?: string; costUsd?: number; inputTokens?: number; outputTokens?: number } = {}
+  data: { error?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; verdict?: Verdict } = {}
 ): void {
+  const openedChat = activeRunByInstance.get(instanceId)?.openedChat === true
   activeRunByInstance.delete(instanceId)
   // `WHERE status = 'running'` means a second call for the same run changes nothing, and
   // `changes` is how we know which call was the real one. Without that test the ledger
@@ -1309,11 +1497,12 @@ function finalizeRun(
   if (run) broadcastEvent({ type: 'task:run-finished', payload: rowToRun(run) })
   if (settled.changes > 0 && run?.task_id) {
     recordRunOutcome(run.task_id, status, (run as TaskRunRow & { kind?: string }).kind ?? 'scheduled')
+    if (status === 'error') reviewFailedSelfClose(run.task_id)
     // Only on the call that actually settled the run, so a spawn-error racing the
     // turn-complete path cannot compact and close the same chat twice. Not awaited: this
     // function is called from a synchronous turn-complete callback, and the caller must not
     // be made to wait on a /compact turn. Failures inside are logged, never rethrown.
-    void postRunHygiene(run.task_id, instanceId).catch(err => {
+    void postRunHygiene(run.task_id, instanceId, data.verdict, openedChat).catch(err => {
       console.warn(`[task-schedule] tidying up after run ${runId.slice(0, 8)} failed: ${(err as Error).message}`)
     })
   }
@@ -1345,18 +1534,33 @@ function handleTurnComplete(instanceId: string, tokens: { inputTokens: number; o
   // was the hole. `--max-budget-usd` is enforced INSIDE the Claude CLI (turn-flags.ts is
   // the only thing that sets it; there is no server-side budget kill), so a run stopped for
   // going over budget emits its result line on the way out. Tokens present, exit non-zero,
-  // and the run was recorded as 'ok' and RESET the failure counter. D11 names a budget kill
-  // as a failure by definition, so the auto-disarm was blind to the single most likely
+  // and the run was recorded as 'ok' and RESET the failure counter. A budget kill is a failure
+  // by definition, so the auto-disarm was blind to the single most likely
   // repeating failure, and a card alternating budget-kills with real failures could never
   // reach three strikes. A null exit code (killed by a signal) is a failure too, for the
   // same reason: the turn did not end, something ended it.
-  const failed = exitCode !== 0
+  // A SELF-CLOSING CARD HAS TO PROVE IT (verdict.ts). A clean exit is not enough: the run must
+  // also end with `RESULT: OK`, read off THIS run's own final message, or it is a failed run.
+  let verdict: Verdict | undefined
+  if (getScheduledTask(active.taskId)?.self_close) {
+    const started = (db.prepare('SELECT started_at FROM task_runs WHERE id = ?').get(active.runId) as { started_at: number } | undefined)?.started_at ?? null
+    verdict = readRunVerdict({
+      instanceId,
+      since: started,
+      exitCode,
+      stoppedByUser: started != null && processRegistry.stoppedByUserSince(instanceId, started),
+    })
+  }
+  const failed = exitCode !== 0 || (verdict !== undefined && !verdict.ok)
   const reason = exitCode === null
     ? 'the claude process was stopped before the turn finished'
-    : `claude process exited with code ${exitCode}${tokens ? ' after producing a result, which usually means it stopped itself (budget or limit)' : ''}`
+    : exitCode !== 0
+      ? `claude process exited with code ${exitCode}${tokens ? ' after producing a result, which usually means it stopped itself (budget or limit)' : ''}`
+      : `Needs review: ${verdict && !verdict.ok ? verdict.reason : ''}`
   finalizeRun(active.runId, instanceId, failed ? 'error' : 'ok', {
     error: failed ? reason : undefined,
     costUsd, inputTokens, outputTokens,
+    verdict,
   })
   console.log(`[task-schedule] Run ${active.runId.slice(0, 8)} finished (${failed ? 'error' : 'ok'}) cost=$${costUsd.toFixed(4)}`)
 }
@@ -1364,7 +1568,7 @@ function handleTurnComplete(instanceId: string, tokens: { inputTokens: number; o
 // ── Poll loop ───────────────────────────────────────────────────────────────
 
 /**
- * Should this late slot still fire, and if not, why not? (D9.)
+ * Should this late slot still fire, and if not, why not?
  *
  * 'late' (the default) fires a missed slot only while it is still FRESH, and freshness is
  * defined by the card's own cadence rather than by a fixed 24 hours: a slot is stale once
@@ -1486,7 +1690,7 @@ function catchUpDecision(task: ScheduledTaskRow, now: number): CatchUpDecision {
 }
 
 /**
- * Kill any in-flight run that has been going longer than its card allows (D13).
+ * Kill any in-flight run that has been going longer than its card allows.
  *
  * The root PID is killed first and the kill is verified, because a half-killed Claude on
  * Windows leaves orphans that keep the instance marked busy and block every later slot.
@@ -1583,11 +1787,11 @@ async function runTick(): Promise<void> {
      ORDER BY next_run_at ASC, id ASC`
   ).all(now) as ScheduledTaskRow[]
 
-  // ONE CARD IS CONSIDERED PER TICK, AND ONLY ONE (D16).
+  // ONE CARD IS CONSIDERED PER TICK, AND ONLY ONE.
   //
   // The loop stops at the first card it acts on, whether that was a fire or a skip. Every
   // other due card is left completely alone: slot untouched, no skip row, no wait stamp,
-  // no broadcast, exactly as D16 says. Thirty seconds later the next poll takes the oldest
+  // no broadcast, by design. Thirty seconds later the next poll takes the oldest
   // of what is left, so cards take turns.
   //
   // Judging only the head card is the part that matters. Judging ALL of them each tick
@@ -1601,7 +1805,12 @@ async function runTick(): Promise<void> {
   // were ordered by whatever SQLite's scan happened to give, so the same card could lose
   // every single tick.
   for (const head of due) {
-    let task = head
+    // RE-READ before acting. `due` was read before the awaits of earlier cards in
+    // this loop, and a card started by hand, edited or switched off meanwhile must be judged
+    // as it is now, not as it was when the tick began.
+    const fresh = getScheduledTask(head.id)
+    if (!fresh || fresh.schedule_enabled !== 1 || fresh.next_run_at == null || fresh.next_run_at > now) continue
+    let task = fresh
     // A schedule that cannot be computed must not fire. A row edited by hand, or one the
     // migration could not convert, would otherwise run once on a slot from an engine that
     // no longer exists and print "every NaN minutes" into the log and the pill on its way.
@@ -1641,7 +1850,7 @@ async function runTick(): Promise<void> {
       skippedMissed = true
     }
 
-    // THE WEEKLY SPEND CAP, CHECKED BEFORE ANYTHING IS SPAWNED (D14).
+    // THE WEEKLY SPEND CAP, CHECKED BEFORE ANYTHING IS SPAWNED.
     //
     // Deliberately NOT a disarm. A card over its cap has done nothing wrong: it is a card
     // the user asked to run often and which costs what it costs. Switching it off would
@@ -1687,7 +1896,7 @@ async function runTick(): Promise<void> {
         console.log(`[task-schedule] "${task.title}" was ${fmtLate(late)} late and still fresh, so it was run late (catch-up policy: ${task.catchup_policy})`)
       }
       // A card refused for having no prompt did not fire, but it WAS acted on: a failed run
-      // was written and its slot moved on, exactly like a skip. D16 spends the tick on it.
+      // was written and its slot moved on, exactly like a skip, so it spends the tick.
       if (result.reason === 'no-prompt') fired = true
     } catch (err) {
       console.error(`[task-schedule] fire error for ${task.id}:`, err)

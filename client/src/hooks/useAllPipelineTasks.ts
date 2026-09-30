@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api } from '../api'
-import { rest } from '../api/rest'
+import { fetchTaskShared, upsertTask } from '../api/taskFetch'
+import { keepNewer } from '../utils/taskUpsert'
 import type { PipelineTask, PipelineColumn } from '@shared/types'
 
 export interface AllPipelineData {
@@ -21,6 +22,9 @@ export interface AllPipelineData {
 
 export function useAllPipelineTasks(): AllPipelineData {
   const [byProject, setByProject] = useState<Record<string, PipelineTask[]>>({})
+  // The latest list, for event handlers that must decide before they queue an update.
+  const byProjectRef = useRef(byProject)
+  byProjectRef.current = byProject
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const mountedRef = useRef(true)
@@ -36,7 +40,7 @@ export function useAllPipelineTasks(): AllPipelineData {
       // server filters done tasks out, so that column can never show anything.
       const data = await api.getPipelines(true)
       if (mountedRef.current && seq === fetchSeqRef.current) {
-        setByProject(data)
+        setByProject(prev => Object.fromEntries(Object.entries(data).map(([pid, list]) => [pid, keepNewer(prev[pid] ?? [], list)])))
         setError(null)
         setLoading(false)
       }
@@ -78,7 +82,7 @@ export function useAllPipelineTasks(): AllPipelineData {
             ),
           }
         })
-        rest.getTask(payload.projectId, payload.taskId)
+        fetchTaskShared(payload.projectId, payload.taskId)
           .then(full => {
             if (!mountedRef.current) return
             setByProject(prev => {
@@ -98,8 +102,20 @@ export function useAllPipelineTasks(): AllPipelineData {
             [payload.projectId]: tasks.filter(t => t.id !== payload.taskId),
           }
         })
+      } else if (payload?.projectId && payload.taskId && payload.action !== 'deleted') {
+        // created/updated/blocked/unblocked: fetch that ONE card, shared with the open board's
+        // own listener, instead of every project's tasks. A project this list does
+        // not hold yet, or a failed fetch, falls back to the full refetch.
+        const projectId = payload.projectId as string
+        fetchTaskShared(projectId, payload.taskId)
+          .then(full => {
+            if (!mountedRef.current) return
+            if (!byProjectRef.current[projectId]) { fetchAll(); return }
+            setByProject(prev => (prev[projectId] ? { ...prev, [projectId]: upsertTask(prev[projectId], full) } : prev))
+          })
+          .catch(() => fetchAll())
       } else {
-        // Full refetch for created/updated/unknown
+        // Full refetch for events that name no card
         fetchAll()
       }
     })

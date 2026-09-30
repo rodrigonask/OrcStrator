@@ -1,4 +1,4 @@
-# Claude CLI handling in the launcher (installer plan s6 B7):
+# Claude CLI handling in the launcher:
 #   - missing CLI -> Anthropic's NATIVE installer runs (never npm -g)
 #   - API-key-only user -> treated as logged in
 # Drives the REAL functions from setup.ps1 (AST-extracted). The native
@@ -9,7 +9,7 @@
 
 $SetupPath = Join-Path $PSScriptRoot "setup.ps1"
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($SetupPath, [ref]$null, [ref]$null)
-foreach ($name in @('Find-Exe', 'Invoke-OrcHiddenProcess', 'Find-OrcClaude', 'Install-OrcClaudeNative',
+foreach ($name in @('Find-Exe', 'Invoke-OrcHiddenProcess', 'Find-OrcClaude', 'Test-OrcClaudeSignature', 'Install-OrcClaudeNative',
                     'Resolve-OrcClaude', 'Get-OrcClaudeCredPath', 'Test-OrcClaudeLoggedIn', 'Invoke-UiPump')) {
     $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) | Select-Object -First 1
     if (-not $fn) { throw "Could not find function $name in setup.ps1" }

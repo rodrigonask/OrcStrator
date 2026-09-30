@@ -1,4 +1,4 @@
-// Claude plan-limits monitor — polls api.anthropic.com/api/oauth/usage. Display only.
+// Claude plan-limits monitor: polls api.anthropic.com/api/oauth/usage. Display only.
 // PRIMARY token source: the Claude CLI's own credentials (~/.claude/.credentials.json),
 // zero-setup and automatically tracking whichever account `claude login` is using.
 // FALLBACK: the app's own OAuth PKCE flow (oauth_tokens table).
@@ -7,7 +7,7 @@ import os from 'os'
 import fs from 'fs'
 import path from 'path'
 import { db } from '../db.js'
-import { broadcastEvent } from '../ws/handler.js'
+import { broadcastEvent, getClientCount } from '../ws/handler.js'
 import { encrypt, decrypt } from './secret-box.js'
 import { suggestCompactionForQuota } from './cache-advisor.js'
 import { OAUTH, USAGE_ALERT_THRESHOLDS } from '@orcstrator/shared'
@@ -226,7 +226,12 @@ function parseUsage(data: Record<string, unknown>): UsageBucket[] {
 // ── State ──
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let refreshing = false // mutex for token refresh
+/** The poll interval in use, so a read can tell when the numbers it holds have gone stale. */
+let pollIntervalMs = 60_000
+// The one token refresh in flight. Everyone who needs a fresh token waits on this same
+// promise: the old boolean mutex made the SECOND caller give up with null, which
+// then showed "Session expired" while the first caller was busy refreshing it successfully.
+let refreshInFlight: Promise<string | null> | null = null
 let lastUsageData: UsageData = { connected: false, buckets: [] }
 // Highest threshold already notified per bucket; each threshold fires once per crossing,
 // resets when usage drops back below it. Keyed by bucket key,
@@ -238,9 +243,16 @@ const alerted: Record<string, number> = {}
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
+/**
+ * Every call to Anthropic gives up after this long. Without it a hung connection
+ * never settled, and each poll after it stacked another hung request on top.
+ */
+const FETCH_TIMEOUT_MS = 15_000
+
 async function postJSON(url: string, body: Record<string, string>): Promise<Record<string, unknown>> {
   const resp = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     // Mirrors the claude CLI: no Origin header. (Older code sent
     // Origin: console.anthropic.com, which predates the platform.claude.com move.)
     headers: {
@@ -263,6 +275,7 @@ async function postJSON(url: string, body: Record<string, string>): Promise<Reco
 
 async function fetchUsageAPI(accessToken: string): Promise<Record<string, unknown>> {
   const resp = await fetch(OAUTH.usageUrl, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'anthropic-beta': 'oauth-2025-04-20',
@@ -271,14 +284,20 @@ async function fetchUsageAPI(accessToken: string): Promise<Record<string, unknow
     }
   })
   if (resp.status >= 400) {
-    const err = new Error(`HTTP ${resp.status}`) as Error & { statusCode: number }
+    const err = new Error(`HTTP ${resp.status}`) as Error & { statusCode: number; retryAfterMs: number | null }
     err.statusCode = resp.status
+    err.retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
     throw err
   }
   return await resp.json() as Record<string, unknown>
 }
 
 // ── OAuth flow ──
+
+// The OAuth `state` is its own random value, not the PKCE verifier. The verifier is
+// the one secret PKCE keeps out of the URL; sending it as `state` put it in the address bar and
+// the browser history. Kept in memory: a restart mid-login just means starting the login again.
+let pendingState: string | null = null
 
 export function generateAuthUrl(): { url: string } {
   const verifier = crypto.randomBytes(64).toString('base64url').slice(0, 128)
@@ -292,7 +311,7 @@ export function generateAuthUrl(): { url: string } {
     scope: OAUTH.scopes,
     code_challenge: challenge,
     code_challenge_method: 'S256',
-    state: verifier
+    state: (pendingState = crypto.randomBytes(24).toString('base64url'))
   })
 
   saveTokens({ verifier })
@@ -313,7 +332,7 @@ function storeTokenResponse(resp: Record<string, unknown>): void {
 
 // Accepts the raw paste from the callback page ("code" or "code#state"). The token
 // endpoint wants the state echoed back when present, and the EXACT redirect_uri that
-// /authorize used — a mismatch surfaces as a fake 429 "Rate limited".
+// /authorize used; a mismatch surfaces as a fake 429 "Rate limited".
 export async function exchangeCode(codeRaw: string): Promise<UsageData> {
   const { verifier } = getTokens()
   if (!verifier) throw new Error('No verifier found. Start the connect flow first.')
@@ -322,6 +341,9 @@ export async function exchangeCode(codeRaw: string): Promise<UsageData> {
   const code = parts[0]
   const state = parts.length > 1 ? parts[1] : undefined
   if (!code) throw new Error('Empty authorization code')
+  if (state !== undefined && state !== pendingState) {
+    throw new Error('This code belongs to a different login attempt. Click Connect again and paste the new code.')
+  }
 
   const body: Record<string, string> = {
     code,
@@ -344,9 +366,27 @@ export async function exchangeCode(codeRaw: string): Promise<UsageData> {
   return lastUsageData
 }
 
-async function doRefresh(): Promise<string | null> {
-  if (refreshing) return null
-  refreshing = true
+/**
+ * How long a Retry-After header asks us to wait, in ms, or null when it is absent or
+ * unreadable. The header is either a number of seconds or an HTTP date.
+ */
+export function parseRetryAfter(value: string | null | undefined): number | null {
+  if (!value) return null
+  const v = value.trim()
+  if (/^\d+(\.\d+)?$/.test(v)) return Math.round(Number(v) * 1000)
+  const at = Date.parse(v)
+  if (Number.isNaN(at)) return null
+  return Math.max(0, at - Date.now())
+}
+
+function doRefresh(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = runRefresh().finally(() => { refreshInFlight = null })
+  }
+  return refreshInFlight
+}
+
+async function runRefresh(): Promise<string | null> {
   try {
     const { refreshToken } = getTokens()
     if (!refreshToken) return null
@@ -361,8 +401,6 @@ async function doRefresh(): Promise<string | null> {
   } catch (e) {
     console.log('[usage-monitor] refresh failed:', e)
     return null
-  } finally {
-    refreshing = false
   }
 }
 
@@ -473,11 +511,13 @@ function checkAlerts(): void {
   }
 }
 
-// Throttle: turn completions also trigger fetches (see index.ts) — with many
+// Throttle: turn completions also trigger fetches (see index.ts), and with many
 // instances finishing at once that bursts into Anthropic's rate limit (HTTP 429).
-// At most one real fetch per MIN_FETCH_INTERVAL; a 429 backs off for 5 minutes.
+// At most one real fetch per MIN_FETCH_INTERVAL; a 429 backs off for as long as its
+// Retry-After asks (5 minutes when it does not say, never more than an hour).
 const MIN_FETCH_INTERVAL_MS = 30_000
 const RATE_LIMIT_BACKOFF_MS = 5 * 60_000
+const MAX_BACKOFF_MS = 60 * 60_000
 let lastFetchStartedAt = 0
 let backoffUntil = 0
 
@@ -508,8 +548,8 @@ export async function fetchUsage(force = false): Promise<UsageData> {
   }
   if (!token) {
     const wasConnected = lastUsageData.connected
-    const staleCliMsg = cli ? 'Claude CLI token expired — run any claude command to refresh it' : undefined
-    lastUsageData = { connected: false, buckets: [], lastError: staleCliMsg ?? (getTokens().refreshToken ? 'Session expired — reconnect' : undefined) }
+    const staleCliMsg = cli ? 'Claude CLI token expired, run any claude command to refresh it' : undefined
+    lastUsageData = { connected: false, buckets: [], lastError: staleCliMsg ?? (getTokens().refreshToken ? 'Session expired, please reconnect' : undefined) }
     if (wasConnected) broadcastEvent({ type: 'usage:plan-updated', payload: lastUsageData })
     return lastUsageData
   }
@@ -519,7 +559,7 @@ export async function fetchUsage(force = false): Promise<UsageData> {
     applyParsed(parseUsage(data))
     return lastUsageData
   } catch (e) {
-    const err = e as Error & { statusCode?: number }
+    const err = e as Error & { statusCode?: number; retryAfterMs?: number | null }
     if (err.statusCode === 401 && currentSource === 'oauth') {
       // Refresh and retry once (own-OAuth tokens only; the CLI refreshes its own)
       const newToken = await doRefresh()
@@ -532,14 +572,18 @@ export async function fetchUsage(force = false): Promise<UsageData> {
           lastUsageData = { ...lastUsageData, lastError: String(e2).slice(0, 120), lastUpdated: Date.now() }
         }
       } else {
-        lastUsageData = { ...lastUsageData, connected: false, lastError: 'Session expired — reconnect', lastUpdated: Date.now() }
+        lastUsageData = { ...lastUsageData, connected: false, lastError: 'Session expired, please reconnect', lastUpdated: Date.now() }
       }
     } else if (err.statusCode === 401 && currentSource === 'cli') {
-      lastUsageData = { ...lastUsageData, connected: false, lastError: 'Claude CLI token rejected — run any claude command to refresh it', lastUpdated: Date.now() }
-    } else if (err.statusCode === 429) {
-      // Throttled — keep the last known buckets, surface a calm note, back off
-      backoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS
-      lastUsageData = { ...lastUsageData, lastError: 'Usage check throttled — retrying in 5 min', lastUpdated: Date.now() }
+      lastUsageData = { ...lastUsageData, connected: false, lastError: 'Claude CLI token rejected, run any claude command to refresh it', lastUpdated: Date.now() }
+    } else if (err.statusCode === 429 || (err.statusCode === 503 && err.retryAfterMs != null)) {
+      // Throttled: keep the last known buckets, surface a calm note, back off. For as long
+      // as Anthropic asks when it says (Retry-After), within sane bounds; 5 minutes
+      // when it does not say.
+      const wait = Math.min(MAX_BACKOFF_MS, Math.max(MIN_FETCH_INTERVAL_MS, err.retryAfterMs ?? RATE_LIMIT_BACKOFF_MS))
+      backoffUntil = Date.now() + wait
+      const mins = Math.max(1, Math.round(wait / 60_000))
+      lastUsageData = { ...lastUsageData, lastError: `Usage check is busy, trying again in ${mins} min`, lastUpdated: Date.now() }
     } else {
       lastUsageData = { ...lastUsageData, lastError: String(e).slice(0, 120), lastUpdated: Date.now() }
     }
@@ -548,16 +592,41 @@ export async function fetchUsage(force = false): Promise<UsageData> {
   }
 }
 
+/** Longest poll interval honoured: once a day. */
+const MAX_POLL_MINUTES = 1440
+
+/**
+ * A usable poll interval in minutes from whatever was stored: a finite number from 1 to
+ * 1440, else 1. Math.max(1, NaN) is NaN, and setInterval treats NaN, and anything
+ * past about 24.8 days, as 1 ms, so a bad saved value used to fire the usage call nonstop.
+ */
+export function clampPollMinutes(value: unknown): number {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
+  if (!Number.isFinite(n)) return 1
+  return Math.min(MAX_POLL_MINUTES, Math.max(1, n))
+}
+
+/**
+ * One scheduled poll. Skipped while no browser tab is connected: the numbers only
+ * feed the on-screen meter, and polling for nobody made about 1,440 calls a day to Anthropic
+ * with no tab open. A tab that connects later reads the stored numbers, and that read asks
+ * for fresh ones when they are older than one interval (see getCurrentUsage).
+ */
+function pollOnce(): void {
+  if (getClientCount() === 0) return
+  fetchUsage().catch(() => {})
+}
+
 export function startPolling(intervalMinutes?: number): void {
   stopPolling()
   // Poll when EITHER source is available; otherwise idle until connected.
   if (!getTokens().accessToken && !getCliCredentials()) return
 
-  const minutes = Math.max(1, intervalMinutes ?? getSettingNumber('usagePollMinutes', 1))
-  fetchUsage().catch(() => {})
-  pollTimer = setInterval(() => {
-    fetchUsage().catch(() => {})
-  }, minutes * 60_000)
+  const minutes = clampPollMinutes(intervalMinutes ?? getSettingNumber('usagePollMinutes', 1))
+  pollIntervalMs = minutes * 60_000
+  pollOnce()
+  pollTimer = setInterval(pollOnce, pollIntervalMs)
+  pollTimer.unref?.()
 }
 
 export function stopPolling(): void {
@@ -577,5 +646,10 @@ export function disconnect(): UsageData {
 }
 
 export function getCurrentUsage(): UsageData {
+  // Polls are skipped while no tab is open, so the first tab back may be holding old numbers.
+  // Ask for fresh ones in the background (fetchUsage's own throttle and backoff still apply);
+  // they arrive over the socket as usage:plan-updated.
+  const age = Date.now() - (lastUsageData.lastUpdated ?? 0)
+  if (pollTimer && age >= pollIntervalMs) fetchUsage().catch(() => {})
   return lastUsageData
 }

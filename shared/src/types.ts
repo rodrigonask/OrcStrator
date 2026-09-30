@@ -23,8 +23,10 @@ export interface FolderConfig {
   sortOrder: number
   createdAt: number
   stealthMode?: boolean
-  cloudSync?: boolean
   lastSyncedAt?: number
+  /** Left out of the sidebar, with every card, routine, comment and chat kept. Shown again
+   *  from the "Hidden projects" list. Hiding never deletes anything. */
+  hidden?: boolean
   /** Permission rules for every chat in this project, ADDED to the app-wide and per-chat ones.
    *  Inherited down the folder tree: a chat in `C:\code\clients\acme` also carries whatever
    *  `C:\code\clients` and `C:\code` grant, because that is exactly how the sidebar nests
@@ -223,7 +225,11 @@ export interface NativeTask {
 export type MessageContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
-  | { type: 'image'; base64: string; mediaType: string }
+  // `url`: the full image, stored as a file by the server and served from
+  // GET /api/media/:name. When it is set, `base64` holds only a small JPEG thumbnail (and
+  // `mediaType` describes that thumbnail, not the file behind `url`). Rows saved
+  // before it existed have no `url` and the full image in `base64`.
+  | { type: 'image'; base64: string; mediaType: string; url?: string }
   | { type: 'tool-call'; toolId: string; toolName: string; input: string; parentToolUseId?: string }
   | { type: 'tool-result'; toolId: string; output: string; isError?: boolean }
   | { type: 'cost'; inputTokens: number; outputTokens: number; costUsd?: number; durationMs?: number }
@@ -530,6 +536,12 @@ export interface PipelineTask {
   /** Close the chat when a scheduled run's turn finishes (after the compact, when both). */
   autoClose?: boolean
   /**
+   * Close itself when it succeeds. The run must end its final message with `RESULT: OK`;
+   * then the card goes to Done and its chat is closed. Anything else (NEEDS_REVIEW, no verdict,
+   * a crash) keeps the chat and sends the card to review. Manual and scheduled cards alike.
+   */
+  selfClose?: boolean
+  /**
    * The session an auto-close left behind, so the NEXT fire can resume it and the routine
    * keeps its memory without keeping its tab. A third identity, and emphatically not
    * targetInstanceId: the card is still aimed at its project.
@@ -574,6 +586,12 @@ export interface PipelineTask {
    * send byte-identical text to what they sent before the merge.
    */
   rawPrompt?: boolean
+  /**
+   * Send the card's comments to the chat as context when it starts. null = AUTO: on for a
+   * plain task, off for a card with a schedule (a routine is a fixed instruction, and notes
+   * about past runs should not feed the next one). Ignored when the card sends verbatim.
+   */
+  sendComments?: boolean | null
 
   // ── Run settings. null/undefined means INHERIT THE GLOBAL DEFAULT, not "off". ──
   // A null is unset. The card must never freeze today's global default into its row:
@@ -744,6 +762,8 @@ export interface AppSettings {
   // namingMode: 'ai'. Default 'tasks'.
   sessionSummaryMode?: 'all' | 'tasks' | 'off'
   maxConcurrentProcesses?: number
+  /** Enforce maxConcurrentProcesses. Off (absent) by default: the cap was never enforced before. */
+  maxConcurrentLimitOn?: boolean
   maxGridTiles?: number        // hard cap on grid tiles open at once (default 12)
   maxGridColumns?: number      // max columns the grid lays tiles into (default 6, for ultrawide)
   // Ultra Compact Mode: one switch, every density change at once. The horizontal top bar
@@ -756,11 +776,6 @@ export interface AppSettings {
   // on ultrawide monitors instead of running the full screen. 0 = no cap (full width).
   chatReadingWidth?: number    // default 1200
   verbosity?: VerbosityLevel
-  // Cloud Sync (Supabase)
-  cloudSyncUrl?: string
-  cloudSyncKey?: string
-  machineName?: string
-  machineId?: string
   customCommands?: Array<{ name: string; command: string; description: string }>
   /** Unset (or null, which the settings route deletes) = the app default in constants. */
   defaultModel?: AgentModel | null
@@ -835,16 +850,6 @@ export interface AppSettings {
    *  A preference, not a rule: an unreadable or missing value falls back to 'app', which is what
    *  both buttons did before the picker existed. */
   lastPermissionScope?: PermissionScope
-}
-
-// === CLOUD SYNC ===
-
-export type CloudSyncStatus = 'disconnected' | 'connected' | 'syncing' | 'error'
-
-export interface CloudSyncState {
-  status: CloudSyncStatus
-  lastSyncedAt?: number
-  error?: string
 }
 
 // === USAGE MONITORING (Claude plan limits via OAuth usage API) ===
@@ -981,6 +986,8 @@ export interface TaskRun {
   costUsd: number
   inputTokens: number
   outputTokens: number
+  /** What the run did, from the close summary of its chat. null until the chat is closed. */
+  summary: string | null
 }
 
 // === WEBSOCKET MESSAGES ===

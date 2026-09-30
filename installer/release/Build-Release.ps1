@@ -10,6 +10,11 @@
 
     Signing is skipped (with a loud warning) when no private key is supplied,
     so the packaging half can be exercised locally without the CI secret.
+
+    Signing itself is done by Sign-Release.ps1. With -PackageOnly this script
+    stops after the zip and writes release-inputs.json instead: that is the
+    CI build job, which runs npm install scripts and so never sees the key.
+    The sign job then runs Sign-Release.ps1 on a fresh runner.
 .EXAMPLE
     powershell -File installer\release\Build-Release.ps1 -Version 2.1.0 -OutDir dist-release
 #>
@@ -55,7 +60,11 @@ param(
     # Personal-string gate term list (one regex per line). Default:
     # installer\release\personal-denylist.txt. Missing or empty = the build
     # fails (the gate is fail-closed).
-    [string]$DenylistPath = ""
+    [string]$DenylistPath = "",
+    # Stage, gate and zip, then STOP: write release-inputs.json next to the
+    # zip and sign nothing. The CI build job uses this (it runs npm install
+    # scripts and holds no secret); the sign job finishes with Sign-Release.ps1.
+    [switch]$PackageOnly
 )
 
 Set-StrictMode -Version Latest
@@ -86,19 +95,18 @@ if ($NoReleaseConfig) {
     }
     if ($ReleaseConfigPath) { $releaseConfig = Get-OrcReleaseConfig -Path $ReleaseConfigPath }
 }
+if ($PackageOnly) {
+    # The build half of the split pipeline: this job ran npm
+    # install scripts, so it must never be handed a signing key.
+    if ($PrivateKeyXml) { throw "-PackageOnly never signs: run it with no signing key in the environment or parameters." }
+    if ($BuildInstaller -or $InstallerPath) { throw "-PackageOnly builds no installer; Sign-Release.ps1 does that after signing." }
+}
 if ($PrivateKeyXml -and -not $TestOnlyLauncherPublicKeyXml) {
     # A signed release is meant to be installed and to update itself. Its
     # launcher must trust the key it is signed with, or no installed copy
-    # could ever verify it.
-    if (-not $releaseConfig) {
-        throw "A signed release needs a release config (update URL + public keys); none was found. Pass -ReleaseConfigPath, or build unsigned."
-    }
-    $norm = { param($x) $r = New-Object System.Security.Cryptography.RSACryptoServiceProvider; try { $r.FromXmlString($x); $r.ToXmlString($false) } finally { $r.Dispose() } }
-    $signPub = & $norm (Get-OrcPublicKeyXml -PrivateKeyXml $PrivateKeyXml)
-    $trusted = @($releaseConfig.ReleasePublicKeys | ForEach-Object { & $norm $_ })
-    if ($trusted -notcontains $signPub) {
-        throw "The signing key's public half is not in the release config's releasePublicKeys. Installed launchers would reject this release."
-    }
+    # could ever verify it. Checked here too so a bad key fails before the
+    # long packaging work, not after it.
+    Assert-OrcSigningKeyTrusted -PrivateKeyXml $PrivateKeyXml -ReleaseConfig $releaseConfig
 }
 if ($releaseConfig) {
     Write-Host "Release config: updates from $($releaseConfig.UpdateBaseUrl), $($releaseConfig.ReleasePublicKeys.Count) trusted key(s)"
@@ -325,62 +333,26 @@ Remove-Item $stage -Recurse -Force
 $sizeMb = [Math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "Payload: $zipPath ($sizeMb MB)"
 
-# --- manifest + signature -------------------------------------------------
-# The Worker serves payloads at /download/<version>/<file>.zip (R2 key
-# <version>/<file>.zip). The bucket itself stays private, so the URL must go
-# through the Worker's /download/ route, not the bare key.
-$url = if ($BaseUrl) { "$($BaseUrl.TrimEnd('/'))/download/$Version/$zipName" } else { "" }
-
-function Write-OrcManifestFile {
-    param($Manifest, [string]$Path)
-    if ($PrivateKeyXml) {
-        $envelope = New-OrcSignedManifest -Manifest $Manifest -PrivateKeyXml $PrivateKeyXml
-        Write-OrcJsonFile -Path $Path -Json ($envelope | ConvertTo-Json -Depth 12)
-        Write-Host "Signed manifest: $Path" -ForegroundColor Green
-    } else {
-        Write-Warning "No private key (ORC_RELEASE_PRIVATE_KEY unset). Writing an UNSIGNED manifest: $Path"
-        Write-Warning "The launcher will REJECT this. For local packaging checks only."
-        Write-OrcJsonFile -Path $Path -Json (
-            [ordered]@{ manifest = $Manifest; signature = ""; alg = "unsigned" } | ConvertTo-Json -Depth 12)
-    }
+# --- hand-over, then (outside CI) sign ------------------------------------
+# release-inputs.json is what the signing step needs besides the zip. In CI it
+# crosses from the build job (no secrets) to the sign job (the key, no npm),
+# where Sign-Release.ps1 re-checks every field and re-hashes the zip.
+$handoverSha = if ($GitSha -match '^[0-9a-f]{7,40}$') { $GitSha } else { "" }
+$inputsPath = Join-Path $OutDirFull "release-inputs.json"
+New-OrcReleaseInputs -Path $inputsPath -Version $Version -Channel $Channel -ZipPath $zipPath -GitSha $handoverSha `
+    -BuiltAt $BuiltAt -NodeAbi $nodeAbi -MinDbSchema $MinDbSchema -BundledRuntime $bundleRuntime
+if ($PackageOnly) {
+    Write-Host "Packaged, NOT signed: $zipPath and $inputsPath. Sign with Sign-Release.ps1." -ForegroundColor Yellow
+    Write-Host "sha256: $(Get-OrcFileHash $zipPath)"
+    return
 }
 
-# The installer chicken-and-egg, solved with two manifests signed by the same
-# key over the same payload:
-#
-#   1. manifest.json  PAYLOAD manifest: version, zip sha256, ... and NO
-#                     installer field. Signed first, then embedded in the
-#                     installer .exe next to the zip, where the launcher's
-#                     first run verifies it exactly like a network update.
-#   2. <channel>.json CHANNEL manifest: the same fields PLUS
-#                     installer = { file, size, sha256 } of the .exe that now
-#                     exists. Signed second. This is what the Worker serves,
-#                     and what lets anyone check a downloaded installer.
-#
-# The exe cannot contain its own hash, so it carries (1), never (2).
-$payloadManifest = New-OrcManifest -Version $Version -ZipPath $zipPath -GitSha $GitSha `
-                            -BuiltAt $BuiltAt -NodeAbi $nodeAbi -MinDbSchema $MinDbSchema `
-                            -Channel $Channel -Url $url -BundledRuntime $bundleRuntime
-$payloadManifestPath = Join-Path $OutDirFull "manifest.json"
-Write-OrcManifestFile -Manifest $payloadManifest -Path $payloadManifestPath
-
-if ($BuildInstaller) {
-    if (-not $PrivateKeyXml) { throw "-BuildInstaller needs a signing key: an installer around an unsigned manifest could never install." }
-    $biArgs = @{ Version = $Version; ZipPath = $zipPath; ManifestPath = $payloadManifestPath; OutDir = $OutDirFull; DenylistPath = $DenylistPath }
-    if ($releaseConfig) { $biArgs.ReleaseConfigPath = $ReleaseConfigPath }
-    if ($IsccPath) { $biArgs.IsccPath = $IsccPath }
-    if ($TestOnlyLauncherPublicKeyXml) { $biArgs.TestOnlyLauncherPublicKeyXml = $TestOnlyLauncherPublicKeyXml }
-    $InstallerPath = @(& (Join-Path $PSScriptRoot "Build-Installer.ps1") @biArgs)[-1]
-    if (-not $InstallerPath -or -not (Test-Path $InstallerPath)) { throw "Build-Installer did not produce an installer" }
-}
-
-$manifest = New-OrcManifest -Version $Version -ZipPath $zipPath -GitSha $GitSha `
-                            -BuiltAt $BuiltAt -NodeAbi $nodeAbi -MinDbSchema $MinDbSchema `
-                            -Channel $Channel -Url $url -BundledRuntime $bundleRuntime `
-                            -InstallerPath $InstallerPath
-$manifestPath = Join-Path $OutDirFull "$Channel.json"
-Write-OrcManifestFile -Manifest $manifest -Path $manifestPath
-
-Write-Host ""
-Write-Host "sha256: $($manifest.sha256)"
-Write-Host "Done."
+# A local full build signs through the same script as CI.
+$signArgs = @{ Version = $Version; Channel = $Channel; InputDir = $OutDirFull; OutDir = $OutDirFull; BaseUrl = $BaseUrl; DenylistPath = $DenylistPath }
+if ($PrivateKeyXml) { $signArgs.PrivateKeyXml = $PrivateKeyXml }
+if ($BuildInstaller) { $signArgs.BuildInstaller = $true }
+if ($IsccPath) { $signArgs.IsccPath = $IsccPath }
+if ($InstallerPath) { $signArgs.InstallerPath = $InstallerPath }
+if ($TestOnlyLauncherPublicKeyXml) { $signArgs.TestOnlyLauncherPublicKeyXml = $TestOnlyLauncherPublicKeyXml }
+if ($NoReleaseConfig) { $signArgs.NoReleaseConfig = $true } elseif ($ReleaseConfigPath) { $signArgs.ReleaseConfigPath = $ReleaseConfigPath }
+& (Join-Path $PSScriptRoot "Sign-Release.ps1") @signArgs

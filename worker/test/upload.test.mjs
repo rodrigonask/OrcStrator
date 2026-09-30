@@ -71,9 +71,14 @@ function fakeR2(seed = {}) {
     async get(k) {
       const o = objects.get(k);
       if (!o) return null;
-      return { ...meta(k, o), body: new Response(o.bytes).body, async text() { return o.bytes.toString('utf8'); } };
+      return { ...meta(k, o), etag: sha(o.bytes), body: new Response(o.bytes).body, async text() { return o.bytes.toString('utf8'); } };
     },
     async put(k, body, opts = {}) {
+      // Like R2: a failed onlyIf precondition writes nothing and returns null.
+      if (opts.onlyIf?.etagMatches) {
+        const cur = objects.get(k);
+        if (!cur || sha(cur.bytes) !== opts.onlyIf.etagMatches) return null;
+      }
       const bytes = typeof body === 'string' ? Buffer.from(body) : Buffer.from(await new Response(body).arrayBuffer());
       if (opts.sha256 && sha(bytes) !== opts.sha256) throw new Error('The SHA-256 checksum you specified did not match what we received.');
       objects.set(k, { bytes, sha256: opts.sha256 || null });
@@ -258,6 +263,49 @@ test('beta.json may be overwritten, but only by a byte-identical versioned manif
   const other = await envelopeText(manifest({ builtAt: '2026-09-25T00:00:00Z' }));
   assert.equal((await call(put('beta.json', other), e)).status, 409);
   assert.equal(b.objects.get('beta.json').bytes.toString(), text);
+});
+
+test('beta.json never moves back to an older release (the upload token alone cannot freeze installs)', async () => {
+  const { b, e } = await withPayload();
+  const text = await envelopeText(manifest());
+  await call(put(`${V}/manifest.json`, text), e);
+  // The channel is already on a newer release.
+  const newer = await envelopeText(manifest({ version: '2.1.1-beta.2', file: 'orcstrator-2.1.1-beta.2.zip' }));
+  b.objects.set('beta.json', { bytes: Buffer.from(newer), sha256: null });
+  const r = await call(put('beta.json', text), e);
+  assert.equal(r.status, 409);
+  assert.match((await r.json()).error, /never moves back/);
+  assert.equal(b.objects.get('beta.json').bytes.toString(), newer, 'pointer unchanged');
+});
+
+test('a pointer flip that raced another upload is refused, not written over it', async () => {
+  const { b, e } = await withPayload();
+  const text = await envelopeText(manifest());
+  await call(put(`${V}/manifest.json`, text), e);
+  const first = await envelopeText(manifest({ version: '2.1.1-alpha.1', file: 'orcstrator-2.1.1-alpha.1.zip' }));
+  b.objects.set('beta.json', { bytes: Buffer.from(first), sha256: null });
+  // Another upload lands between this one's check and its write.
+  const newer = await envelopeText(manifest({ version: '2.1.1-beta.2', file: 'orcstrator-2.1.1-beta.2.zip' }));
+  const realGet = b.get.bind(b);
+  let raced = false;
+  b.get = async (k) => {
+    const r = await realGet(k);
+    if (k === 'beta.json' && !raced) { raced = true; b.objects.set('beta.json', { bytes: Buffer.from(newer), sha256: null }); }
+    return r;
+  };
+  const res = await call(put('beta.json', text), e);
+  assert.equal(res.status, 409);
+  assert.equal(b.objects.get('beta.json').bytes.toString(), newer, 'the newer pointer stays');
+});
+
+test('compareVersions follows semver precedence', async () => {
+  const { compareVersions } = await import('../src/index.js');
+  const lt = [['2.9.0', '2.10.0'], ['2.1.0-beta.10', '2.1.0'], ['2.1.0-beta.9', '2.1.0-beta.10'], ['2.1.0-beta.1', '2.1.0-beta.1.1'], ['2.1.0-1', '2.1.0-alpha']];
+  for (const [a, c] of lt) {
+    assert.equal(compareVersions(a, c), -1, `${a} < ${c}`);
+    assert.equal(compareVersions(c, a), 1, `${c} > ${a}`);
+  }
+  assert.equal(compareVersions('2.1.0+b1', '2.1.0'), 0);
 });
 
 test('manifests must match what is actually in storage', async () => {

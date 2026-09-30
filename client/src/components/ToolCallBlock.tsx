@@ -1,15 +1,22 @@
 import { useState, useRef, useMemo } from 'react'
 import DOMPurify from 'dompurify'
+// Link and image rules for every sanitize call.
+import { installSanitizerHooks } from '../utils/sanitize'
 import type { VerbosityLevel } from '@shared/types'
 import { parseMarkdown } from '../utils/markdown'
 import { formatToolCall } from '../utils/toolFormat'
 import { FormattedToolInput } from '../utils/formatToolInput'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
+import { sendFailureText } from '../utils/sendFailure'
 import { readPermMode } from '../utils/permMode'
 import { looksLikeDenial } from '../utils/permissionMatch'
 import { PermissionDenialNote } from './PermissionDenialNote'
 import { api } from '../api'
+import { effectivePermissionMode } from '@shared/constants'
+import { isPlanFileWrite } from '../utils/planWrite'
+
+installSanitizerHooks()
 
 interface ToolCallBlockProps {
   toolName: string
@@ -58,10 +65,7 @@ const TOOL_ICONS: Record<string, string> = {
 
 function isPlanWrite(toolName: string, input: string): boolean {
   if (toolName === 'ExitPlanMode') return true
-  if (toolName !== 'Write') return false
-  try {
-    return JSON.parse(input)?.file_path?.includes('.claude/plans/') ?? false
-  } catch { return false }
+  return isPlanFileWrite(toolName, input)
 }
 
 function extractPlanContent(toolName: string, input: string): string | null {
@@ -101,7 +105,7 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
         'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
         'hr', 'div', 'span',
       ],
-      ALLOWED_ATTR: ['href', 'title', 'class'],
+      ALLOWED_ATTR: ['href', 'title', 'class', 'target', 'rel'],
     })
   }, [planContent])
   const [expanded, setExpanded] = useState(
@@ -116,6 +120,11 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
   const freeTextRef = useRef<HTMLInputElement>(null)
   const { selectedInstanceId, settings } = useUI()
   const { dispatch } = useAppDispatch()
+  // A click that never reached Claude says so in the chat, like a failed send does.
+  const noteFailure = (instanceId: string, what: string, err: unknown) => dispatch({
+    type: 'ADD_MESSAGE',
+    payload: { id: crypto.randomUUID(), instanceId, role: 'system', content: [{ type: 'text', text: sendFailureText(what, err) }], createdAt: Date.now() },
+  })
 
   const label = formatToolCall(toolName, input)
   const icon = TOOL_ICONS[toolName] ?? '🔧'
@@ -148,7 +157,7 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
   // This was gated on `!output || /answer questions\?/i.test(output)`, matching a string the
   // CLI does not emit, and it went unnoticed for as long as tool results never reached a
   // message-rendered block: the map MessageList built was always empty, so output was always
-  // undefined and the first clause carried it. 6e4acfd made results real and the card went
+  // undefined and the first clause carried it. Once results were made real, the card went
   // dead on arrival — rendering an empty bordered box with the question's buttons gone. A
   // reload dropped the in-memory result map and the card came back, which is exactly the
   // "refresh fixes it" report.
@@ -181,6 +190,7 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
       }
     } catch (err) {
       console.error('Failed to send response:', err)
+      noteFailure(id, 'that answer', err)
       setResponded(null)
       // Roll back the optimistic running state so the UI isn't stuck pretending to work.
       dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle' } } })
@@ -265,7 +275,7 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
       // Carry the composer's mode across — otherwise the server falls back to forcing
       // acceptEdits, which silently downgrades an instance set to Bypass (and then
       // prompts on every Bash for the rest of that process's life).
-      const permissionMode = readPermMode(id, settings.permissionMode ?? 'bypassPermissions')
+      const permissionMode = readPermMode(id, effectivePermissionMode(settings))
       const res = await api.decidePlan(id, toolId, 'approve', { permissionMode })
       if (!res.ok) {
         setResponded(null)
@@ -274,6 +284,7 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
       }
     } catch (err) {
       console.error('Failed to approve plan:', err)
+      noteFailure(id, 'that decision', err)
       setResponded(null)
       dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle' } } })
     }
@@ -294,6 +305,7 @@ export function ToolCallBlock({ toolName, toolId, input, output, isError, isRunn
       }
     } catch (err) {
       console.error('Failed to reject plan:', err)
+      noteFailure(id, 'that decision', err)
       setResponded(null)
       dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle' } } })
     }

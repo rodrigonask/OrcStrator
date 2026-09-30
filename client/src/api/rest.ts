@@ -28,6 +28,7 @@ import type {
   PermissionRuleSet,
 } from '@shared/types'
 import type { PermissionUpdate } from '@shared/permission-rules'
+import { authFetch } from './auth'
 
 const BASE = import.meta.env.VITE_API_URL || ''
 
@@ -52,7 +53,7 @@ async function readErrorMessage(res: Response, fallback: string): Promise<string
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await authFetch(`${BASE}${path}`, {
     method: 'POST',
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
@@ -65,7 +66,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function put<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await authFetch(`${BASE}${path}`, {
     method: 'PUT',
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
@@ -78,7 +79,7 @@ async function put<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' })
+  const res = await authFetch(`${BASE}${path}`, { method: 'DELETE' })
   if (!res.ok) {
     const msg = await readErrorMessage(res, `${res.status} ${res.statusText}`)
     throw new Error(msg)
@@ -87,7 +88,7 @@ async function del<T>(path: string): Promise<T> {
 }
 
 async function patch<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await authFetch(`${BASE}${path}`, {
     method: 'PATCH',
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
@@ -106,13 +107,39 @@ export const rest = {
 
   // State
   getState: () => get<AppState>('/api/state'),
-  getHealth: () => get<{ status: string; uptime: number; bootTime: number; clients: number; processes: number; maxProcesses: number; totalInstances: number; runningInstances: number; memoryMb: number; heapMb: number }>('/api/health'),
+  getHealth: () => get<{ status: string; uptime: number; bootTime: number; clients: number; processes: number; maxProcesses: number; maxProcessesEnforced?: boolean; dbReadOnly?: string | null; totalInstances: number; runningInstances: number; memoryMb: number; heapMb: number }>('/api/health'),
   getProcesses: () => get<{ processes: Array<{ instanceId: string; instanceName: string; pid: number; state: string; runningSec: number; lastCostUsd: number | null; lastInputTokens: number | null; lastOutputTokens: number | null }>; timestamp: number }>('/api/processes'),
 
   // Folders
   createFolder: (data: Partial<FolderConfig>) => post<FolderConfig>('/api/folders', data),
+  /**
+   * Create a project, or learn which project already owns this folder. The server matches
+   * spellings the browser cannot (short 8.3 names, shares, trailing dots), so its 409 answer,
+   * which names the owning project, is the one to act on.
+   */
+  createFolderOrFindOwner: async (data: Partial<FolderConfig>): Promise<{ folder: FolderConfig } | { ownerId: string; hidden: boolean }> => {
+    const res = await authFetch(`${BASE}/api/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    const body = await res.json().catch(() => ({})) as Record<string, unknown>
+    if (res.status === 409 && typeof body.id === 'string') return { ownerId: body.id, hidden: !!body.hidden }
+    if (!res.ok) throw new Error(typeof body.error === 'string' ? body.error : `${res.status} ${res.statusText}`)
+    return { folder: body as unknown as FolderConfig }
+  },
   updateFolder: (id: string, data: Partial<FolderConfig>) => put<FolderConfig>(`/api/folders/${id}`, data),
-  deleteFolder: (id: string) => del<{ ok: true }>(`/api/folders/${id}`),
+  /** Hide a project from the sidebar. Flips one flag; every card, routine and chat is kept. */
+  hideFolder: (id: string) => post<FolderConfig>(`/api/folders/${id}/hide`, {}),
+  unhideFolder: (id: string) => post<FolderConfig>(`/api/folders/${id}/unhide`, {}),
+  /** What a permanent delete would remove, for the confirmation text. */
+  getFolderDeleteSummary: (id: string) =>
+    get<{ id: string; name: string; cards: number; routines: number; comments: number; chats: number; messages: number }>(
+      `/api/folders/${id}/delete-summary`,
+    ),
+  /** Permanent. The server refuses unless the id is repeated as the confirmation. */
+  deleteFolder: (id: string, confirmId: string) =>
+    del<{ ok: true }>(`/api/folders/${id}?confirm=${encodeURIComponent(confirmId)}`),
   reorderFolders: (ids: string[]) => put<{ ok: true }>('/api/folders/reorder', { ids }),
   /** This project's own rules plus every folder above it, for the read-only list in Permissions. */
   getFolderPermissionRules: (id: string) =>
@@ -309,7 +336,7 @@ export const rest = {
 
   // Plan limits (Claude OAuth usage API)
   getUsage: () => get<UsageData>('/api/plan-usage'),
-  getAuthUrl: () => get<{ url: string }>('/api/plan-usage/connect'),
+  getAuthUrl: () => post<{ url: string }>('/api/plan-usage/connect'),
   exchangeCode: (code: string) => post<UsageData>('/api/plan-usage/code', { code }),
   disconnectUsage: () => post<UsageData>('/api/plan-usage/disconnect'),
   refreshUsage: () => post<UsageData>('/api/plan-usage/refresh'),
@@ -325,18 +352,14 @@ export const rest = {
   createAgent: (data: Partial<AgentConfig>) => post<AgentConfig>('/api/agents', data),
   updateAgent: (id: string, data: Partial<AgentConfig>) => put<AgentConfig>(`/api/agents/${id}`, data),
   deleteAgent: (id: string) => del<{ ok: true }>(`/api/agents/${id}`),
-  scanAgents: () => post<AgentConfig[]>('/api/agents/scan'),
-  syncNativeAgents: () => post<{ synced: number; agents: AgentConfig[] }>('/api/agents/sync-native'),
   createAgentEditSession: (agentId: string) => post<{ instanceId: string }>(`/api/agents/${agentId}/edit-session`, { startedBy: 'user' }),
 
   // Skills
   getSkills: () => get<SkillConfig[]>('/api/skills'),
   /** Deterministic disk scan of every skill Claude can see. No model call. */
   getAvailableSkills: () => get<SkillInventory>('/api/skills/available'),
-  createSkill: (data: Partial<SkillConfig>) => post<SkillConfig>('/api/skills', data),
-  deleteSkill: (id: string) => del<{ ok: true }>(`/api/skills/${id}`),
 
-  pauseAll: (folderId: string) => post<{ paused: number }>(`/api/folders/${folderId}/pause-all`),
+  pauseAll: (folderId: string) => post<{ paused: number; notStopped?: string[] }>(`/api/folders/${folderId}/pause-all`),
   releaseAll: (folderId: string) => post<{ released: number; instanceIds: string[] }>(`/api/folders/${folderId}/release-all`),
   closeAll: (folderId: string) => post<{ closed: number; instanceIds: string[] }>(`/api/folders/${folderId}/close-all`),
   openFolder: (folderId: string) => post<{ ok: boolean; path: string }>(`/api/folders/${folderId}/open`),
@@ -347,7 +370,6 @@ export const rest = {
   forceResetInstance: (id: string) => post<{ ok: boolean; killed: boolean }>(`/api/instances/${id}/force-reset`),
 
   // MCP server discovery
-  getMcpAvailable: () => get<{ servers: McpServerInfo[] }>('/api/mcp/available'),
 
   // File browser
   browsePath: (dirPath: string) =>
@@ -459,12 +481,4 @@ export const rest = {
     get<{ inputTokens: number; outputTokens: number; costUsd: number; lineCount: number }>(`/api/sessions/${sessionId}/stats`),
   requestSessionSummary: (sessionId: string, instanceId: string) =>
     post<{ ok: true; instanceId: string; sessionId: string }>(`/api/sessions/${sessionId}/request-summary`, { instanceId, startedBy: 'user' }),
-
-  // Cloud Sync
-  testSyncConnection: (url: string, key: string) =>
-    post<{ ok: boolean; error?: string }>('/api/sync/test', { url, key }),
-  getSyncStatus: () =>
-    get<{ status: string; error: string | null; machineId: string; folders: Array<{ folderId: string; cloudSync: boolean; lastSyncedAt: number | null }> }>('/api/sync/status'),
-  triggerSync: (folderId: string) =>
-    post<{ ok: boolean; error?: string }>(`/api/sync/trigger/${folderId}`),
 }

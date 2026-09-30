@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { DATA_DIR } from '../config.js'
-import { expandBundles, dedupeRules, DESTRUCTIVE_FENCE, DEPLOY_FENCE } from '@orcstrator/shared'
+import { expandBundles, expandBundleAsks, dedupeRules, destructiveFence, DEPLOY_FENCE } from '@orcstrator/shared'
+import { homedir } from 'os'
 import { db } from '../db.js'
 import { folderRuleChainForInstance, mergedFolderRules } from './folder-rules.js'
 
@@ -32,6 +33,9 @@ const HOOK_PATH: string | null = HOOK_CANDIDATES.find((p) => existsSync(p)) ?? n
 /** Where the per-instance managed settings files live. */
 const SETTINGS_DIR = join(DATA_DIR, 'cli-settings')
 
+/** The tools whose output the compaction hook may rewrite. Never Read, Edit, Write, Grep or Glob. */
+export const COMPACTION_MATCHER = 'Bash|PowerShell|mcp__.*'
+
 /** Compaction hook block, or null when the hook is off or its script is missing. */
 function compactionHookBlock(): Record<string, unknown> | null {
   if (!compactionEnabled()) return null
@@ -41,8 +45,12 @@ function compactionHookBlock(): Record<string, unknown> | null {
   }
   // Quote both paths: process.execPath ("...Program Files...") and the script path may contain spaces.
   const command = `"${process.execPath}" "${HOOK_PATH}"`
+  // Command and MCP output only. With `*` the hook also rewrote Read results, so an
+  // agent could be shown a file that differed from the one on disk (collapsed repeated lines, a
+  // minified package.json), and its next Edit or Write then worked from the altered text. It also
+  // saves the hook's node start-up on every other tool call.
   return {
-    PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: 30 }] }],
+    PostToolUse: [{ matcher: COMPACTION_MATCHER, hooks: [{ type: 'command', command, timeout: 30 }] }],
   }
 }
 
@@ -226,19 +234,20 @@ export function cliSettingsArgs(instanceId: string): string[] {
     // The destructive fence defaults ON: an absent setting counts as enabled, so only an
     // explicit false removes it. That is what separates "allow everything except destructive"
     // from "allow everything", and it is the whole reason both buttons can be honest.
-    const fence = readBoolSetting('blockDestructive', true) ? DESTRUCTIVE_FENCE : []
+    // The literal home path joins the shared list here, because only this side knows it.
+    const fence = readBoolSetting('blockDestructive', true) ? destructiveFence(homedir()) : []
 
-    // Plug the deploy hole in the "run scripts" grant, but only once some grant is actually on:
-    // with no bundles configured at all, OrcStrator adds nothing and the CLI's own defaults
-    // stand, so a fresh install does not silently start gating `npm run deploy`.
+    // Plug the deploy hole in the "run scripts" grant. This used to wait until some grant was on,
+    // so a fresh install gated nothing and "Deploy is off unless you turn it on" was false out of
+    // the box. It now applies whenever `deploy` is not granted, bundles or no bundles.
     //
     // Computed from the UNION of app-wide, project and per-chat bundles, so granting deploy to one
     // chat really does grant it. Doing this from the app-wide list alone would leave an app-wide
     // rule in that chat's file, and both ask and deny beat an allow, so the per-chat toggle
     // would have looked like it worked and done nothing.
-    const deployFence = activeBundles.length > 0 && !activeBundles.includes('deploy')
-      ? DEPLOY_FENCE
-      : []
+    const deployFence = !activeBundles.includes('deploy') ? DEPLOY_FENCE : []
+    // Each bundle's own ask guards, e.g. `git diff --output=...` under "Look at things".
+    const bundleAsk = expandBundleAsks(activeBundles)
     const deny = unionRules(
       unionRules(
         unionRules([...fence], readStringArraySetting('permissionDenyRules')),
@@ -266,7 +275,7 @@ export function cliSettingsArgs(instanceId: string): string[] {
     const askRaw = unionRules(
       unionRules(
         unionRules(
-          unionRules([...deployFence], readStringArraySetting('permissionAskRules')),
+          unionRules([...deployFence, ...bundleAsk], readStringArraySetting('permissionAskRules')),
           projectRules.ask,
         ),
         chatRules.ask,

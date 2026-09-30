@@ -1,4 +1,4 @@
-# Launcher self-update (installer plan s10 Iteration 2, audit item 2).
+# Launcher self-update.
 #
 # OrcStrator.exe runs the ACTIVE version's verified launcher,
 # <data root>\app\versions\<current.txt>\installer\setup.ps1, with

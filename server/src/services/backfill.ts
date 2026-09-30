@@ -4,6 +4,7 @@ import os from 'os'
 import readline from 'readline'
 import { db } from '../db.js'
 import { computeCostUsd } from '@orcstrator/shared'
+import { claudeProjectsDir } from './claude-paths.js'
 
 /**
  * Historical cost backfill from local Claude CLI session files.
@@ -48,7 +49,7 @@ interface SessionJsonlUsage {
 }
 
 export async function runBackfill(): Promise<BackfillSummary> {
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects')
+  const projectsDir = claudeProjectsDir()
   const summary: BackfillSummary = { sessionsScanned: 0, sessionsMatched: 0, rowsInserted: 0, tokensAdded: 0, costAdded: 0 }
   if (!fs.existsSync(projectsDir)) return summary
 

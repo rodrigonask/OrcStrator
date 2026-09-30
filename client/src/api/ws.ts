@@ -1,3 +1,5 @@
+import { getSessionToken } from './auth'
+
 type EventCallback = (payload: any) => void
 
 class WsClient {
@@ -18,13 +20,40 @@ class WsClient {
   private static HEARTBEAT_MS = 10_000
   private static STALE_MS = 25_000
 
+  private opening = false
+
+  // Terminal feeds the page wants, with how many panels want each. The server forgets every
+  // subscription when a socket closes, so they are replayed on every open; before, a terminal
+  // panel went silent after any reconnect, and one opened while the socket was still
+  // connecting never subscribed at all.
+  private terminalSubs = new Map<string, number>()
+  // The pending reconnect, kept so a forced reconnect or a disconnect can cancel it instead of
+  // racing it into a second socket.
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
   connect() {
+    this.clearReconnectTimer()
     // Guard: connect() is called from multiple mount points — never open a second socket
+    if (this.opening) return
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return
+    }
+    // The live feed needs the page's token. After a server restart the old one is
+    // unknown there, so every reconnect after a failed open asks for a fresh one.
+    this.opening = true
+    const refresh = this.hasConnectedBefore || this.reconnectDelay > 1000
+    void getSessionToken(refresh).then(token => {
+      this.opening = false
+      this.open(token)
+    })
+  }
+
+  private open(token: string | null) {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return
     }
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const url = `${protocol}//${location.host}/ws`
+    const url = `${protocol}//${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`
     this.ws = new WebSocket(url)
 
     this.ws.onopen = () => {
@@ -36,6 +65,9 @@ class WsClient {
       this.emit('connection', { connected: true, reconnected: this.hasConnectedBefore })
       if (this.hasConnectedBefore) this.emit('reconnected', {})
       this.hasConnectedBefore = true
+      for (const instanceId of this.terminalSubs.keys()) {
+        this.ws?.send(JSON.stringify({ type: 'subscribe:terminal', instanceId }))
+      }
     }
 
     this.ws.onmessage = (event) => {
@@ -59,7 +91,8 @@ class WsClient {
       this.ws = null
       this.stopHeartbeat()
       this.emit('connection', { connected: false })
-      setTimeout(() => this.connect(), this.reconnectDelay)
+      this.clearReconnectTimer()
+      this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.connect() }, this.reconnectDelay)
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay)
     }
   }
@@ -88,6 +121,7 @@ class WsClient {
   /** Drop a presumed-dead socket and reconnect immediately, bypassing the close backoff. */
   forceReconnect() {
     this.stopHeartbeat()
+    this.clearReconnectTimer()
     if (this.ws) {
       // Detach handlers so the dead socket's eventual close doesn't schedule a duplicate reconnect.
       this.ws.onclose = null
@@ -127,20 +161,35 @@ class WsClient {
     this.listeners.get(event)?.forEach((cb) => cb(payload))
   }
 
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+  }
+
   subscribeTerminal(instanceId: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    const n = this.terminalSubs.get(instanceId) ?? 0
+    this.terminalSubs.set(instanceId, n + 1)
+    // Only the first panel for a chat subscribes; a socket that is not open yet picks it up
+    // in onopen.
+    if (n === 0 && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'subscribe:terminal', instanceId }))
     }
   }
 
   unsubscribeTerminal(instanceId: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    const n = this.terminalSubs.get(instanceId) ?? 0
+    if (n > 1) { this.terminalSubs.set(instanceId, n - 1); return }
+    this.terminalSubs.delete(instanceId)
+    if (n === 1 && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'unsubscribe:terminal', instanceId }))
     }
   }
 
   disconnect() {
     this.stopHeartbeat()
+    this.clearReconnectTimer()
     if (this.ws) {
       this.ws.onclose = null
       this.ws.close()

@@ -32,20 +32,37 @@ function existsAsFile(p: string): boolean {
   }
 }
 
-function searchPath(): string | null {
-  const PATH = process.env.PATH || process.env.Path || ''
-  const sep = process.platform === 'win32' ? ';' : ':'
-  const candidates = process.platform === 'win32'
-    ? ['claude.exe', 'claude.cmd']
-    : ['claude']
-  for (const dir of PATH.split(sep)) {
-    if (!dir) continue
-    for (const name of candidates) {
-      const full = path.join(dir.trim(), name)
-      if (existsAsFile(full)) return full
-    }
+/**
+ * The first `claude` on PATH that can actually be spawned.
+ *
+ * On Windows that means `claude.exe`, searched across EVERY PATH directory before anything else.
+ * The old loop was directory-first and took `claude.cmd` whenever its directory came earlier, and
+ * Node 22 refuses to spawn a `.cmd` without a shell (EINVAL), so a user with the npm-installed
+ * Claude earlier on PATH got a failure on every chat. A `.cmd` shim is never returned: if that is
+ * all there is, the caller falls through to the native install location, and then to the install
+ * hint, which is a clear message instead of a broken spawn.
+ *
+ * Pure (PATH, platform and the file check are parameters) so the order can be tested.
+ */
+export function findClaudeOnPath(
+  pathEnv: string,
+  platform: NodeJS.Platform,
+  isFile: (p: string) => boolean,
+): string | null {
+  const sep = platform === 'win32' ? ';' : ':'
+  const join = platform === 'win32' ? path.win32.join : path.posix.join
+  const name = platform === 'win32' ? 'claude.exe' : 'claude'
+  for (const dir of pathEnv.split(sep)) {
+    const d = dir.trim()
+    if (!d) continue
+    const full = join(d, name)
+    if (isFile(full)) return full
   }
   return null
+}
+
+function searchPath(): string | null {
+  return findClaudeOnPath(process.env.PATH || process.env.Path || '', process.platform, existsAsFile)
 }
 
 function fallbackLocation(): string {
@@ -59,17 +76,35 @@ function fallbackLocation(): string {
  * Returns the absolute path to the native claude binary, or null if nothing was found.
  * Result is cached for the lifetime of the process.
  */
+/** "C:\x", "C:/x", "\\server\x" or "\\?\..." on Windows; "/x" elsewhere. Not "\x" or "C:x". */
+export function isFullyQualified(p: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' ? /^([A-Za-z]:[\\/]|\\\\)/.test(p) : p.startsWith('/')
+}
+
+/** A pin the launcher could have written: fully qualified and, on Windows, a plain ".exe" with no
+ *  stream ":" (spawn runs "x.com" or "x.exe" for an extensionless "x", and runs from a stream). */
+export function isPinnable(p: string, platform: NodeJS.Platform): boolean {
+  if (!isFullyQualified(p, platform)) return false
+  if (platform !== 'win32') return true
+  const rest = p.replace(/^\\\\[?.]\\/, '')
+  return /\.exe$/i.test(p) && rest.indexOf(':', 2) === -1
+}
+
 export function resolveClaudeBinary(): { path: string | null; hint: string } {
   if (cached) return cached
 
-  // 1. Explicit env override
+  // 1. Explicit env override. The installed launcher sets it to the claude.exe whose Anthropic
+  //    signature it verified, or to a path that is not a file when it refused the one it
+  //    found. Either way it is final: never fall back to some other, unverified copy.
+  //    Only a fully qualified path: "\tools\claude.exe" or "C:tools\claude.exe" means one file
+  //    here and another once a turn spawns it from a project on a different drive or folder.
   const override = process.env.ORCSTRATOR_CLAUDE_PATH
-  if (override && existsAsFile(override)) {
-    cached = { path: override, hint: INSTALL_HINT }
+  if (override) {
+    cached = { path: isPinnable(override, process.platform) && existsAsFile(override) ? override : null, hint: INSTALL_HINT }
     return cached
   }
 
-  // 2. PATH lookup — prefer the native .exe over the .cmd shim
+  // 2. PATH lookup: the native .exe in any PATH directory; a .cmd shim is never spawned
   const onPath = searchPath()
   if (onPath) {
     cached = { path: onPath, hint: INSTALL_HINT }
@@ -116,3 +151,7 @@ export function probeClaudeVersion(binPath: string, timeoutMs = 5000): Promise<s
     }
   })
 }
+
+// What a person sees in the chat when there is no usable Claude binary. The install hint
+// (irm ..., ORCSTRATOR_CLAUDE_PATH) goes to the server log instead.
+export const CLAUDE_MISSING_MESSAGE = 'Claude AI is not set up on this computer. Go back to the OrcStrator window and click Restart.'

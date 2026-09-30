@@ -1,11 +1,11 @@
-import { useState, useCallback, useMemo } from 'react'
+import { memo, useContext, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { FolderConfig, InstanceConfig } from '@shared/types'
-import { useInstances } from '../context/InstancesContext'
+import { InstancesContext, useInstance, useInstancesSelector } from '../context/InstancesContext'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useAllTasks } from '../context/AllTasksContext'
@@ -52,8 +52,18 @@ async function scheduledOnChatsNote(projectId: string, instanceIds: string[]): P
   }
 }
 
-function SortableInstanceItem({ instance, extraClass }: { instance: InstanceConfig; extraClass?: string }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: instance.id })
+const NO_ROWS: InstanceConfig[] = []
+
+/** One project's chats, in sidebar order. */
+function folderRows(all: InstanceConfig[], folderId: string): InstanceConfig[] {
+  return all.filter(i => i.folderId === folderId).sort((a, b) => a.sortOrder - b.sortOrder)
+}
+
+// Memoized so a row re-renders only when ITS instance changes.
+const SortableInstanceItem = memo(function SortableInstanceItem({ instanceId, extraClass }: { instanceId: string; extraClass?: string }) {
+  const instance = useInstance(instanceId)
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: instanceId })
+  if (!instance) return null
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -64,7 +74,7 @@ function SortableInstanceItem({ instance, extraClass }: { instance: InstanceConf
       <InstanceItem instance={instance} dragHandleProps={{ ...attributes, ...listeners }} extraClass={extraClass} />
     </div>
   )
-}
+})
 
 function SortableChildFolder({ node, depth }: { node: FolderTreeNode; depth: number }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.folder.id })
@@ -94,7 +104,14 @@ interface FolderGroupProps {
 }
 
 export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProps }: FolderGroupProps) {
-  const { instances: allInstances } = useInstances()
+  // This folder's rows only: a chat in another project streaming does not re-render it.
+  const folderId = folder.id
+  // The folder subscribes to its row ids and a "running" flag only; each row reads its own
+  // instance. Actions read the full rows at the moment they run (readRows).
+  const instancesStore = useContext(InstancesContext)
+  const readRows = useCallback(() => folderRows(instancesStore.getState().instances, folderId), [instancesStore, folderId])
+  const idKey = useInstancesSelector(s => folderRows(s.instances, folderId).map(i => i.id).join(','))
+  const hasRunning = useInstancesSelector(s => s.instances.some(i => i.folderId === folderId && i.state === 'running'))
   const { settings } = useUI()
   const { dispatch } = useAppDispatch()
   const { pendingByProject } = useAllTasks()
@@ -103,29 +120,18 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false)
   const [dyingIds, setDyingIds] = useState<Set<string>>(new Set())
 
-  const { alert, confirm } = useConfirm()
+  const { confirm, alert } = useConfirm()
+  // A project action the server refused (a chat whose agent would not stop) says why, instead of
+  // only reaching the console.
+  const sayWhy = useCallback((err: unknown, title: string) => {
+    console.error(`${title}:`, err)
+    void alert(err instanceof Error ? err.message : String(err), title)
+  }, [alert])
 
-  const instances = [...allInstances.filter(i => i.folderId === folder.id)]
-    .sort((a, b) => a.sortOrder - b.sortOrder)
+  // A stable id list for the sortable rows: SortableContext hands it to every row through context,
+  // so a fresh array per render re-rendered every row on every progress tick.
+  const instanceIds = useMemo(() => (idKey ? idKey.split(',') : []), [idKey])
   const expanded = folder.expanded
-  const isCloudSynced = folder.cloudSync || false
-  const cloudConfigured = !!(settings.cloudSyncUrl && settings.cloudSyncKey)
-
-  const handleCloudSyncToggle = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!cloudConfigured) {
-      await alert('Configure Cloud Sync in Settings > Advanced first.')
-      return
-    }
-    const newVal = !isCloudSynced
-    dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: { cloudSync: newVal } } })
-    api.updateFolder(folder.id, { cloudSync: newVal } as Partial<FolderConfig>)
-    if (newVal) {
-      // Trigger initial sync
-      rest.triggerSync(folder.id).catch(() => {})
-    }
-  }, [cloudConfigured, isCloudSynced, folder.id, dispatch, alert])
-
   const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   const sortedChildNodes = useMemo(() =>
@@ -147,13 +153,13 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
   const handleInstanceDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event
     if (!over || active.id === over.id) return
-    const ids = instances.map(i => i.id)
+    const ids = instanceIds
     const oldIndex = ids.indexOf(active.id as string)
     const newIndex = ids.indexOf(over.id as string)
     const reordered = arrayMove(ids, oldIndex, newIndex)
     dispatch({ type: 'REORDER_INSTANCES', payload: { folderId: folder.id, ids: reordered } })
     api.reorderInstances(reordered).catch(console.error)
-  }, [instances, dispatch, folder.id])
+  }, [instanceIds, dispatch, folder.id])
 
   const toggleExpanded = useCallback(() => {
     dispatch({ type: 'TOGGLE_FOLDER', folderId: folder.id })
@@ -210,27 +216,71 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
     closeContextMenu()
   }, [closeContextMenu])
 
-  const handleRemove = useCallback(async () => {
+  // Hide keeps EVERYTHING: it flips the project's hidden flag and nothing else. It used to
+  // call the delete route, so one click wiped every card, routine and chat.
+  // It must never reach api.deleteFolder; the test in server/test/hide-never-deletes
+  // reads this handler to hold that line.
+  const handleHide = useCallback(async () => {
+    closeContextMenu()
     try {
-      await api.deleteFolder(folder.id)
+      await api.hideFolder(folder.id)
+      dispatch({ type: 'UPDATE_FOLDER', payload: { id: folder.id, updates: { hidden: true } } })
+    } catch (err) {
+      console.error('Failed to hide project:', err)
+    }
+  }, [dispatch, folder.id, closeContextMenu])
+
+  // Delete is the permanent one, and it says so, with the counts, before anything goes.
+  const handleDelete = useCallback(async () => {
+    closeContextMenu()
+    let what = 'every card, routine, comment and chat in it'
+    try {
+      const s = await api.getFolderDeleteSummary(folder.id)
+      const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+      const parts = [
+        s.cards > 0 && plural(s.cards, 'card'),
+        s.routines > 0 && plural(s.routines, 'routine'),
+        s.comments > 0 && plural(s.comments, 'comment'),
+        s.chats > 0 && `${plural(s.chats, 'chat')} and ${s.chats === 1 ? 'its' : 'their'} messages`,
+      ].filter(Boolean) as string[]
+      what = parts.length === 0 ? 'the project from OrcStrator'
+        : parts.length === 1 ? parts[0]
+        : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+    } catch { /* the generic sentence above still names what is lost */ }
+    const name = folder.displayName || folder.name
+    const ok = await confirm(
+      `Delete "${name}" permanently? This removes ${what}. It cannot be undone. The folder on your computer is not touched. To keep everything and only take the project out of the sidebar, use Hide Project instead.`,
+      'Delete project',
+      { confirmLabel: 'Delete project', danger: true },
+    )
+    if (!ok) return
+    try {
+      await api.deleteFolder(folder.id, folder.id)
       dispatch({ type: 'REMOVE_FOLDER', folderId: folder.id })
     } catch (err) {
-      console.error('Failed to hide folder:', err)
+      sayWhy(err, 'Could not delete the project')
     }
-    closeContextMenu()
-  }, [dispatch, folder, closeContextMenu])
+  }, [dispatch, folder.id, folder.displayName, folder.name, closeContextMenu, confirm, sayWhy])
 
   const handlePauseAll = useCallback(async () => {
     closeContextMenu()
     try {
-      await api.pauseAll(folder.id)
+      const instances = readRows()
+      const result = await api.pauseAll(folder.id)
+      // Not a chat the server could not stop: it is still running, and says so.
+      const notStopped = new Set(result.notStopped ?? [])
       for (const inst of instances) {
+        if (notStopped.has(inst.id)) continue
         dispatch({ type: 'UPDATE_INSTANCE', payload: { id: inst.id, updates: { state: 'idle' } } })
       }
+      if (notStopped.size > 0) {
+        const n = notStopped.size
+        void alert(`${n} chat${n === 1 ? '' : 's'} could not be stopped and ${n === 1 ? 'is' : 'are'} still running. Try again, or open ${n === 1 ? 'it' : 'each one'} and use Force reset in its \u2630 menu.`, 'Not everything was paused')
+      }
     } catch (err) {
-      console.error('Failed to pause all:', err)
+      sayWhy(err, 'Could not pause the chats')
     }
-  }, [folder.id, instances, dispatch, closeContextMenu])
+  }, [folder.id, readRows, dispatch, closeContextMenu, sayWhy, alert])
 
   const handleReleaseAll = useCallback(async () => {
     setShowReleaseConfirm(false)
@@ -240,9 +290,9 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
         dispatch({ type: 'UPDATE_INSTANCE', payload: { id, updates: { state: 'idle', sessionId: undefined, activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
       }
     } catch (err) {
-      console.error('Failed to release all:', err)
+      sayWhy(err, 'Could not release the sessions')
     }
-  }, [folder.id, dispatch])
+  }, [folder.id, dispatch, sayWhy])
 
   const handleOpenFolder = useCallback((e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -252,6 +302,7 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
 
   const handleCloseAll = useCallback(async () => {
     closeContextMenu()
+    const instances = readRows()
     const dirtyInsts = instances.filter(i => (i.dirtyCount ?? 0) > 0)
     const dirtyFiles = dirtyInsts.reduce((s, i) => s + (i.dirtyCount ?? 0), 0)
     const dirtyNote = dirtyInsts.length > 0
@@ -266,19 +317,24 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
         dispatch({ type: 'REMOVE_INSTANCE', payload: id })
       }
     } catch (err) {
-      console.error('Failed to close all:', err)
+      sayWhy(err, 'Could not close the chats')
     }
-  }, [folder.id, instances, folder.displayName, folder.name, dispatch, closeContextMenu, confirm])
+  }, [folder.id, readRows, folder.displayName, folder.name, dispatch, closeContextMenu, confirm, sayWhy])
 
   const handleRenew = useCallback(async () => {
     closeContextMenu()
+    const instances = readRows()
     const dirtyInsts = instances.filter(i => (i.dirtyCount ?? 0) > 0)
     const dirtyFiles = dirtyInsts.reduce((s, i) => s + (i.dirtyCount ?? 0), 0)
     const dirtyNote = dirtyInsts.length > 0
       ? ` ⚠ ${dirtyInsts.length} have uncommitted work (${dirtyFiles}+ file${dirtyFiles !== 1 ? 's' : ''}): commit before renewing or the session that made it is gone.`
       : ''
     const scheduledNote = await scheduledOnChatsNote(folder.id, instances.map(i => i.id))
-    const ok = await confirm(`Renew all ${instances.length} chat${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will close all sessions and create fresh ones.${dirtyNote}${scheduledNote}`)
+    const ok = await confirm(
+      `Renew all ${instances.length} chat${instances.length !== 1 ? 's' : ''} in ${folder.displayName || folder.name}? This will close all sessions and create fresh ones, and their chat history in OrcStrator is cleared.${dirtyNote}${scheduledNote}`,
+      'Renew all chats',
+      { confirmLabel: 'Renew and clear history', danger: true },
+    )
     if (!ok) return
     try {
       const newNames = instances.map(() => randomName(settings.namingThemes ?? (settings.namingTheme ? [settings.namingTheme] : ['memes'])))
@@ -313,12 +369,13 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
         await new Promise(r => setTimeout(r, 300))
       }
     } catch (err) {
-      console.error('Failed to renew folder:', err)
       setDyingIds(new Set())
+      sayWhy(err, 'Could not renew the chats')
     }
-  }, [folder.id, folder.displayName, folder.name, instances, settings.namingTheme, dispatch, closeContextMenu, confirm])
+  }, [folder.id, folder.displayName, folder.name, readRows, settings.namingTheme, dispatch, closeContextMenu, confirm, sayWhy])
 
-  const hasRunning = instances.some(i => i.state === 'running')
+  // Only read while the release dialog is open, which is when it renders the names.
+  const releaseRows = showReleaseConfirm ? readRows() : NO_ROWS
   const statusClass = folder.status === 'paused' ? 'paused'
     : folder.status === 'archived' ? 'archived'
     : hasRunning ? 'active'
@@ -367,16 +424,6 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
         <button className="folder-tool" onClick={handleOpenFolder}><IconFolder size={compact ? 12 : 13} /></button>
         <span className="folder-btn-tip">Open folder</span>
       </div>
-      {!compact && cloudConfigured && (
-        <div className="folder-btn-wrap">
-          <button
-            className={`folder-tool cloud-sync-btn ${isCloudSynced ? 'active' : ''}`}
-            onClick={handleCloudSyncToggle}
-            style={{ opacity: isCloudSynced ? 1 : undefined, color: isCloudSynced ? 'var(--accent)' : undefined }}
-          >{'☁'}</button>
-          <span className="folder-btn-tip">{isCloudSynced ? 'Cloud synced' : 'Sync to cloud'}</span>
-        </div>
-      )}
       <div className="folder-btn-wrap">
         <button className="folder-tool" onClick={handleAddInstance}><IconChatPlus size={compact ? 12 : 13} /></button>
         <span className="folder-btn-tip">New chat</span>
@@ -415,17 +462,17 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
         {expanded && (
           <div className="folder-child-instances">
             <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleInstanceDragEnd}>
-              <SortableContext items={instances.map(i => i.id)} strategy={verticalListSortingStrategy}>
-                {instances.map(inst => (
+              <SortableContext items={instanceIds} strategy={verticalListSortingStrategy}>
+                {instanceIds.map(id => (
                   <SortableInstanceItem
-                    key={inst.id}
-                    instance={inst}
-                    extraClass={dyingIds.has(inst.id) ? 'anim-remove' : undefined}
+                    key={id}
+                    instanceId={id}
+                    extraClass={dyingIds.has(id) ? 'anim-remove' : undefined}
                   />
                 ))}
               </SortableContext>
             </DndContext>
-            {instances.length === 0 && (
+            {instanceIds.length === 0 && (
               <div style={{ padding: '4px 12px 4px 52px', fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                 No chats
               </div>
@@ -465,7 +512,8 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
               <button className="context-menu-item" onClick={handleRenew}>Renew All</button>
               <button className="context-menu-item danger" onClick={handleCloseAll}>Close All</button>
               <div className="context-menu-separator" />
-              <button className="context-menu-item danger" onClick={handleRemove}>Hide Project</button>
+              <button className="context-menu-item" onClick={handleHide} title="Take it out of the sidebar. Nothing is deleted; bring it back from Hidden projects.">Hide Project</button>
+              <button className="context-menu-item danger" onClick={handleDelete}>Delete Project...</button>
             </div>
           </>,
           document.body
@@ -483,10 +531,10 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
                 <button className="modal-close" onClick={() => setShowReleaseConfirm(false)}>×</button>
               </div>
               <div className="modal-body">
-                <p>This will close {instances.length} session{instances.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
-                {instances.length > 0 && (
+                <p>This will close {releaseRows.length} session{releaseRows.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
+                {releaseRows.length > 0 && (
                   <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    {instances.map(i => <li key={i.id}>{i.name}</li>)}
+                    {releaseRows.map(i => <li key={i.id}>{i.name}</li>)}
                   </ul>
                 )}
               </div>
@@ -538,17 +586,17 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
         <>
           <div className="folder-instances">
             <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleInstanceDragEnd}>
-              <SortableContext items={instances.map(i => i.id)} strategy={verticalListSortingStrategy}>
-                {instances.map(inst => (
+              <SortableContext items={instanceIds} strategy={verticalListSortingStrategy}>
+                {instanceIds.map(id => (
                   <SortableInstanceItem
-                    key={inst.id}
-                    instance={inst}
-                    extraClass={dyingIds.has(inst.id) ? 'anim-remove' : undefined}
+                    key={id}
+                    instanceId={id}
+                    extraClass={dyingIds.has(id) ? 'anim-remove' : undefined}
                   />
                 ))}
               </SortableContext>
             </DndContext>
-            {instances.length === 0 && childNodes.length === 0 && (
+            {instanceIds.length === 0 && childNodes.length === 0 && (
               <div className="instance-item" style={{ cursor: 'default' }}>
                 <span className="instance-info">
                   <span className="instance-preview" style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>No chats</span>
@@ -611,8 +659,11 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
               Close All
             </button>
             <div className="context-menu-separator" />
-            <button className="context-menu-item danger" onClick={handleRemove}>
+            <button className="context-menu-item" onClick={handleHide} title="Take it out of the sidebar. Nothing is deleted; bring it back from Hidden projects.">
               Hide Project
+            </button>
+            <button className="context-menu-item danger" onClick={handleDelete}>
+              Delete Project...
             </button>
           </div>
         </>,
@@ -634,10 +685,10 @@ export function FolderGroup({ folder, childNodes = [], depth = 0, dragHandleProp
               <button className="modal-close" onClick={() => setShowReleaseConfirm(false)}>×</button>
             </div>
             <div className="modal-body">
-              <p>This will close {instances.length} session{instances.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
-              {instances.length > 0 && (
+              <p>This will close {releaseRows.length} session{releaseRows.length !== 1 ? 's' : ''} in <strong>{folder.displayName || folder.name}</strong>. Sessions will be reset and can be restarted.</p>
+              {releaseRows.length > 0 && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13, color: 'var(--text-secondary)' }}>
-                  {instances.map(i => <li key={i.id}>{i.name}</li>)}
+                  {releaseRows.map(i => <li key={i.id}>{i.name}</li>)}
                 </ul>
               )}
             </div>

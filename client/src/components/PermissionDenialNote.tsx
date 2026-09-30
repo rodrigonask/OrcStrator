@@ -8,6 +8,7 @@ import { api } from '../api'
 import { readPermMode, permissionModeFlag } from '../utils/permMode'
 import { usePermissionScope } from '../hooks/usePermissionScope'
 import { PermissionScopePicker } from './PermissionScopePicker'
+import { effectivePermissionMode } from '@shared/constants'
 import {
   explainDenial,
   isClassifierDenial,
@@ -164,8 +165,8 @@ export function PermissionDenialNote({
 
   const fromClassifier = isClassifierDenial(output)
   const permMode = instance
-    ? readPermMode(instance.id, settings.permissionMode ?? 'default')
-    : settings.permissionMode ?? 'default'
+    ? readPermMode(instance.id, effectivePermissionMode(settings))
+    : effectivePermissionMode(settings)
   const autoMode = fromClassifier || permMode === 'auto'
 
   const projectRules = scopeControl.projectRules

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api } from '../api'
-import { rest } from '../api/rest'
+import { fetchTaskShared, upsertTask } from '../api/taskFetch'
+import { keepNewer } from '../utils/taskUpsert'
 import { useUI } from './UIContext'
 import { useAppDispatch } from './AppDispatchContext'
 import { isAllProjects } from '../utils/pipelineView'
@@ -45,7 +46,7 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
     setError(null)
     try {
       const data = await api.getProjectPipeline(activePipelineId, true)
-      if (seq === fetchSeqRef.current) setTasks(data)
+      if (seq === fetchSeqRef.current) setTasks(prev => keepNewer(prev, data))
     } catch (err) {
       if (seq === fetchSeqRef.current) setError(err instanceof Error ? err.message : 'Failed to load pipeline')
     } finally {
@@ -61,8 +62,11 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to pipeline WS events with incremental updates
   useEffect(() => {
-    const unsub = api.onPipelineUpdated((payload: PipelineEvent) => {
-      if (payload.projectId !== activePipelineId) return
+    const unsub = api.onPipelineUpdated((payload) => {
+      // Some events name no project (the close-time summary files one by task id only); the
+      // typed boundary makes that visible, and such an event is not this board's.
+      const projectId = payload.projectId
+      if (!projectId || projectId !== activePipelineId) return
 
       if (payload.action === 'moved' && payload.newColumn) {
         // Patch the column immediately so the card lands in the right place with no
@@ -75,15 +79,20 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
         setTasks(prev => prev.map(t =>
           t.id === payload.taskId ? { ...t, column: payload.newColumn! } : t
         ))
-        const projectId = payload.projectId
-        rest.getTask(projectId, payload.taskId)
+        fetchTaskShared(projectId, payload.taskId)
           .then(full => setTasks(prev => prev.map(t => (t.id === full.id ? full : t))))
           .catch(() => { /* the column patch above already applied */ })
       } else if (payload.action === 'deleted') {
         // Incremental: remove the task locally
         setTasks(prev => prev.filter(t => t.id !== payload.taskId))
+      } else if (payload.taskId) {
+        // created, updated, blocked, unblocked: fetch that ONE card, shared with the app-wide
+        // task list, instead of the whole board twice. A failure falls back to the
+        // full refetch this used to do.
+        fetchTaskShared(projectId, payload.taskId)
+          .then(full => { if (full.projectId === projectId) setTasks(prev => upsertTask(prev, full)) })
+          .catch(() => fetchTasks())
       } else {
-        // created, updated, blocked, unblocked -- need full data, refetch
         fetchTasks()
       }
     })

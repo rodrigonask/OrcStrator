@@ -167,5 +167,41 @@ const check = (name, cond, detail) => {
   check('fail-safe: clean exit 0', code === 0)
 }
 
+// 7) Read results are never rewritten: a 4,006-char file of repeated lines, and a
+//    pretty-printed package.json, both come back untouched (no output at all from the hook).
+{
+  const repeated = 'x=1\n\n' + Array.from({ length: 1000 }, () => 'y=2').join('\n')
+  const { out } = await run({
+    tool_name: 'Read',
+    tool_input: { file_path: 'C:/repo/notes.txt' },
+    tool_response: { type: 'text', file: { filePath: 'C:/repo/notes.txt', content: repeated, numLines: 1002 } },
+  })
+  console.log(`\n[7a] Read of a repeated-line file: stdout = ${out.length} chars`)
+  check('Read result is passed through untouched (no replacement)', out.trim() === '')
+
+  const pkg = JSON.stringify({ name: 'app', dependencies: Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`dep-${i}`, `^${i}.0.0`])) }, null, 2)
+  const r2 = await run({ tool_name: 'Read', tool_input: { file_path: 'package.json' }, tool_response: { file: { content: pkg } } })
+  check('a pretty package.json read is not minified', r2.out.trim() === '')
+
+  // Even a payload shaped like Bash but carrying file.content must not touch the file content.
+  const r3 = await run({ tool_name: 'Bash', tool_response: { stdout: 'ok', file: { content: repeated } } })
+  const v3 = r3.out ? JSON.parse(r3.out).hookSpecificOutput.updatedToolOutput : null
+  check('file.content is never rewritten, whatever the tool', !v3 || v3.file?.content === repeated)
+
+  for (const tool of ['Edit', 'Write', 'Grep', 'Glob', 'NotebookEdit']) {
+    const r = await run({ tool_name: tool, tool_response: repeated })
+    check(`${tool} output is passed through untouched`, r.out.trim() === '')
+  }
+}
+
+// 8) Reading an original back out of the CCR folder is never compacted again.
+{
+  const repeated = Array.from({ length: 2000 }, () => 'same line').join('\n')
+  const { out } = await run({ tool_name: 'Bash', tool_input: { command: 'cat /c/Users/x/.orcstrator-v2/ccr/0123456789ab.txt' }, tool_response: { stdout: repeated } })
+  check('Bash reading a CCR original is passed through untouched', out.trim() === '')
+  const plain = await run({ tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: { stdout: repeated } })
+  check('ordinary Bash output is still compacted', plain.out.trim() !== '')
+}
+
 console.log(`\n${'='.repeat(40)}\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

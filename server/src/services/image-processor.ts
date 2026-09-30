@@ -44,7 +44,8 @@ export async function preprocessImages(
         processed.push(await compressIfNeeded(tile))
       }
     } else {
-      processed.push(await compressIfNeeded({ base64: raw.base64, mediaType: raw.mediaType }))
+      // The caller's label is a claim, the bytes are the fact. Same failure as the tiles above.
+      processed.push(await compressIfNeeded({ base64: raw.base64, mediaType: detectMediaType(raw.base64, raw.mediaType) }))
     }
   }
 
@@ -93,7 +94,12 @@ async function tileImage(buffer: Buffer, w: number, h: number): Promise<Processe
       const tileBuffer = await sharp(buffer)
         .extract({ left: c * tileW, top: r * tileH, width: extractW, height: extractH })
         .toBuffer()
-      tiles.push({ base64: tileBuffer.toString('base64'), mediaType: 'image/png' })
+      // sharp keeps the INPUT format on extract, so a phone JPEG gives JPEG tiles. The type is
+      // read off the bytes rather than assumed: a JPEG labelled image/png is rejected by the API
+      // ("Image does not match the provided media type"), and the photo sits in the chat history
+      // failing every turn after.
+      const b64 = tileBuffer.toString('base64')
+      tiles.push({ base64: b64, mediaType: detectMediaType(b64) })
     }
   }
   return tiles
@@ -153,11 +159,11 @@ async function stitchUntilFits(images: ProcessedImage[]): Promise<ProcessedImage
 }
 
 // Detect image media type from magic bytes in base64 string
-export function detectMediaType(base64: string): string {
+export function detectMediaType(base64: string, fallback = 'image/png'): string {
   const bytes = Buffer.from(base64.substring(0, 16), 'base64')
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e) return 'image/png'
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
   if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif'
   if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/webp'
-  return 'image/png' // fallback
+  return fallback
 }

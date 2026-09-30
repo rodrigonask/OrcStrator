@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { AppSettings, UsageData, VerbosityLevel, SessionCostState } from '@shared/types'
+import type { AppSettings, VerbosityLevel } from '@shared/types'
 
 export type ViewName = 'grid' | 'chat' | 'pipeline' | 'monitor' | 'agents' | 'usage' | 'sessions' | 'skills' | 'activity'
 
@@ -68,10 +68,8 @@ export interface UIContextValue {
   pendingTaskFocusId: string | null
   connected: boolean
   serverRestarted: boolean
-  usage: UsageData | null
   settings: AppSettings
   verbosityOverrides: Record<string, VerbosityLevel>
-  sessionCosts: Record<string, SessionCostState>
   historyErrors: Record<string, string>
 }
 
@@ -104,10 +102,8 @@ const defaultValue: UIContextValue = {
   pendingTaskFocusId: null,
   connected: false,
   serverRestarted: false,
-  usage: null,
   settings: defaultSettings,
   verbosityOverrides: {},
-  sessionCosts: {},
   historyErrors: {},
 }
 

@@ -164,18 +164,33 @@ function compactResponse(resp) {
       }
     }
 
-    // Read-style nested content: { file: { content } }
-    if (out.file && typeof out.file === 'object' && typeof out.file.content === 'string') {
-      const c = compactText(out.file.content)
-      if (c != null) {
-        out.file = { ...out.file, content: c }
-        changed = true
-      }
-    }
+    // `file.content` (a Read result) is NEVER touched. An agent that reads a file has to
+    // see the bytes on disk: a collapsed blank line or a minified package.json makes its next
+    // Edit miss, or its next Write save the altered text back over the user's file.
 
     return { changed, value: out }
   }
   return { changed: false, value: resp }
+}
+
+/**
+ * Only command and MCP output is ever compacted. The settings file already limits the
+ * matcher to these tools; this is the second line, for a settings file written by an older build
+ * with `matcher: '*'`. Read, Edit, Write, Grep, Glob and the rest pass through byte for byte.
+ *
+ * Also skipped: a command that reads a file back out of the CCR folder. That folder holds the
+ * verbatim originals this hook points the model at, and compacting the way back in would defeat
+ * the whole "Read that file for any elided detail" promise.
+ */
+const COMPACTABLE_TOOL = /^(Bash|PowerShell|mcp__.+)$/
+export function shouldCompact(payload) {
+  const tool = typeof payload.tool_name === 'string' ? payload.tool_name : ''
+  if (!COMPACTABLE_TOOL.test(tool)) return false
+  const input = payload.tool_input && typeof payload.tool_input === 'object' ? JSON.stringify(payload.tool_input) : ''
+  const ccr = CCR_DIR.replace(/\\/g, '/').toLowerCase()
+  if (input && input.replace(/\\\\/g, '/').toLowerCase().includes(ccr)) return false
+  if (input && /[\\/]ccr[\\/][0-9a-f]{12}\.txt/i.test(input)) return false
+  return true
 }
 
 async function readStdin() {
@@ -220,6 +235,7 @@ async function main() {
     return
   }
   if (!payload || payload.tool_response === undefined) return
+  if (!shouldCompact(payload)) return
   const beforeChars = sizeOf(payload.tool_response)
   const { changed, value } = compactResponse(payload.tool_response)
   if (!changed) return

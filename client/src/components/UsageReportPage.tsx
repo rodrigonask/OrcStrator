@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { api } from '../api'
+import { authFetch } from '../api/auth'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import type {
   UsageTrendDay,
@@ -185,7 +186,11 @@ export function UsageReportPage() {
 
   // Poll compaction savings while the tab is open so the number moves in ~real time.
   useEffect(() => {
-    const tick = () => { api.getCompactionSavings(days).then(setCompaction).catch(() => {}) }
+    // Not while the tab is hidden: nobody is watching the number move.
+    const tick = () => {
+      if (document.hidden) return
+      api.getCompactionSavings(days).then(setCompaction).catch(() => {})
+    }
     const id = setInterval(tick, 5000)
     return () => clearInterval(id)
   }, [days])
@@ -194,12 +199,17 @@ export function UsageReportPage() {
     setSyncing(true)
     setSyncResult(null)
     try {
-      const res = await fetch('/api/usage/sync-untracked', { method: 'POST' })
+      const res = await authFetch('/api/usage/sync-untracked', { method: 'POST' })
+      // A refusal is said as one, not rendered as "Imported undefined of undefined".
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(body?.error || `The server answered ${res.status}`)
+      }
       const data = await res.json() as { imported: number; scanned: number; errors: number }
       setSyncResult(`Imported ${data.imported} of ${data.scanned} sessions${data.errors ? ` (${data.errors} errors)` : ''}`)
       if (data.imported > 0) fetchData()
     } catch (err) {
-      setSyncResult('Sync failed')
+      setSyncResult(`Sync failed: ${err instanceof Error ? err.message : String(err)}`)
       console.error('Sync error:', err)
     } finally {
       setSyncing(false)

@@ -1,6 +1,12 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 
-interface ConfirmState {
+/** Optional wording for the confirm button. A destructive action names itself and turns red. */
+export interface ConfirmOptions {
+  confirmLabel?: string
+  danger?: boolean
+}
+
+interface ConfirmState extends ConfirmOptions {
   message: string
   title?: string
   isAlert?: boolean
@@ -8,7 +14,7 @@ interface ConfirmState {
 }
 
 interface ConfirmContextValue {
-  confirm: (message: string, title?: string) => Promise<boolean>
+  confirm: (message: string, title?: string, options?: ConfirmOptions) => Promise<boolean>
   alert: (message: string, title?: string) => Promise<void>
 }
 
@@ -23,9 +29,9 @@ export function useConfirm() {
 export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<ConfirmState | null>(null)
 
-  const confirm = useCallback((message: string, title?: string): Promise<boolean> => {
+  const confirm = useCallback((message: string, title?: string, options?: ConfirmOptions): Promise<boolean> => {
     return new Promise(resolve => {
-      setState({ message, title, isAlert: false, resolve })
+      setState({ message, title, isAlert: false, resolve, ...options })
     })
   }, [])
 
@@ -80,7 +86,15 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
               {!state.isAlert && (
                 <button className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
               )}
-              <button className="btn btn-primary" onClick={handleOk} autoFocus>OK</button>
+              {/* A destructive confirm is red, names what it does, and does not take focus: Enter
+                  must never delete a project. */}
+              <button
+                className={state.danger ? 'btn btn-danger-solid' : 'btn btn-primary'}
+                onClick={handleOk}
+                autoFocus={!state.danger}
+              >
+                {state.confirmLabel || 'OK'}
+              </button>
             </div>
           </div>
         </div>

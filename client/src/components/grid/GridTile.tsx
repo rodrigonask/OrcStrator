@@ -1,10 +1,10 @@
-import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
+import { memo, useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS as DndCSS } from '@dnd-kit/utilities'
 import { api } from '../../api'
 import { useUI, UIContext } from '../../context/UIContext'
-import { useInstances } from '../../context/InstancesContext'
-import { useMessages } from '../../context/MessagesContext'
+import { useInstance, useInstancesSelector } from '../../context/InstancesContext'
+import { useMessagesSelector } from '../../context/MessagesContext'
 import { useAppDispatch } from '../../context/AppDispatchContext'
 import { CompactContext } from '../../context/CompactContext'
 import { resolveContextWindow, resolveModelId, DEFAULT_MODEL_ID } from '@shared/constants'
@@ -21,6 +21,8 @@ import { useCacheWarm } from '../../hooks/useCacheWarm'
 import { useInstanceContextMenu } from '../../hooks/useInstanceContextMenu'
 import { IconFlame, IconCompact } from '../icons'
 import '../instance-extras.css'
+import { useRenderCount } from '../../utils/renderCount'
+import { useSessionCost } from '../../context/LiveStatsContext'
 
 /**
  * Scopes the existing chat components to a specific instance by overriding
@@ -76,12 +78,25 @@ interface GridTileProps {
   hidden: boolean
 }
 
-export function GridTile({ instanceId, focused, maximized, hidden }: GridTileProps) {
-  const { settings, sessionCosts } = useUI()
-  const { instances, folders } = useInstances()
+// Memoized: every prop is a primitive, so a GridView re-render (a tile added, a focus change)
+// re-renders only the tiles whose own props changed.
+export const GridTile = memo(GridTileInner)
+
+function GridTileInner({ instanceId, focused, maximized, hidden }: GridTileProps) {
+  useRenderCount(`tile:${instanceId}`)
+  // Dev-only switch to prove the tile error boundary: set sessionStorage
+  // 'orc:forceTileError' to a chat id and that tile throws on render. Compiled out of
+  // production builds (import.meta.env.DEV is false there).
+  if (import.meta.env.DEV && sessionStorage.getItem('orc:forceTileError') === instanceId) {
+    throw new Error('Forced render error (dev test switch orc:forceTileError)')
+  }
+  const { settings } = useUI()
+  const sessionCost = useSessionCost(instanceId)
+  // This tile's own row: another chat's turn progress does not re-render it.
+  const instance = useInstance(instanceId)
+  const folderId = instance?.folderId
+  const folder = useInstancesSelector(s => (folderId ? s.folders.find(f => f.id === folderId) : undefined))
   const { dispatch, ackSurface } = useAppDispatch()
-  const instance = instances.find(i => i.id === instanceId)
-  const folder = instance ? folders.find(f => f.id === instance.folderId) : undefined
 
   // Keep-warm 🔥 + compact controls for this session (shared with the full chat header).
   const { keepWarm, ctxHeavy, hasSession, compacting, toggleKeepWarm, doCompact } = useCacheKeeper(instance)
@@ -99,7 +114,11 @@ export function GridTile({ instanceId, focused, maximized, hidden }: GridTilePro
   // (its process really is idle after the hard-stop kill, and unread is suppressed for
   // visible tiles), so in Grid, the view this app is actually used in, the one tile waiting
   // on the user would look the most inert thing on screen.
-  const { messages, unreadCounts, cliPrompts, permissionRequests } = useMessages()
+  //
+  // Each read is THIS tile's entry only, so another chat streaming does not re-render it.
+  const pendingPermissions = useMessagesSelector(s => s.permissionRequests[instanceId]?.length ?? 0)
+  const hasCliPrompt = useMessagesSelector(s => !!s.cliPrompts[instanceId])
+  const unread = useMessagesSelector(s => s.unreadCounts[instanceId] ?? 0)
   //
   // 'scheduled' sits just above unread: a scheduled run is GREEN while it works, exactly
   // like any other, and flips to bright yellow the moment it finishes unread. surfacedAt is
@@ -110,11 +129,11 @@ export function GridTile({ instanceId, focused, maximized, hidden }: GridTilePro
     // A chat blocked on an Allow/Deny banner is waiting on a person, not working. Ranked above
     // 'running' for the same reason awaitingInput is: its process IS still running, so the one
     // tile that needs a click would otherwise render as the busiest thing on screen.
-    : (permissionRequests?.[instanceId]?.length ?? 0) > 0 ? 'attention'
+    : pendingPermissions > 0 ? 'attention'
     : instance?.state === 'running' ? 'running'
-    : cliPrompts?.[instanceId] ? 'attention'
+    : hasCliPrompt ? 'attention'
     : instance?.surfacedAt != null ? 'scheduled'
-    : (unreadCounts?.[instanceId] ?? 0) > 0 ? 'unread'
+    : unread > 0 ? 'unread'
     : 'idle'
   const stateColors = TILE_STATE_COLORS[tileState]
 
@@ -127,9 +146,11 @@ export function GridTile({ instanceId, focused, maximized, hidden }: GridTilePro
   //
   // unreadCounts cannot do this job: the server suppresses unread for tiles that are on
   // screen, which in Grid is all of them.
-  const tileMsgs = messages[instanceId]
-  const lastMsg = tileMsgs && tileMsgs.length > 0 ? tileMsgs[tileMsgs.length - 1] : undefined
-  const doneMsgId = lastMsg?.role === 'assistant' ? lastMsg.id : null
+  const doneMsgId = useMessagesSelector(s => {
+    const tileMsgs = s.messages[instanceId]
+    const lastMsg = tileMsgs && tileMsgs.length > 0 ? tileMsgs[tileMsgs.length - 1] : undefined
+    return lastMsg?.role === 'assistant' ? lastMsg.id : null
+  })
   const [ackedMsgId, setAckedMsgId] = useState<string | null>(null)
   useEffect(() => {
     if (focused && doneMsgId) setAckedMsgId(doneMsgId)
@@ -336,14 +357,14 @@ export function GridTile({ instanceId, focused, maximized, hidden }: GridTilePro
             {Math.round(ctx.pct)}%
           </span>
         )}
-        {(sessionCosts[instanceId]?.totalCost ?? 0) > 0 && (
+        {(sessionCost?.totalCost ?? 0) > 0 && (
           <span
             className="grid-tile-cost"
-            title={`Session cost: $${sessionCosts[instanceId].totalCost.toFixed(4)} across ${sessionCosts[instanceId].turns} turn(s) — API-equivalent value`}
+            title={`Session cost: $${sessionCost!.totalCost.toFixed(4)} across ${sessionCost!.turns} turn(s), API-equivalent value`}
           >
-            ${sessionCosts[instanceId].totalCost < 10
-              ? sessionCosts[instanceId].totalCost.toFixed(2)
-              : Math.round(sessionCosts[instanceId].totalCost)}
+            ${sessionCost!.totalCost < 10
+              ? sessionCost!.totalCost.toFixed(2)
+              : Math.round(sessionCost!.totalCost)}
           </span>
         )}
         <span className="grid-tile-spacer" />

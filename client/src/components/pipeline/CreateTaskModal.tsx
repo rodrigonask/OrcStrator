@@ -3,6 +3,7 @@ import type { PipelineColumn, TaskAttachment, PipelineTask } from '@shared/types
 import { DEFAULT_COLUMN_LABELS } from '@shared/constants'
 import { rest } from '../../api/rest'
 import { useEscapeKey } from '../../hooks/useEscapeKey'
+import { useSingleFlight } from '../../hooks/useSingleFlight'
 import { useInstances } from '../../context/InstancesContext'
 import { TaskSettings, type TaskSettingsHandle } from './TaskSettings'
 
@@ -133,7 +134,8 @@ export function CreateTaskModal({ projectId, task, onClose, onSaved }: CreateTas
     setAttachments(prev => prev.filter(a => a.id !== id))
   }, [])
 
-  const handleSave = useCallback(async () => {
+  // Single-flight: Enter pressed twice before the first save returns creates ONE card.
+  const handleSave = useSingleFlight(async () => {
     setError(null)
     if (!title.trim() || !targetProjectId) return
     const settings = settingsRef.current?.build()
@@ -163,10 +165,7 @@ export function CreateTaskModal({ projectId, task, onClose, onSaved }: CreateTas
     } finally {
       setSaving(false)
     }
-  }, [
-    editing, task, targetProjectId, title, description, column, priority, labels,
-    attachments, onClose, onSaved,
-  ])
+  })
 
   // Enter creates, Shift+Enter is a newline. Two carve-outs:
   // - The label input owns Enter, where it commits a chip. Submitting the whole task from

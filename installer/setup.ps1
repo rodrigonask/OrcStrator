@@ -51,6 +51,18 @@ param(
 
 $script:Headless = [bool]$Headless
 
+# Windows PowerShell 5.1 on an older .NET Framework can default to TLS 1.0/1.1,
+# which the update server and GitHub refuse. On .NET 4.7+ the
+# default is SystemDefault (0): Windows picks, TLS 1.3 included, and that is
+# Microsoft's recommendation, so it is left alone. Only an explicit older list
+# gets TLS 1.2 added; nothing is ever taken away.
+try {
+    $orcTls = [Net.ServicePointManager]::SecurityProtocol
+    if ([int]$orcTls -ne 0 -and -not ($orcTls -band [Net.SecurityProtocolType]::Tls12)) {
+        [Net.ServicePointManager]::SecurityProtocol = $orcTls -bor [Net.SecurityProtocolType]::Tls12
+    }
+} catch { }
+
 # ── Assemblies ─────────────────────────────────────────────────
 # Headless mode never builds a window, so it never loads WinForms.
 if (-not $script:Headless) {
@@ -320,9 +332,24 @@ function Get-LauncherState {
 }
 
 function Save-LauncherState {
+    # Written to a temp file next to the real one, then swapped in, so a crash
+    # or power cut mid-write can never leave a half-written state file (which
+    # would silently drop the update channel and the install id).
     param($State)
     try {
-        $State | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
+        $json = $State | ConvertTo-Json -Depth 4
+        $dir = Split-Path -Parent $StateFile
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $tmp = "$StateFile.$([guid]::NewGuid().ToString('N').Substring(0,8)).tmp"
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        try {
+            # [NullString]::Value, not $null: PowerShell turns $null into ""
+            # for a string argument, and "" is not a legal backup path.
+            if (Test-Path -LiteralPath $StateFile) { [System.IO.File]::Replace($tmp, $StateFile, [NullString]::Value) }
+            else { [System.IO.File]::Move($tmp, $StateFile) }
+        } finally {
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        }
     } catch { }
 }
 
@@ -1110,6 +1137,18 @@ $btnUpdate.Add_Click({
             Set-UpdateBanner -Title "Update not installed" `
                              -Sub "This update could not be verified and was not installed. We will try again later." `
                              -ColorKey 'red'
+        } elseif ($res.Reason -eq "this release was withdrawn") {
+            Log "Update withdrawn: $($res.Reason)"
+            Set-UpdateBanner -Title "That update was withdrawn" -Sub "You stay on version $(Get-OrcActiveVersion). Nothing is wrong on this computer." -ColorKey 'green'
+        } elseif ($res.Reason -eq "no update offered right now") {
+            # Withdrawn or paused between the check and the click.
+            Log "Update no longer offered: $($res.Reason)"
+            Set-UpdateBanner -Title "No update right now" -Sub "Version $(Get-OrcActiveVersion)" -ColorKey 'green'
+        } elseif ($res.Reason -match 'out of date|older than the minimum') {
+            # The update server's answer could not be trusted as current.
+            # Nothing failed on this computer, so no red alarm.
+            Log "Update not installed: $($res.Reason)"
+            Set-UpdateBanner -Title "Could not check for updates" -Sub "You are on version $(Get-OrcActiveVersion). We will check again the next time you open OrcStrator." -ColorKey 'dim'
         } else {
             Log "Update failed: $($res.Reason)"
             Set-UpdateBanner -Title "Update not installed" `
@@ -1993,6 +2032,14 @@ function Check-ForArtifactUpdates {
             Set-UpdateBanner -Title "Update not installed" `
                              -Sub "This update could not be verified and was not installed. We will try again later." `
                              -ColorKey 'red'
+        } elseif ($script:UpdateRejectReason -eq "this release was withdrawn") {
+            $onText = if ($current) { "You stay on version $current. Nothing is wrong on this computer." } else { "" }
+            Set-UpdateBanner -Title "That update was withdrawn" -Sub $onText -ColorKey 'green'
+        } elseif ($script:UpdateRejectReason -eq "no update offered right now") {
+            # A staged rollout or a withdrawn release: nothing is
+            # wrong on this computer, so no alarm.
+            $onText = if ($current) { "Version $current" } else { "" }
+            Set-UpdateBanner -Title "No update right now" -Sub $onText -ColorKey 'green'
         } else {
             Log "Update check failed: $($script:UpdateRejectReason)"
             $onText = if ($current) { "You are on version $current." } else { "" }
@@ -2262,6 +2309,41 @@ function Get-OrcUpdateChannel {
     return 'stable'
 }
 
+function Get-OrcInstallId {
+    <#
+      A random id for this install, kept in launcher-state "installId" and sent
+      to the update server with every check. The server buckets it
+      for staged rollouts; without one, any rollout below 100% withheld the
+      update from everybody. It identifies the install, not the person.
+    #>
+    param($State = $null)
+    $st = if ($State) { $State } else { Get-LauncherState }
+    $id = ""
+    if ($st.PSObject.Properties['installId']) { $id = ("" + $st.installId).Trim() }
+    $g = [guid]::Empty
+    if ($id -and [guid]::TryParse($id, [ref]$g)) { return $g.ToString('D') }
+    $id = [guid]::NewGuid().ToString('D')
+    try { Set-LauncherStateValue -Name 'installId' -Value $id } catch { }
+    return $id
+}
+
+function Get-OrcUpdateHeaders {
+    <#
+      What every request to the update server carries, as HEADERS, never in
+      the URL: the install id for staged rollouts, and the
+      licence key when this install has one. Used for the manifest AND the
+      payload download, so a licensed install can fetch what it was offered.
+    #>
+    $h = @{ 'X-Orc-Install-Id' = (Get-OrcInstallId) }
+    try {
+        $st = Get-LauncherState
+        $lic = ''
+        if ($st.PSObject.Properties['licenceKey']) { $lic = ([string]$st.licenceKey).Trim() }
+        if ($lic) { $h['Authorization'] = 'Bearer ' + $lic }
+    } catch { }
+    return $h
+}
+
 function ConvertTo-OrcCanonicalJson {
     # Must match installer/release/release-lib.ps1 byte for byte, or nothing
     # CI signs will ever verify here.
@@ -2529,10 +2611,20 @@ function Get-OrcUpdateManifest {
     }
     $url = "$($BaseUrl.TrimEnd('/'))/$Channel.json"
     $raw = $null
+    $headers = Get-OrcUpdateHeaders
     try {
         $old = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
-        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $resp = Invoke-WebRequest -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
         $ProgressPreference = $old
+        if ([int]$resp.StatusCode -eq 204) {
+            # The server is healthy and has nothing for this install right now
+            # (a staged rollout that has not reached it, or a withdrawn
+            # release). That is "no update", never a verification failure.
+            $why = "" + $resp.Headers['x-orc-reason']
+            $script:UpdateRejectReason = "no update offered right now"
+            Log "Update server offers no update for this install$(if ($why) { " ($why)" })."
+            return $null
+        }
         $raw = $resp.Content
         # PowerShell 5.1 hands back a BYTE ARRAY, not a string, whenever the
         # response is not typed as text (an object/octet-stream Content-Type,
@@ -2563,7 +2655,47 @@ function Get-OrcUpdateManifest {
         Log "Update manifest at $url is signed for channel '$mChannel'. Refusing."
         return $null
     }
+    # Freshness. A signed manifest past its expiresAt is an old
+    # release list being replayed (or a release that is overdue); either way
+    # it is not trusted as current. Manifests from before this carry no
+    # expiresAt and are unaffected.
+    if (-not (Test-OrcManifestFresh -Manifest $m)) {
+        $script:UpdateRejectReason = "the update server's release list is out of date"
+        Log "Update manifest at $url expired at $($m.expiresAt). Not trusting it as current."
+        return $null
+    }
+    # The floor. A release can raise it (minVersion); from then on
+    # no manifest for an older version is accepted here, so a replayed old
+    # release list cannot hold this computer back below a security release.
+    $floor = ""
+    try { $st = Get-LauncherState; if ($st.PSObject.Properties['updateFloor']) { $floor = ("" + $st.updateFloor).Trim() } } catch { }
+    if ($floor -and (Compare-OrcVersion $m.version $floor) -lt 0) {
+        $script:UpdateRejectReason = "the update server offered version $($m.version), older than the minimum $floor"
+        Log "Update manifest at $url is for $($m.version), below the recorded minimum $floor. Refusing."
+        return $null
+    }
+    if ($m.PSObject.Properties['minVersion']) {
+        $mv = ("" + $m.minVersion).Trim()
+        if ($mv -and (Compare-OrcVersion $mv $m.version) -le 0 -and (-not $floor -or (Compare-OrcVersion $mv $floor) -gt 0)) {
+            try { Set-LauncherStateValue -Name 'updateFloor' -Value $mv } catch { }
+        }
+    }
     return $m
+}
+
+function Test-OrcManifestFresh {
+    <# False once a signed manifest's expiresAt has passed. #>
+    param($Manifest, [datetime]$Now = [datetime]::UtcNow)
+    if (-not $Manifest -or -not $Manifest.PSObject.Properties['expiresAt']) { return $true }
+    $e = $Manifest.expiresAt
+    if ($e -is [datetime]) { return ($Now.ToUniversalTime() -le $e.ToUniversalTime()) }
+    $dt = [datetime]::MinValue
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    if (-not [datetime]::TryParseExact(("" + $e), 'yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$dt)) {
+        # Signed but unreadable: never trusted as current.
+        return $false
+    }
+    return ($Now.ToUniversalTime() -le $dt)
 }
 
 function Get-OrcStagedManifest {
@@ -2639,17 +2771,37 @@ function Install-OrcRelease {
     #>
     param([string]$Root, [Parameter(Mandatory)]$Manifest, [Parameter(Mandatory)][string]$ZipPath)
     $Root = Get-OrcInstallRoot $Root
-    if (-not (Test-OrcPayload -ZipPath $ZipPath -Manifest $Manifest)) {
-        Log "Refusing to install $($Manifest.version): payload hash mismatch"
-        return $false
-    }
     $target = Get-OrcVersionPath $Root $Manifest.version
     $staging = "$target.incoming"
+    # ONE read-only handle for both the hash check and the extraction, opened
+    # so nobody else can write the file while it is held. Checking
+    # the file and then opening it again let it be swapped in between.
+    $fs = $null
     try {
+        $fs = [System.IO.File]::Open($ZipPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    } catch {
+        Log "Refusing to install $($Manifest.version): cannot open the payload for exclusive reading: $_"
+        return $false
+    }
+    try {
+        $okSize = ($fs.Length -eq [long]$Manifest.size)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $h = ([BitConverter]::ToString($sha.ComputeHash($fs)) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+        if (-not $okSize -or $h -ne ("" + $Manifest.sha256).ToLowerInvariant()) {
+            Log "Refusing to install $($Manifest.version): payload hash mismatch"
+            return $false
+        }
+        [void]$fs.Seek(0, [System.IO.SeekOrigin]::Begin)
         if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $staging)
+        $archive = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Read, $true)
+        try {
+            # Same entry-path checks as ZipFile.ExtractToDirectory (it is the
+            # same code): an entry that would land outside $staging throws.
+            [System.IO.Compression.ZipFileExtensions]::ExtractToDirectory($archive, $staging)
+        } finally { $archive.Dispose() }
         if (-not (Test-Path (Join-Path $staging "server\dist\index.js"))) {
             Log "Refusing to install $($Manifest.version): payload has no server/dist/index.js"
             Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -2665,6 +2817,8 @@ function Install-OrcRelease {
         Log "Install of $($Manifest.version) failed: $_"
         Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
         return $false
+    } finally {
+        $fs.Dispose()
     }
 }
 
@@ -2733,7 +2887,9 @@ function Get-OrcDownload {
     $tmp = Join-Path $env:TEMP ("orc-payload-" + [guid]::NewGuid().ToString('N').Substring(0,8) + ".zip")
     try {
         $old = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $Url -OutFile $tmp -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $dlHeaders = @{}
+        if (Get-Command Get-OrcUpdateHeaders -ErrorAction SilentlyContinue) { $dlHeaders = Get-OrcUpdateHeaders }
+        Invoke-WebRequest -Uri $Url -Headers $dlHeaders -OutFile $tmp -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
         $ProgressPreference = $old
         return $tmp
     } catch {
@@ -2925,9 +3081,10 @@ function Read-OrcServerProcess {
 
 function Save-OrcServerProcess {
     param([int]$ProcessId, [string]$ExePath, [int]$Port, [string]$Version,
-          [string]$Path = (Get-OrcServerStateFile))
+          [string]$Path = (Get-OrcServerStateFile), [string]$ClaudePin = "")
     $rec = [ordered]@{ pid = $ProcessId; exe = $ExePath; port = $Port; version = $Version;
                        startedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
+    if ($ClaudePin) { $rec.claudePin = $ClaudePin }
     try {
         $dir = Split-Path -Parent $Path
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -3093,14 +3250,145 @@ function Invoke-OrcHiddenProcess {
 }
 
 function Find-OrcClaude {
-    $c = Find-Exe "claude"
-    if ($c) { return $c }
-    # The native installer's location, which may not be on PATH yet in this
-    # process right after it ran.
+    # The native installer's location. A claude.exe there is what OrcStrator
+    # (or Anthropic's installer) put there, so it must carry Anthropic's
+    # signature on EVERY launch, not only the one that installed it.
+    # A claude the user installed some other way (npm) is theirs to trust.
     $native = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
-    if (Test-Path $native) { return $native }
+    $c = Find-Exe "claude"
+    # Judged by what the file IS, not where PATH says it is: any claude.exe or
+    # claude.com (which Windows would run before a .exe) must carry
+    # Anthropic's signature, whatever folder, junction, short name or \\?\
+    # form it was found through. A script shim (claude.cmd / .ps1, what npm
+    # installs) is the user's own install and is used as before.
+    $refused = $null
+    if ($c -and @('.exe', '.com') -contains [System.IO.Path]::GetExtension($c).ToLowerInvariant()) {
+        $sigFound = Test-OrcClaudeSignature -Path $c
+        if ($sigFound.Ok) { return $c }
+        $script:ClaudeSignatureRefused = $sigFound.Why
+        if (-not $script:ClaudeRefusedPath) { $script:ClaudeRefusedPath = $c }
+        Log "SECURITY: the Claude CLI at $c is not signed by Anthropic ($($sigFound.Why)). Not using it."
+        $refused = $c
+        $c = $null
+    }
+    if ($c) { return $c }
+    # It may not be on PATH yet in this process right after the install ran.
+    $sameAsRefused = $false
+    if ($refused) { try { $sameAsRefused = ((Get-Item -LiteralPath $refused -Force).FullName -ieq (Get-Item -LiteralPath $native -Force -ErrorAction Stop).FullName) } catch { } }
+    if ((Test-Path $native) -and -not $sameAsRefused) {
+        $sig = Test-OrcClaudeSignature -Path $native
+        if ($sig.Ok) { return $native }
+        $script:ClaudeSignatureRefused = $sig.Why
+        if (-not $script:ClaudeRefusedPath) { $script:ClaudeRefusedPath = $native }
+        Log "SECURITY: the Claude CLI at $native is not signed by Anthropic ($($sig.Why)). Not using it."
+    }
+    if ($script:ClaudeSignatureRefused) {
+        # A claude the user installed another way (npm's script shims) is still usable.
+        foreach ($shim in 'claude.cmd', 'claude.ps1') {
+            $s = Find-Exe $shim
+            if ($s) { return $s }
+        }
+    }
     return $null
 }
+
+function Get-OrcServerClaudePath {
+    <#
+      The app server spawns a claude.exe on its own (the first one on
+      PATH, else %USERPROFILE%\.local\bin\claude.exe; never a .cmd shim). Work
+      out that same file here and verify it, so the server can be pinned to it:
+      its path when Anthropic signed it, else the marker (never a file), so
+      the server never goes looking on its own: any PATH form this scan
+      could miss (\\?\, \\.\) is then out of the server's reach too.
+    #>
+    $cands = @()
+    # A claude.exe the user pointed OrcStrator at comes first, held to the
+    # same rule. (A value that is not a file, like the marker this launcher
+    # passed on before a Restart, is ignored.)
+    # Absolute only: "C:\x", "\\server\x", "\\?\..." . Not "x", ".\x", "\x" or
+    # "C:x", which depend on the current folder or drive, so they would name
+    # a different file for the server, which starts in another folder.
+    $absolute = '^([A-Za-z]:[\\/]|\\\\)'
+    $override = "" + $env:ORCSTRATOR_CLAUDE_PATH
+    if ($override -and ($override -ne $script:ClaudeRefusedMarker) -and $override -match $absolute) { $cands += $override }
+    $firstRefusal = $true
+    foreach ($d in (("" + $env:PATH) -split ';')) {
+        $d = $d.Trim()
+        if (-not $d) { continue }
+        if ($d -notmatch $absolute) { continue }
+        # Built as a string, the way the server builds it, so a \\?\ or \\.\
+        # folder is checked instead of silently skipped.
+        $cands += ($d.TrimEnd('\', '/') + '\claude.exe')
+    }
+    $cands += ($env:USERPROFILE + "\.local\bin\claude.exe")
+    foreach ($cand in $cands) {
+        if (-not (Test-Path -LiteralPath $cand -PathType Leaf)) { continue }
+        # The file itself, through every junction and link, so a folder link
+        # retargeted later cannot swap what the server runs. Only a plain
+        # ".exe" path: without the extension Windows runs claude.com or
+        # claude.exe beside it instead, and a ":" after the drive is a stream.
+        $p = Get-OrcFinalPath -Path $cand
+        if (-not $p -or -not (Test-OrcPinnablePath -Path $p)) { continue }
+        $sig = Test-OrcClaudeSignature -Path $p
+        if ($sig.Ok) { return $p }
+        # Refused: keep looking, a signed copy further on is pinned instead.
+        $script:ClaudeSignatureRefused = $sig.Why
+        # The copy the server would have run is the one to name to the person.
+        if ($firstRefusal) { $script:ClaudeRefusedPath = $p; $firstRefusal = $false }
+        Log "SECURITY: the app would run $p, which is not signed by Anthropic ($($sig.Why)). Not letting it."
+    }
+    return $script:ClaudeRefusedMarker
+}
+
+function Get-OrcFinalPath {
+    # The final path of a file (every junction, link and short name resolved),
+    # or $null when it cannot be opened.
+    param([string]$Path)
+    try {
+        if (-not ('OrcFinalPath' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class OrcFinalPath {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder buf, uint len, uint flags);
+    public static string Get(string path) {
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+            var sb = new StringBuilder(2048);
+            uint n = GetFinalPathNameByHandleW(fs.SafeFileHandle, sb, (uint)sb.Capacity, 0);
+            if (n == 0 || n >= sb.Capacity) return null;
+            return sb.ToString();
+        }
+    }
+}
+'@
+        }
+        $f = [OrcFinalPath]::Get($Path)
+        if (-not $f) { return $null }
+        if ($f.StartsWith('\\?\UNC\')) { return '\\' + $f.Substring(8) }
+        if ($f.StartsWith('\\?\')) { return $f.Substring(4) }
+        return $f
+    } catch {
+        Log "Could not resolve the real path of ${Path}, so it is not used: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Test-OrcPinnablePath {
+    # "C:\...\x.exe" or "\\server\share\...\x.exe": no stream ":" and nothing
+    # after ".exe" (a trailing dot or space is dropped by Windows, not Node).
+    param([string]$Path)
+    if ($Path -notmatch '^([A-Za-z]:\\|\\\\[^\\?.])') { return $false }
+    if ($Path.IndexOf(':', 2) -ge 0) { return $false }
+    return ($Path -match '\.exe$')
+}
+
+# Never a file: "<" and ">" cannot appear in a Windows file name, so the
+# server's "is this a file?" check always says no, whatever is on disk.
+$script:ClaudeRefusedMarker = '<claude-refused>'
 
 function Install-OrcClaudeNative {
     <#
@@ -3121,7 +3409,44 @@ function Install-OrcClaudeNative {
     # machine PATH (that would re-add tools an installed copy must not use).
     $bin = Join-Path $env:USERPROFILE ".local\bin"
     if ((Test-Path $bin) -and ($env:Path -notlike "*$bin*")) { $env:Path = "$bin;$($env:Path)" }
-    return (Find-OrcClaude)
+    $found = Find-OrcClaude
+    # What the official installer just put on this computer must be
+    # Anthropic's own signed claude.exe before OrcStrator ever runs it. (A
+    # test stand-in command is not the official installer and is not held to
+    # this.)
+    # (A script shim PATH still finds first is the user's own install, not
+    # what this installer wrote: not judged here, and never run by the server.)
+    if ($found -and $Command -eq $script:ClaudeNativeInstallCommand -and
+        @('.exe', '.com') -contains [System.IO.Path]::GetExtension($found).ToLowerInvariant()) {
+        $sig = Test-OrcClaudeSignature -Path $found
+        if (-not $sig.Ok) {
+            $script:ClaudeSignatureRefused = $sig.Why
+            if (-not $script:ClaudeRefusedPath) { $script:ClaudeRefusedPath = $found }
+            Log "SECURITY: the Claude CLI at $found is not signed by Anthropic ($($sig.Why)). Not using it."
+            return $null
+        }
+        Log "Claude CLI signature verified: $($sig.Why)"
+    }
+    return $found
+}
+
+function Test-OrcClaudeSignature {
+    <#
+      True only for a file with a valid Authenticode signature whose
+      signer is Anthropic, PBC (the publisher of the official claude.exe).
+      Returns @{ Ok; Why }.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @{ Ok = $false; Why = "no such file" } }
+        $s = Get-AuthenticodeSignature -LiteralPath $Path
+        if ($s.Status -ne 'Valid') { return @{ Ok = $false; Why = "signature status $($s.Status)" } }
+        $subject = "" + $s.SignerCertificate.Subject
+        if ($subject -notmatch '(^|,\s*)O="?Anthropic, PBC"?(\s*,|$)') { return @{ Ok = $false; Why = "signed by someone else: $subject" } }
+        return @{ Ok = $true; Why = "signed by Anthropic, PBC" }
+    } catch {
+        return @{ Ok = $false; Why = "signature check failed: $_" }
+    }
 }
 
 function Resolve-OrcClaude {
@@ -3134,7 +3459,7 @@ function Resolve-OrcClaude {
     $c = Find-OrcClaude
     if ($c) { return @{ Path = $c; InstalledNow = $false } }
     if (-not $AllowInstall) { Log "Claude CLI not found (install not requested)"; return @{ Path = $null; InstalledNow = $false } }
-    if (Get-Command Set-StepActive -ErrorAction SilentlyContinue) { Set-StepActive 4 "Installing Claude AI..." }
+    if (Get-Command Set-StepActive -ErrorAction SilentlyContinue) { Set-StepActive 4 $(if ($script:ClaudeSignatureRefused) { "Downloading Claude AI again..." } else { "Installing Claude AI..." }) }
     $c = Install-OrcClaudeNative
     return @{ Path = $c; InstalledNow = [bool]$c }
 }
@@ -3233,8 +3558,15 @@ function Set-OrcSignInResult {
 # The developer path (Run-Setup below) is unchanged and never reaches here.
 
 function Start-OrcInstalledServer {
-    param([string]$VersionPath, [string]$NodeExe, [int]$Port, [string]$DataRoot, [string]$LogPath)
+    param([string]$VersionPath, [string]$NodeExe, [int]$Port, [string]$DataRoot, [string]$LogPath, [string]$ClaudePath = "")
     $serverDir = Join-Path $VersionPath "server"
+    # The server runs exactly the claude.exe the launcher verified:
+    # ORCSTRATOR_CLAUDE_PATH pins it, and a value that is not a file means
+    # "none", so the server never falls back to an unverified copy.
+    # Passed through the inherited environment, not a cmd "set", so a "%" in
+    # the path is never expanded by cmd.exe.
+    if ($ClaudePath) { $env:ORCSTRATOR_CLAUDE_PATH = $ClaudePath }
+    else { Remove-Item Env:\ORCSTRATOR_CLAUDE_PATH -ErrorAction SilentlyContinue }
     $cmd = "cd /d `"$serverDir`" && set `"NODE_ENV=production`" && set `"PORT=$Port`" && set `"ORCSTRATOR_DATA_DIR=$DataRoot`" && `"$NodeExe`" dist/index.js > `"$LogPath`" 2>&1"
     Wait-FileWritable -Path $LogPath -MaxTries 12 -DelayMs 300 | Out-Null
     $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
@@ -3380,11 +3712,34 @@ function Invoke-OrcInstalledLaunch {
 
     # ── Steps 4 and 5: Claude CLI and login (never fatal) ──
     Set-StepActive 4 "Checking Claude AI..."
-    $cr = Resolve-OrcClaude -AllowInstall:(-not $script:Headless -or $InstallClaude)
-    $claude = $cr.Path
+    $allowClaudeInstall = (-not $script:Headless -or $InstallClaude)
+    $shimInstallFailed = $false
+    $cr = Resolve-OrcClaude -AllowInstall:$allowClaudeInstall
+    # Only npm's script shim (claude.cmd / .ps1): the app server can never run
+    # that, so chats could not work however often Restart is clicked. Install
+    # Anthropic's own Claude AI; the server-pin scan below verifies what landed.
+    if ($cr.Path -and $allowClaudeInstall -and -not $script:ClaudeSignatureRefused -and
+        @('.cmd', '.ps1') -contains [System.IO.Path]::GetExtension($cr.Path).ToLowerInvariant() -and
+        ((Get-OrcServerClaudePath) -eq $script:ClaudeRefusedMarker) -and -not $script:ClaudeSignatureRefused) {
+        Log "Only a script shim ($($cr.Path)) was found; the app needs claude.exe. Installing Claude AI."
+        Set-StepActive 4 "Installing Claude AI..."
+        # The same wait as a first install: the download is about 250 MB, and a
+        # shorter limit would cut a slow line off every time, for ever.
+        [void](Install-OrcClaudeNative)
+        # Install-OrcClaudeNative judges whatever PATH finds first, which may be
+        # the shim again; the server-pin scan decides about the real claude.exe.
+        $script:ClaudeSignatureRefused = $null
+        $script:ClaudeRefusedPath = $null
+        $shimInstallOk = ((Get-OrcServerClaudePath) -ne $script:ClaudeRefusedMarker)
+        $cr.InstalledNow = $shimInstallOk
+        $shimInstallFailed = -not $shimInstallOk
+    }
+    $claude = if ($shimInstallFailed) { $null } else { $cr.Path }
     $script:ClaudeExe = $claude
     $installedNow = $cr.InstalledNow
-    if ($claude) { Set-StepOk 4 $(if ($installedNow) { "Claude AI installed" } else { "Claude AI ready" }) }
+    if ($shimInstallFailed) { Set-StepFail 4 $(if ($script:ClaudeSignatureRefused) { "Claude AI could not be verified as the genuine program, so it was not used" } else { "Claude AI could not be installed (needed to run chats)" }) }
+    elseif ($claude) { Set-StepOk 4 $(if ($installedNow) { "Claude AI installed" } else { "Claude AI ready" }) }
+    elseif ($script:ClaudeSignatureRefused) { Set-StepFail 4 "Claude AI could not be verified as the genuine program, so it was not used" }
     else { Set-StepFail 4 "Claude AI not installed (needed to run chats)" }
 
     Set-StepActive 5 "Checking sign-in..."
@@ -3401,7 +3756,7 @@ function Invoke-OrcInstalledLaunch {
     } elseif ($claude) {
         Set-OrcSignInResult -Auth $auth -TimedOut $loginTimedOut
     } else {
-        Set-StepFail 5 "Sign-in needs Claude"
+        Set-StepSkip 5 "Skipped: Claude AI not available"
     }
 
     Set-StepOk 7 "App prepared"
@@ -3422,10 +3777,13 @@ function Invoke-OrcInstalledLaunch {
     if ($pr.Action -eq 'moved') { Log $pr.Message; Set-OrcStatus $pr.Message 'yellow' }
     $p = $pr.Port
 
+    # The claude.exe the server may run, worked out once. A server
+    # we started earlier is reused only if it was pinned to the same file.
+    $serverClaude = Get-OrcServerClaudePath
     $healthy = $false
     if ($pr.Action -eq 'own') {
         $rec = Read-OrcServerProcess
-        if ((Test-ServerHealth $p) -and $rec -and $rec.version -eq $v) {
+        if ((Test-ServerHealth $p) -and $rec -and $rec.version -eq $v -and ("$($rec.claudePin)" -eq $serverClaude)) {
             Log "Reusing our own healthy server on port $p (PID $($rec.pid), version $v)"
             $out.serverPid = [int]$rec.pid
             $healthy = $true
@@ -3440,7 +3798,7 @@ function Invoke-OrcInstalledLaunch {
         $vp = Get-OrcVersionPath -Version $v
         $node = Get-OrcNodePath -VersionPath $vp
         Log "Booting version $v on port $p with $node"
-        $proc = Start-OrcInstalledServer -VersionPath $vp -NodeExe $node -Port $p -DataRoot $StateDir -LogPath $ServerLog
+        $proc = Start-OrcInstalledServer -VersionPath $vp -NodeExe $node -Port $p -DataRoot $StateDir -LogPath $ServerLog -ClaudePath $serverClaude
         if (Wait-OrcServerHealthy -Process $proc -Port $p -TimeoutSec 90) {
             $healthy = $true
             $listener = $null
@@ -3450,7 +3808,7 @@ function Invoke-OrcInstalledLaunch {
                 if ($exe -and ([System.IO.Path]::GetFullPath($exe) -ieq [System.IO.Path]::GetFullPath($nodeLong))) { $listener = $lp; break }
             }
             if ($listener) {
-                Save-OrcServerProcess -ProcessId $listener -ExePath $node -Port $p -Version $v
+                Save-OrcServerProcess -ProcessId $listener -ExePath $node -Port $p -Version $v -ClaudePin $serverClaude
                 $out.serverPid = $listener
             } else {
                 Log "Could not match the listener on port $p to $node; it will not be treated as ours later"
@@ -3483,10 +3841,34 @@ function Invoke-OrcInstalledLaunch {
     Log "OrcStrator $($out.version) is running at $($out.url)"
 
     if (-not $script:Headless) {
-        Start-Process $out.url
-        if ($claude -and -not $auth.LoggedIn) {
+        if ((-not $claude) -or ($serverClaude -eq $script:ClaudeRefusedMarker)) {
+            # Chats cannot run without Claude AI: never a green "running!" here.
+            # One short line: the status label is a single fixed-width row.
+            $why = if ($script:ClaudeSignatureRefused) { "Claude AI could not be verified. Click Restart." } else { "Chats need Claude AI. Click Restart to install it." }
+            # Restart alone cannot fix a copy that is still there, so the
+            # second time in a row the person is told which file to delete.
+            # The dialog comes before the browser opens (else it hides behind
+            # it) and before the status line (it writes that line too).
+            $strike = Join-Path $StateDir "claude-refused.txt"
+            if ($script:ClaudeSignatureRefused) {
+                $bad = if ($script:ClaudeRefusedPath) { $script:ClaudeRefusedPath } else { Join-Path $env:USERPROFILE '.local\bin\claude.exe' }
+                if (Test-Path -LiteralPath $strike) {
+                    Show-Error "Claude AI Could Not Be Verified" "OrcStrator could not confirm that Claude AI on this computer is the genuine program from Anthropic, so it will not use it and chats will not work." -Action "Delete this file, then click Restart:`r`n$bad" -Details "Refused: $bad ($($script:ClaudeSignatureRefused))"
+                    $why = "Claude AI not verified. Delete the file shown, then Restart."
+                }
+                try { [System.IO.File]::WriteAllText($strike, $bad) } catch { }
+            } else {
+                Remove-Item -LiteralPath $strike -Force -ErrorAction SilentlyContinue
+            }
+            Set-OrcStatus "OrcStrator is running. $why" 'yellow'
+            Start-Process $out.url
+        } elseif ($claude -and -not $auth.LoggedIn) {
+            Remove-Item -LiteralPath (Join-Path $StateDir "claude-refused.txt") -Force -ErrorAction SilentlyContinue
+            Start-Process $out.url
             Set-OrcStatus "OrcStrator is running. Click Log in to sign in to Claude." 'yellow'
         } else {
+            Remove-Item -LiteralPath (Join-Path $StateDir "claude-refused.txt") -Force -ErrorAction SilentlyContinue
+            Start-Process $out.url
             Set-OrcStatus "OrcStrator is running!" 'green'
         }
         $btnOpen.Enabled = $true
@@ -3681,10 +4063,16 @@ function Run-Setup {
         Log "Claude CLI not found, installing with Anthropic's native installer..."
         $claude = Install-OrcClaudeNative
         Refresh-EnvPath
-        if (-not $claude) { $claude = Find-Exe "claude" }
-        if (-not $claude) { $claude = Find-Exe "claude.cmd" }
+        # A refused (unsigned) claude.exe must not be picked up again by a
+        # plain PATH lookup.
+        if (-not $claude -and -not $script:ClaudeSignatureRefused) { $claude = Find-OrcClaude }
+        if (-not $claude -and -not $script:ClaudeSignatureRefused) { $claude = Find-Exe "claude.cmd" }
         if ($claude) {
             Set-StepOk 4 "Claude AI installed"
+        } elseif ($script:ClaudeSignatureRefused) {
+            Set-StepFail 4 "Could not verify Claude AI"
+            Show-Error "Claude AI Could Not Be Verified" "OrcStrator installed Claude AI but could not confirm it is the genuine program from Anthropic, so it will not use it.`nOpen OrcStrator again to download it fresh. If this happens twice, delete this file first: $(Join-Path $env:USERPROFILE '.local\bin\claude.exe')"
+            return
         } else {
             Set-StepFail 4 "Could not install"
             Show-Error "Claude AI Installation Failed" "Could not install Claude AI automatically.`nPlease try again or ask for help."

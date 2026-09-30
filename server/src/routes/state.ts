@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify'
-import { db } from '../db.js'
+import { db, dbReadOnlyReason } from '../db.js'
 import { getClientCount } from '../ws/handler.js'
-import { processRegistry, getMaxConcurrentProcesses } from '../services/process-registry.js'
+import { processRegistry, getMaxConcurrentProcesses, isAgentLimitEnforced } from '../services/process-registry.js'
 import { getTurnProgress } from '../services/turn-progress.js'
 import { allPendingPermissionRequests } from '../services/pending-permissions.js'
-import { readNativeTasks } from '../services/native-tasks.js'
+import { getNativeTasks } from '../services/native-tasks.js'
 import { parsePermissionRules } from './instances.js'
 import type { FolderConfig, InstanceConfig, AppSettings, ProcessState } from '@orcstrator/shared'
 
@@ -36,11 +36,18 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       sortOrder: r.sort_order as number,
       createdAt: r.created_at as number,
       stealthMode: Boolean(r.stealth_mode),
+      hidden: Boolean(r.hidden),
       // The project's own allow list (migration049). Read on the fresh-tab load like the per-chat
       // one beside it, because the refusal card explains a denial from the rules the browser
       // already holds, and a scope missing here would have it name the wrong cause.
       permissionRules: parsePermissionRules(r.permission_rules),
     }))
+
+    // The CLI's task files are the source of truth, but they are read by the native-tasks
+    // poller and served here from its memory. This used to be several synchronous
+    // disk reads per chat on every load; now only a session never seen before is read, once.
+    const sessionIds = [...new Set(instanceRows.map(r => r.session_id as string | null).filter((s): s is string => Boolean(s)))]
+    const tasksBySession = new Map(await Promise.all(sessionIds.map(async s => [s, await getNativeTasks(s)] as const)))
 
     const instances: InstanceConfig[] = instanceRows.map(r => {
       // Live turn progress (elapsed timer + round-trip tokens) survives a page reload
@@ -85,8 +92,8 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
         // Per-chat Claude CLI overrides. Undefined = this chat inherits the app-wide setting.
         outputStyle: (r.output_style as string) || undefined,
         language: (r.language as string) || undefined,
-        // Read off disk, not the DB: the CLI's task files are the source of truth.
-        nativeTasks: readNativeTasks(r.session_id as string | null),
+        // From the task-file poller's memory, not the DB: the CLI's task files are the truth.
+        nativeTasks: tasksBySession.get(r.session_id as string) ?? [],
       }
     })
 
@@ -108,12 +115,16 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
     const memUsage = process.memoryUsage()
     const instanceRows = db.prepare('SELECT id, name, state FROM instances').all() as Array<{ id: string; name: string; state: string }>
     return {
-      status: 'ok',
+      status: dbReadOnlyReason ? 'read-only' : 'ok',
+      // Set when the pre-migration backup failed and the database opened read-only.
+      dbReadOnly: dbReadOnlyReason,
       uptime: Date.now() - startTime,
       bootTime: startTime,
       clients: getClientCount(),
       processes: processRegistry.getActiveCount(),
       maxProcesses: getMaxConcurrentProcesses(),
+      // Whether that cap is enforced at all: off unless switched on in Settings.
+      maxProcessesEnforced: isAgentLimitEnforced(),
       totalInstances: instanceRows.length,
       runningInstances: instanceRows.filter(i => i.state === 'running').length,
       memoryMb: Math.round(memUsage.rss / 1024 / 1024),
@@ -121,7 +132,7 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
     }
   })
 
-  // Live process monitor — returns per-process data + recent token spend
+  // Live process monitor: returns per-process data + recent token spend
   app.get('/processes', async () => {
     const tracked = processRegistry.getProcessInfo()
     const now = Date.now()
@@ -131,9 +142,10 @@ export default async function stateRoutes(app: FastifyInstance): Promise<void> {
       const inst = db.prepare('SELECT name, session_id, process_pid FROM instances WHERE id = ?')
         .get(proc.instanceId) as { name: string; session_id: string | null; process_pid: number | null } | undefined
 
-      // Get last token_usage row for this instance (current session cost)
+      // This chat's latest turn (token_usage, read here before, has not been written
+      // for months, so lastCostUsd was always null).
       const usage = db.prepare(
-        'SELECT cost_usd, input_tokens, output_tokens FROM token_usage WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1'
+        'SELECT cost_usd, input_tokens, output_tokens FROM turn_costs WHERE instance_id = ? ORDER BY created_at DESC LIMIT 1'
       ).get(proc.instanceId) as { cost_usd: number; input_tokens: number; output_tokens: number } | undefined
 
       return {
@@ -172,5 +184,5 @@ function computeContextHealth(row: Record<string, unknown>): ContextHealth {
   if (tasks <= 3) return 'fresh'
   if (tasks <= 10) return 'warm'
   if (tasks <= 20) return 'heavy'
-  return 'stale'  // 20+ tasks in same session — compaction summaries stacking up
+  return 'stale'  // 20+ tasks in same session: compaction summaries stacking up
 }

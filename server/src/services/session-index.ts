@@ -1,7 +1,7 @@
 import fs from 'fs'
 import fsp from 'fs/promises'
 import path from 'path'
-import os from 'os'
+import { CLAUDE_PROJECTS_DIR } from './claude-paths.js'
 
 /**
  * One cached index of every Claude Code transcript on disk.
@@ -13,9 +13,15 @@ import os from 'os'
  * which queues every one of them on libuv's 4-thread pool at once.
  *
  * The index is shared, TTL'd, and stats in bounded batches instead.
+ *
+ * The directory walk itself used to be synchronous, so opening the Sessions page
+ * froze every chat's live output for about a tenth of a second (more as transcripts pile
+ * up). It is asynchronous now. And a lookup for a session that is not there used to force a
+ * full rebuild every single time; a miss is now remembered for the same 10 seconds.
  */
 
-export const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
+// Re-exported so the routes that already import it from here keep working.
+export { CLAUDE_PROJECTS_DIR }
 
 export interface SessionEntry {
   sessionId: string
@@ -44,32 +50,35 @@ function classify(filePath: string): Pick<SessionEntry, 'projectSlug' | 'isSubag
 }
 
 const TTL_MS = 10_000
+/** How long "that session is not on disk" is believed before a lookup may force a rebuild again. */
+const MISS_TTL_MS = 10_000
 const MAX_DEPTH = 3
 const STAT_BATCH = 64
 
 let cache: { at: number; entries: SessionEntry[] } | null = null
 let inFlight: Promise<SessionEntry[]> | null = null
+/** sessionId -> when a forced rebuild last failed to find it. */
+const misses = new Map<string, number>()
 
-function collectJsonlFiles(dir: string, depth: number, out: string[]): void {
+async function collectJsonlFiles(dir: string, depth: number, out: string[]): Promise<void> {
   if (depth > MAX_DEPTH) return
   let entries: fs.Dirent[]
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
+    entries = await fsp.readdir(dir, { withFileTypes: true })
   } catch {
     return
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) collectJsonlFiles(full, depth + 1, out)
+    if (entry.isDirectory()) await collectJsonlFiles(full, depth + 1, out)
     else if (entry.isFile() && entry.name.endsWith('.jsonl')) out.push(full)
   }
 }
 
 async function build(): Promise<SessionEntry[]> {
-  if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return []
-
   const files: string[] = []
-  collectJsonlFiles(CLAUDE_PROJECTS_DIR, 0, files)
+  // A missing folder is just an empty list: readdir fails and the walk returns nothing.
+  await collectJsonlFiles(CLAUDE_PROJECTS_DIR, 0, files)
 
   const entries: SessionEntry[] = []
   for (let i = 0; i < files.length; i += STAT_BATCH) {
@@ -115,16 +124,35 @@ export async function getSessionIndex(force = false): Promise<SessionEntry[]> {
 export async function findSessionEntry(sessionId: string): Promise<SessionEntry | null> {
   const entries = await getSessionIndex()
   const hit = entries.find((e) => e.sessionId === sessionId)
-  if (hit) return hit
-  // A session created seconds ago is not in a cached index yet — one forced rebuild, then give up.
+  if (hit) {
+    misses.delete(sessionId)
+    return hit
+  }
+  // Looked for and not found moments ago: the whole tree was just walked for it, so a second
+  // walk would only find the same nothing. The normal TTL rebuild above still picks it up.
+  const missedAt = misses.get(sessionId)
+  if (missedAt !== undefined && Date.now() - missedAt < MISS_TTL_MS) return null
+  // A session created seconds ago is not in a cached index yet: one forced rebuild, then give up.
   const fresh = await getSessionIndex(true)
-  return fresh.find((e) => e.sessionId === sessionId) ?? null
+  const found = fresh.find((e) => e.sessionId === sessionId) ?? null
+  if (found) {
+    misses.delete(sessionId)
+  } else {
+    // Keep the map from growing without bound on a stream of junk ids.
+    if (misses.size > 1000) {
+      const now = Date.now()
+      for (const [id, at] of misses) if (now - at >= MISS_TTL_MS) misses.delete(id)
+      if (misses.size > 1000) misses.clear()
+    }
+    misses.set(sessionId, Date.now())
+  }
+  return found
 }
 
 /**
  * The cwd a transcript belongs to, read from the file's own entries rather than guessed
  * from the directory slug (the slug is lossy: it flattens both separators and case).
- * Reads a bounded head of the file — these run to hundreds of MB.
+ * Reads a bounded head of the file, since these run to hundreds of MB.
  */
 export async function readSessionCwd(filePath: string): Promise<string | null> {
   let handle: fsp.FileHandle | null = null
@@ -139,7 +167,7 @@ export async function readSessionCwd(filePath: string): Promise<string | null> {
         const entry = JSON.parse(line) as { cwd?: unknown }
         if (typeof entry.cwd === 'string' && entry.cwd) return entry.cwd
       } catch {
-        // Last line of a bounded read is usually truncated — expected, keep going.
+        // Last line of a bounded read is usually truncated: expected, keep going.
       }
     }
     return null

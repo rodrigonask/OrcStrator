@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api } from '../api'
+import { authFetch } from '../api/auth'
 
 interface ConflictInfo {
   path: string
@@ -25,7 +26,10 @@ export function ConflictBanner({ instanceId }: { instanceId: string }) {
   const handleIgnore = useCallback(async () => {
     setIgnoring(true)
     try {
-      await fetch('/api/conflicts/ignore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const res = await authFetch('/api/conflicts/ignore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      // A refused request leaves the banner up: hiding it would claim an ignore window the
+      // server never opened.
+      if (!res.ok) throw new Error(`The server answered ${res.status}`)
       setConflict(null)
     } catch (err) {
       console.error('Failed to set ignore window:', err)

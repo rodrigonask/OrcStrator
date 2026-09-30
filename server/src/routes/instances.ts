@@ -1,11 +1,12 @@
 ﻿import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
+import { LARGE_BODY_LIMIT } from '../services/limits.js'
 import { broadcastEvent } from '../ws/handler.js'
-import { sendMessage, respondToToolUse, compactInstance, queueBtwNote, takePendingBtwNotes } from '../services/claude-process.js'
-import { processRegistry } from '../services/process-registry.js'
+import { sendMessage, respondToToolUse, compactInstance, queueBtwNote, takePendingBtwNotes, broadcastSystemNote } from '../services/claude-process.js'
+import { processRegistry, agentSlot, AgentLimitError } from '../services/process-registry.js'
 import { preprocessImages, detectMediaType } from '../services/image-processor.js'
 import { getLastAssistantMessage } from '../services/session-sync.js'
-import { dispatchCommand, isValidCommand, getAllCommands } from '../services/command-registry.js'
+import { dispatchCommand, isValidCommand, getAllCommands, readableError } from '../services/command-registry.js'
 import { sanitizeSurrogates, clearDeadWorktreeState } from '../services/session-sanitizer.js'
 import { scrubSessionSecrets } from '../services/secret-scrubber.js'
 import { cancelWakeup, getPendingForInstance } from '../services/wakeup-scheduler.js'
@@ -22,12 +23,68 @@ import { resolveModelId, dedupeRules, isPermissionUpdate, DEFAULT_MODEL_ID, DEFA
 import { resolvePermissionRequest, isPermissionRequestPending } from '../services/pending-permissions.js'
 import { spendAskOnceFor } from '../services/ask-once.js'
 import { normalisePermissionRules, parsePermissionRules } from '../services/permission-rule-sets.js'
+import { buildTurnFlags, readMessageFlags } from '../services/turn-flags.js'
+import { getAdminToken } from '../services/api-auth.js'
 import crypto from 'crypto'
+import { checkLocalPath, isInside, isFilesystemRoot } from '../services/safe-path.js'
+import { isValidSessionId } from '../services/session-id.js'
+import { deleteChatSettingsFile } from '../services/data-retention.js'
+import { claim, claimOrThrow, claimKind, release, isClaimed, chatKey, StartCancelledError } from '../services/turn-gate.js'
+import { storeImageBlock, mediaPathForName, mediaTypeForName, mediaNamesForInstances, releaseMedia } from '../services/message-media.js'
+import { reportPersistFailure } from '../services/persist-errors.js'
+import fs from 'fs'
+
+/**
+ * The user's "root folder" setting, where "Scaffold New" opens a chat to create a new project.
+ * It is the one folder outside a project a chat may start in: the user chose it in Settings,
+ * and only the app page can change settings.
+ */
+function isRootFolderSetting(p: string): boolean {
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'rootFolder'").get() as { value: string } | undefined
+    const root = row ? JSON.parse(row.value) : null
+    if (typeof root !== 'string' || !root.trim()) return false
+    const checked = checkLocalPath(root)
+    if ('error' in checked || isFilesystemRoot(checked.path)) return false
+    return isInside(checked.path, p) && isInside(p, checked.path)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A chat's folder, checked: a local path, never a network share (a chat started
+ * there loads that share's settings and hooks), and inside the chat's own project, so a chat
+ * cannot be re-pointed somewhere its project's rules were never meant to reach.
+ */
+function chatCwd(folderId: string, cwd: unknown): { cwd: string } | { error: string } {
+  const folder = db.prepare('SELECT path FROM folders WHERE id = ?').get(folderId) as { path: string | null } | undefined
+  if (!folder?.path) return { error: 'The chat\'s project does not exist' }
+  // A legacy project row stored in Git Bash form (/c/code/app) is C:\code\app.
+  const gitBash = process.platform === 'win32' ? /^\/([a-zA-Z])(\/.*)?$/.exec(folder.path) : null
+  const projectPath = gitBash ? `${gitBash[1]}:${(gitBash[2] ?? '/').replace(/\//g, '\\')}` : folder.path
+  const checked = checkLocalPath(cwd === undefined || cwd === null || cwd === '' ? projectPath : cwd)
+  if ('error' in checked) return { error: checked.error }
+  if (!isInside(projectPath, checked.path) && !isRootFolderSetting(checked.path)) {
+    return { error: 'A chat\'s folder must be inside its project folder' }
+  }
+  return { cwd: canonicalizeCwd(checked.path) }
+}
 
 export default async function instanceRoutes(app: FastifyInstance): Promise<void> {
   // Create instance
   app.post('/instances', async (request, reply) => {
-    const body = request.body as Record<string, unknown>
+    const body = (request.body ?? {}) as Record<string, unknown>
+    // A malformed body used to reach the INSERT and come back as a raw SQLite 500.
+    if (typeof body.folderId !== 'string' || !body.folderId) return reply.code(400).send({ error: 'folderId is required' })
+    if (body.name !== undefined && typeof body.name !== 'string') return reply.code(400).send({ error: 'name must be text' })
+    if (body.agentId !== undefined && body.agentId !== null && typeof body.agentId !== 'string') return reply.code(400).send({ error: 'agentId must be text' })
+    for (const key of ['idleRestartMinutes', 'sortOrder'] as const) {
+      if (body[key] !== undefined && typeof body[key] !== 'number') return reply.code(400).send({ error: `${key} must be a number` })
+    }
+    const where = chatCwd(body.folderId, body.cwd)
+    if ('error' in where) return reply.code(400).send({ error: where.error })
+    body.cwd = where.cwd
     const id = crypto.randomUUID()
     const now = Date.now()
 
@@ -55,9 +112,29 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   })
 
   // Update instance
-  app.put('/instances/:id', async (request) => {
+  app.put('/instances/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as Record<string, unknown>
+    const body = { ...((request.body ?? {}) as Record<string, unknown>) }
+    const current = db.prepare('SELECT folder_id FROM instances WHERE id = ?').get(id) as { folder_id: string } | undefined
+    if (!current) return reply.code(404).send({ error: 'Chat not found' })
+    // The folder a chat runs in is checked like a project path, and stays inside
+    // the chat's project.
+    if (body.cwd !== undefined) {
+      const where = chatCwd(current.folder_id, body.cwd)
+      if ('error' in where) return reply.code(400).send({ error: where.error })
+      body.cwd = where.cwd
+    }
+    // A session id becomes <id>.jsonl in paths that get rewritten.
+    if (body.sessionId !== undefined && body.sessionId !== null && !isValidSessionId(body.sessionId)) {
+      return reply.code(400).send({ error: 'sessionId must be a Claude session id' })
+    }
+    // Text fields are text, numbers are numbers (a raw SQLite error was the answer).
+    for (const key of ['name', 'state', 'agentId', 'outputStyle', 'language'] as const) {
+      if (body[key] !== undefined && body[key] !== null && typeof body[key] !== 'string') return reply.code(400).send({ error: `${key} must be text` })
+    }
+    for (const key of ['idleRestartMinutes', 'sortOrder'] as const) {
+      if (body[key] !== undefined && typeof body[key] !== 'number') return reply.code(400).send({ error: `${key} must be a number` })
+    }
 
     const sets: string[] = []
     const params: unknown[] = []
@@ -105,11 +182,16 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   })
 
   // Delete instance
-  app.delete('/instances/:id', async (request) => {
+  app.delete('/instances/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    await processRegistry.killProcess(id)
+    const [stopped] = await processRegistry.stopChats([id])
+    // Deleting the row of an agent that would not stop leaves it running with no chat to stop it from.
+    if (!stopped) return reply.code(409).send({ error: 'kill-failed', message: 'This chat is still working and could not be stopped, so nothing was changed. Try again, or open the chat and use Force reset in its \u2630 menu.' })
+    const media = mediaNamesForInstances([id])
     db.prepare('DELETE FROM instances WHERE id = ?').run(id)
+    releaseMedia(media) // its stored screenshots go with it
     releaseLocksForInstance(id)
+    deleteChatSettingsFile(id)
     broadcastEvent({ type: 'instance:deleted', payload: { id } })
     return { ok: true }
   })
@@ -129,23 +211,36 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     //
     // Everything below the DELETE is gone: `messages` is ON DELETE CASCADE from
     // `instances`, and the scrub rewrites the on-disk session file. So:
-    //   1. capture the transcript tail and the native task list, while they still exist
-    //   2. write the task status, synchronously and durably
-    //   3. only then scrub, kill, delete, broadcast, and return so the tab closes at once
-    //   4. summarize in the background off the in-memory copy
-    // Step 2 before step 3 is what makes a failed summary unable to lose a status.
+    //   1. capture the transcript tail, the native task list and the card, while they exist
+    //   2. kill (refused if the agent will not stop: then nothing below happens), scrub, delete
+    //   3. write the card's status from the capture, synchronously and durably, then broadcast
+    //      and return so the tab closes at once
+    //   4. summarize in the background off the in-memory copy (redacted when captured)
+    // The status is written from the step 1 capture, so the DELETE cannot lose it, and a
+    // failed summary cannot either; a refused stop leaves the card as it was.
+    // Kill BEFORE scrub: a running agent could otherwise write lines after the
+    // scrub, or rewrite the file over it and drop its last lines.
     const captured = captureForSummary(id)
 
-    if (body.taskStatus && captured?.taskId) {
-      applyCloseStatus(captured.taskId, body.taskStatus)
-    }
-
-    const scrub = await scrubSessionSecrets(inst.cwd, inst.session_id)
-
-    await processRegistry.killProcess(id)
-    db.prepare('DELETE FROM instances WHERE id = ?').run(id)
-    releaseLocksForInstance(id)
-    broadcastEvent({ type: 'instance:deleted', payload: { id } })
+    // The scrub awaits, so the chat is held closed to new starts until its row is gone.
+    const scrub = await processRegistry.stopThen([id], async ([stopped]) => {
+      // An agent that would not stop keeps its chat: deleting the row leaves it with none.
+      if (!stopped) return null
+      const s = await scrubSessionSecrets(inst.cwd, inst.session_id)
+      const media = mediaNamesForInstances([id])
+      db.prepare('DELETE FROM instances WHERE id = ?').run(id)
+      // A secure close leaves no screenshot behind either: the files go with the rows.
+      releaseMedia(media)
+      // Only a chat that is really gone gets its card closed (a refused stop or a failed scrub
+      // leaves both as they were). Written from the capture taken above, so the DELETE's
+      // cascade cannot lose it.
+      if (body.taskStatus && captured?.taskId) applyCloseStatus(captured.taskId, body.taskStatus)
+      releaseLocksForInstance(id)
+      deleteChatSettingsFile(id)
+      broadcastEvent({ type: 'instance:deleted', payload: { id } })
+      return s
+    })
+    if (!scrub) return reply.code(409).send({ error: 'kill-failed', message: 'This chat is still working and could not be stopped, so nothing was changed. Try again, or open the chat and use Force reset in its \u2630 menu.' })
 
     // Fire-and-forget: the response below is already on its way out.
     const summarizing = shouldSummarize(captured)
@@ -215,11 +310,14 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // minimal keep-alive turn before the prompt cache expires so it never goes cold.
   app.post('/instances/:id/keep-warm', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { enabled?: unknown }
+    const body = (request.body ?? {}) as { enabled?: unknown }
     const enabled = body?.enabled === true || body?.enabled === 1
     const row = db.prepare('SELECT id FROM instances WHERE id = ?').get(id) as { id: string } | undefined
     if (!row) { reply.code(404); return { error: 'Not found' } }
-    db.prepare('UPDATE instances SET keep_warm = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+    // On, the column holds WHEN it was switched on, not a bare 1: switching it on is
+    // the user touching this chat, so the auto-expiry clock in cache-advisor.ts starts here even
+    // on a chat nobody has typed in for days. Everything else reads it as a boolean.
+    db.prepare('UPDATE instances SET keep_warm = ? WHERE id = ?').run(enabled ? Date.now() : 0, id)
     broadcastEvent({ type: 'instance:updated', payload: { id, keepWarm: enabled } })
     return { ok: true, keepWarm: enabled }
   })
@@ -236,10 +334,39 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     return { ok: true, cleared }
   })
 
+  // A pasted image, stored on disk by message-media.ts. Read-only, so the request
+  // guard lets it through without a token like any other GET, and refuses it from another
+  // site (security.ts check 3), which is what an <img> on a foreign page would be. The name is
+  // checked against the exact shape message-media writes, so nothing outside the media folder
+  // can be asked for.
+  app.get('/media/:name', async (request, reply) => {
+    const { name } = request.params as { name: string }
+    const file = mediaPathForName(name)
+    const type = mediaTypeForName(name)
+    if (!file || !type) { reply.code(400); return { error: 'Not a stored image' } }
+    let bytes: Buffer
+    try {
+      bytes = await fs.promises.readFile(file)
+    } catch {
+      reply.code(404)
+      return { error: 'That image is no longer stored' }
+    }
+    // Content-addressed, so a name always means the same bytes: cache it for good.
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    reply.header('X-Content-Type-Options', 'nosniff')
+    reply.type(type)
+    return reply.send(bytes)
+  })
+
   // Send message to instance
-  app.post('/instances/:id/send', async (request) => {
+  // Pasted screenshots ride in this body, so it keeps the old 20 MB ceiling.
+  app.post('/instances/:id/send', { bodyLimit: LARGE_BODY_LIMIT }, async (request) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { text: string; images?: string[]; flags?: string[] }
+    const body = (request.body ?? {}) as { text: string; images?: string[]; flags?: unknown; permissionMode?: unknown }
+    if (body.text !== undefined && typeof body.text !== 'string') throw { statusCode: 400, message: 'text must be text' }
+    if (body.images !== undefined && (!Array.isArray(body.images) || body.images.some(i => typeof i !== 'string'))) {
+      throw { statusCode: 400, message: 'images must be a list of base64 strings' }
+    }
 
     const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!instance) {
@@ -247,128 +374,134 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     }
 
     // Guard: reject if already running to prevent duplicate spawns from rapid clicks
-    if (processRegistry.isTracked(id)) {
-      throw { statusCode: 409, message: 'Instance already running' }
+    if (processRegistry.isTracked(id) || processRegistry.isAdopted(id)) {
+      throw { statusCode: 409, message: 'This chat is already working. Wait for it to finish.' }
     }
+    // Claim the chat NOW, before the first await below, so a second send (a
+    // double-click, another tab, a /btw) cannot slip into the gap before the process is
+    // registered. Released by sendMessage once the process is registered, or below on failure.
+    // Refused with a 409 that says why: already working, compacting, or being stopped.
+    const gateToken = claimOrThrow(chatKey(id), 'turn')
+    try {
+      // The agent limit, before the message is stored: a refused send leaves nothing.
+      const slot = agentSlot(id)
+      if (!slot.ok) throw new AgentLimitError(slot.inUse, slot.max)
 
-    // A message typed by hand ends any silent chain: the chat is the user's again, so a wake-up
-    // the user's own turn schedules must surface. Without this a silent routine that once fired
-    // on a chat would mute every later wake-up in it, for good.
-    setSurfaceSilent(id, false)
+      // A message typed by hand ends any silent chain: the chat is the user's again, so a wake-up
+      // the user's own turn schedules must surface. Without this a silent routine that once fired
+      // on a chat would mute every later wake-up in it, for good.
+      setSurfaceSilent(id, false)
 
-    // First user message? (checked before this one is inserted) - drives AI session naming.
-    const priorUserMessages = (db.prepare(
-      "SELECT COUNT(*) AS c FROM messages WHERE instance_id = ? AND role = 'user'"
-    ).get(id) as { c: number }).c
-    const isFirstUserMessage = priorUserMessages === 0
+      // First user message? (checked before this one is inserted) - drives AI session naming.
+      const priorUserMessages = (db.prepare(
+        "SELECT COUNT(*) AS c FROM messages WHERE instance_id = ? AND role = 'user'"
+      ).get(id) as { c: number }).c
+      const isFirstUserMessage = priorUserMessages === 0
 
-    // Load settings for global flags
-    const flagRows = db.prepare("SELECT value FROM settings WHERE key = 'globalFlags'").get() as { value: string } | undefined
-    let globalFlags: string[] = flagRows ? JSON.parse(flagRows.value) : []
+      // The turn's flags come from the one builder cards use. A message may pick only
+      // its permission mode, model, effort, budget and fallback model; anything else (an
+      // --mcp-config, a --system-prompt, a non-string entry) is a 400 instead of reaching the CLI.
+      const picked = readMessageFlags(body)
+      if ('error' in picked) throw { statusCode: 400, message: picked.error }
+      const turnFlags = buildTurnFlags(picked.settings)
 
-    // If the message-level flags include a permission mode, strip any conflicting
-    // permission flags from globalFlags so the message-level flag wins
-    const bodyFlags = body.flags || []
-    if (bodyFlags.some(f => f.startsWith('--permission-mode'))) {
-      globalFlags = globalFlags.filter(f =>
-        !f.startsWith('--permission-mode') && f !== '--dangerously-skip-permissions'
-      )
-    }
-
-    // Inject --model and --effort unless this turn already named one. An unset
-    // setting means the app default (DEFAULT_MODEL_ID / DEFAULT_EFFORT), not "say
-    // nothing and let the CLI decide".
-    const defaultModelRow = db.prepare("SELECT value FROM settings WHERE key = 'defaultModel'").get() as { value: string } | undefined
-    // A stored JSON null (written by a server older than the null-deletes PUT) is unset too.
-    const unsetIfNull = (v: string | undefined) => (v === 'null' ? '' : v)
-    const defaultModel = unsetIfNull(defaultModelRow?.value)?.replace(/^"|"$/g, '') || 'default'
-    const allFlags = [...globalFlags, ...bodyFlags]
-    if (!allFlags.some(f => f.startsWith('--model'))) {
-      globalFlags.push(`--model=${defaultModel !== 'default' ? resolveModelId(defaultModel) : DEFAULT_MODEL_ID}`)
-    }
-    const defaultEffortRow = db.prepare("SELECT value FROM settings WHERE key = 'defaultEffort'").get() as { value: string } | undefined
-    const defaultEffort = unsetIfNull(defaultEffortRow?.value)?.replace(/^"|"$/g, '') || ''
-    if (!allFlags.some(f => f.startsWith('--effort'))) {
-      globalFlags.push(`--effort=${defaultEffort || DEFAULT_EFFORT}`)
-    }
-
-    // Load agent prompt if assigned
-    let agentPrompt: string | undefined
-    if (instance.agent_id) {
-      const agent = db.prepare('SELECT content FROM agents WHERE id = ?').get(instance.agent_id) as { content: string } | undefined
-      if (agent?.content) {
-        agentPrompt = agent.content
+      // Load agent prompt if assigned
+      let agentPrompt: string | undefined
+      if (instance.agent_id) {
+        const agent = db.prepare('SELECT content FROM agents WHERE id = ?').get(instance.agent_id) as { content: string } | undefined
+        if (agent?.content) {
+          agentPrompt = agent.content
+        }
       }
-    }
 
-    // Stealth mode: prepend no-memory instruction if folder has stealth_mode enabled
-    const folderRow = db.prepare('SELECT stealth_mode FROM folders WHERE id = (SELECT folder_id FROM instances WHERE id = ?)').get(id) as { stealth_mode: number } | undefined
-    if (folderRow?.stealth_mode) {
-      const stealthNote = 'STEALTH MODE: Do not use the Memory tool. Do not create or update any CLAUDE.md memory files. Do not persist any context between conversations.'
-      agentPrompt = agentPrompt ? `${stealthNote}\n\n${agentPrompt}` : stealthNote
-    }
-
-    // Detect media types and preprocess images (compress, tile, stitch as needed)
-    let processedImages: Array<{ base64: string; mediaType: string }> | undefined
-    let imageTextPrefix = ''
-    if (body.images && body.images.length > 0) {
-      const rawImages = body.images.map(b64 => ({ base64: b64, mediaType: detectMediaType(b64) }))
-      const preprocessed = await preprocessImages(rawImages)
-      processedImages = preprocessed.images
-      imageTextPrefix = preprocessed.textPrefix
-    }
-
-    // Save user message to DB (original images for display)
-    const msgId = crypto.randomUUID()
-    const now = Date.now()
-    const content: Array<Record<string, unknown>> = []
-    if (body.text) content.push({ type: 'text', text: body.text })
-    if (body.images) {
-      for (const img of body.images) {
-        content.push({ type: 'image', base64: img, mediaType: detectMediaType(img) })
+      // Stealth mode: prepend no-memory instruction if folder has stealth_mode enabled
+      const folderRow = db.prepare('SELECT stealth_mode FROM folders WHERE id = (SELECT folder_id FROM instances WHERE id = ?)').get(id) as { stealth_mode: number } | undefined
+      if (folderRow?.stealth_mode) {
+        const stealthNote = 'STEALTH MODE: Do not use the Memory tool. Do not create or update any CLAUDE.md memory files. Do not persist any context between conversations.'
+        agentPrompt = agentPrompt ? `${stealthNote}\n\n${agentPrompt}` : stealthNote
       }
+
+      // Detect media types and preprocess images (compress, tile, stitch as needed)
+      let processedImages: Array<{ base64: string; mediaType: string }> | undefined
+      let imageTextPrefix = ''
+      if (body.images && body.images.length > 0) {
+        const rawImages = body.images.map(b64 => ({ base64: b64, mediaType: detectMediaType(b64) }))
+        const preprocessed = await preprocessImages(rawImages)
+        processedImages = preprocessed.images
+        imageTextPrefix = preprocessed.textPrefix
+      }
+
+      // Save user message to DB. The original images go to files under the data dir and the
+      // row keeps a link plus a thumbnail: a pasted screenshot used to live in the
+      // row at full size and be downloaded again on every scroll of the chat.
+      const msgId = crypto.randomUUID()
+      const now = Date.now()
+      const content: Array<Record<string, unknown>> = []
+      if (body.text) content.push({ type: 'text', text: body.text })
+      if (body.images) {
+        for (const img of body.images) {
+          content.push({ ...(await storeImageBlock(img, detectMediaType(img))) })
+        }
+      }
+      if (content.length === 0) content.push({ type: 'text', text: '' })
+
+      db.prepare(`
+        INSERT INTO messages (id, instance_id, role, content, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(msgId, id, 'user', JSON.stringify(content), now)
+
+      let result: { sessionId: string }
+      try {
+        result = await sendMessage({
+        instanceId: id,
+        text: (imageTextPrefix + body.text) || (processedImages?.length ? '[Attached image(s)]' : body.text),
+        images: processedImages,
+        cwd: instance.cwd as string,
+        sessionId: instance.session_id as string | undefined,
+        flags: turnFlags,
+        agentPrompt,
+        origin: 'user',
+        gateToken,
+        })
+      } catch (err) {
+        // The user pressed Stop while this message was being set up. That is not a failed send:
+        // the Stop's own note says what happened, and a "could not send, try again" under it
+        // contradicted it.
+        if (err instanceof StartCancelledError) return { cancelled: true }
+        // Nothing ran because there is no usable Claude (424): the message was not delivered,
+        // so it is not kept either, or after a reload it would look sent and unanswered.
+        if ((err as { statusCode?: unknown })?.statusCode === 424) db.prepare('DELETE FROM messages WHERE id = ?').run(msgId)
+        throw err
+      }
+
+      // AI session naming: on the very first user message, name the chat from it via a
+      // cheap Haiku call. Fire-and-forget - runs alongside the turn, never blocks the send,
+      // and silently no-ops unless AI naming is enabled with an API key set.
+      // A slash command can now be the first message (e.g. "/goal <the goal>"), so name the
+      // chat from the text AFTER the command token - "/goal" itself says nothing about the
+      // topic and would drag Haiku toward titles like "Goal Setting Command".
+      if (isFirstUserMessage && body.text && body.text.trim()) {
+        const nameSource = body.text.trim().replace(/^\/[a-z0-9_-]+\s+/i, '') || body.text
+        void autoNameInstance(id, nameSource)
+      }
+
+      return { sessionId: result.sessionId }
+    } finally {
+      release(chatKey(id), gateToken)
     }
-    if (content.length === 0) content.push({ type: 'text', text: '' })
-
-    db.prepare(`
-      INSERT INTO messages (id, instance_id, role, content, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(msgId, id, 'user', JSON.stringify(content), now)
-
-    const result = await sendMessage({
-      instanceId: id,
-      text: (imageTextPrefix + body.text) || (processedImages?.length ? '[Attached image(s)]' : body.text),
-      images: processedImages,
-      cwd: instance.cwd as string,
-      sessionId: instance.session_id as string | undefined,
-      flags: [...globalFlags, ...(body.flags || [])],
-      agentPrompt,
-      origin: 'user',
-    })
-
-    // AI session naming: on the very first user message, name the chat from it via a
-    // cheap Haiku call. Fire-and-forget - runs alongside the turn, never blocks the send,
-    // and silently no-ops unless AI naming is enabled with an API key set.
-    // A slash command can now be the first message (e.g. "/goal <the goal>"), so name the
-    // chat from the text AFTER the command token - "/goal" itself says nothing about the
-    // topic and would drag Haiku toward titles like "Goal Setting Command".
-    if (isFirstUserMessage && body.text && body.text.trim()) {
-      const nameSource = body.text.trim().replace(/^\/[a-z0-9_-]+\s+/i, '') || body.text
-      void autoNameInstance(id, nameSource)
-    }
-
-    return { sessionId: result.sessionId }
   })
 
   // Send a CLI slash command - dispatched through the command registry
   // Each command is routed to the appropriate strategy handler (skill, native, client-only, etc.)
   app.post('/instances/:id/command', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { command: rawCommand, flags } = request.body as { command: string; flags?: string[] }
-    if (!rawCommand) { reply.code(400); return { error: 'Missing command' } }
+    const { command: rawCommand, flags } = (request.body ?? {}) as { command: string; flags?: string[] }
+    if (typeof rawCommand !== 'string' || !rawCommand) { reply.code(400); return { error: 'Missing command' } }
+    const picked = readMessageFlags({ flags })
+    if ('error' in picked) { reply.code(400); return { error: picked.error } }
 
     const instance = db.prepare('SELECT session_id, cwd FROM instances WHERE id = ?').get(id) as { session_id: string | null; cwd: string } | undefined
-    if (!instance) { reply.code(404); return { error: 'Not found' } }
+    if (!instance) { reply.code(404); return { error: 'This chat no longer exists. Open it again from the sidebar.' } }
 
     // Commands that run as a real turn (/goal, /compact, skills) need the composer's
     // model / effort / permission picks - the server can't see localStorage.
@@ -401,8 +534,8 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
 
   // Cancel a specific pending wake-up.
   app.delete('/instances/:id/wakeups/:wakeupId', async (request, reply) => {
-    const { wakeupId } = request.params as { id: string; wakeupId: string }
-    const ok = cancelWakeup(wakeupId)
+    const { id, wakeupId } = request.params as { id: string; wakeupId: string }
+    const ok = cancelWakeup(wakeupId, id)
     if (!ok) { reply.code(404); return { ok: false, error: 'Wake-up not found or not pending' } }
     return { ok: true }
   })
@@ -435,7 +568,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // Write data to a running process's stdin (for responding to CLI prompts like login/permissions)
   app.post('/instances/:id/stdin', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { data } = request.body as { data: string }
+    const { data } = (request.body ?? {}) as { data: string }
     if (typeof data !== 'string') { reply.code(400); return { error: 'Missing data' } }
     if (!processRegistry.isTracked(id)) { reply.code(404); return { error: 'No running process for this instance' } }
     const ok = processRegistry.writeStdin(id, data)
@@ -456,7 +589,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // request an ask rule raised. Entries that are not PermissionUpdate-shaped are dropped here.
   app.post('/instances/:id/control-response', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { requestId?: unknown; behavior?: unknown; input?: unknown; updatedPermissions?: unknown; message?: unknown; interrupt?: unknown }
+    const body = (request.body ?? {}) as { requestId?: unknown; behavior?: unknown; input?: unknown; updatedPermissions?: unknown; message?: unknown; interrupt?: unknown }
     const requestId = typeof body.requestId === 'string' ? body.requestId : ''
     const behavior = body.behavior === 'allow' ? 'allow' : body.behavior === 'deny' ? 'deny' : null
     if (!requestId || !behavior) { reply.code(400); return { ok: false, error: 'Missing requestId or behavior (allow|deny)' } }
@@ -515,23 +648,25 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   async function injectUserTurn(id: string, text: string, flags?: string[]): Promise<{ ok: boolean; error?: string }> {
     // The user often answers while the asking turn is still finishing its last
     // tokens - wait briefly for the process to go idle before resuming.
-    for (let i = 0; i < 20 && processRegistry.isTracked(id); i++) {
+    for (let i = 0; i < 20 && (processRegistry.isTracked(id) || isClaimed(chatKey(id))); i++) {
       await new Promise(r => setTimeout(r, 1000))
     }
     const resp = await app.inject({
       method: 'POST',
       url: `/api/instances/${id}/send`,
+      // The server calling itself: it carries the admin token like the page does.
+      headers: { 'x-orcstrator-token': getAdminToken() },
       payload: { text, flags: flags ?? [] }
     })
     if (resp.statusCode >= 400) {
-      return { ok: false, error: `send failed: HTTP ${resp.statusCode} ${resp.body?.slice(0, 120)}` }
+      return { ok: false, error: readableError(resp.body ?? '', resp.statusCode) }
     }
     return { ok: true }
   }
 
   app.post('/instances/:id/answer-question', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { toolUseId?: unknown; answer?: unknown }
+    const body = (request.body ?? {}) as { toolUseId?: unknown; answer?: unknown }
     const toolUseId = typeof body?.toolUseId === 'string' ? body.toolUseId : ''
     const answer = typeof body?.answer === 'string' ? body.answer : ''
     if (!toolUseId) { reply.code(400); return { ok: false, error: 'Missing toolUseId' } }
@@ -547,15 +682,18 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   //   idle    → just run it now as a normal turn.
   app.post('/instances/:id/btw', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { text?: unknown; flags?: unknown }
+    const body = (request.body ?? {}) as { text?: unknown; flags?: unknown }
     const text = typeof body?.text === 'string' ? body.text.trim() : ''
-    const flags = Array.isArray(body?.flags) ? (body.flags as unknown[]).filter((f): f is string => typeof f === 'string') : []
     if (!text) { reply.code(400); return { ok: false, error: 'Missing text' } }
+    // Same rules as /send: only the message-level picks, checked up front.
+    const picked = readMessageFlags({ flags: body?.flags })
+    if ('error' in picked) { reply.code(400); return { ok: false, error: picked.error } }
+    const flags = (body?.flags ?? []) as string[]
 
     const inst = db.prepare('SELECT id, cwd, session_id FROM instances WHERE id = ?').get(id) as { id: string; cwd: string; session_id: string | null } | undefined
-    if (!inst) { reply.code(404); return { ok: false, error: 'Not found' } }
+    if (!inst) { reply.code(404); return { ok: false, error: 'This chat no longer exists. Open it again from the sidebar.' } }
 
-    if (processRegistry.isTracked(id)) {
+    if (processRegistry.isTracked(id) || processRegistry.isAdopted(id) || isClaimed(chatKey(id))) {
       // Park the note and persist it now so it shows in chat immediately. The current
       // turn's exit handler flushes the queue as a fresh follow-up turn.
       // An identical note already waiting is not queued or stored twice (see queueBtwNote).
@@ -565,24 +703,25 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
         db.prepare('INSERT INTO messages (id, instance_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
           .run(crypto.randomUUID(), id, 'user', JSON.stringify([{ type: 'text', text }]), Date.now())
       } catch (err) {
-        console.warn(`[instances] /btw persist failed for ${id}:`, (err as Error).message)
+        // The note still rides the next turn; it is only missing from the history.
+        reportPersistFailure('user-message', err, { instanceId: id, detail: '/btw note' })
       }
       // Race: the turn may have ended between the isTracked check and the queue write.
       // If it's already idle, flush right now so the note isn't left waiting.
-      if (!processRegistry.isTracked(id)) {
+      if (!processRegistry.isTracked(id) && !processRegistry.isAdopted(id) && !isClaimed(chatKey(id))) {
         const notes = takePendingBtwNotes(id)
         if (notes.length) {
-          await sendMessage({ instanceId: id, text: notes.join('\n\n'), cwd: inst.cwd, sessionId: inst.session_id || undefined, flags, origin: 'btw' })
+          await sendMessage({ instanceId: id, text: notes.join('\n\n'), cwd: inst.cwd, sessionId: inst.session_id || undefined, flags: buildTurnFlags(picked.settings), origin: 'btw' })
         }
       }
       return { ok: true, queued: true }
     }
 
     // Idle → run it now. /send persists the note + applies global flags.
-    const resp = await app.inject({ method: 'POST', url: `/api/instances/${id}/send`, payload: { text, flags } })
+    const resp = await app.inject({ method: 'POST', url: `/api/instances/${id}/send`, headers: { 'x-orcstrator-token': getAdminToken() }, payload: { text, flags } })
     if (resp.statusCode >= 400) {
       reply.code(resp.statusCode)
-      return { ok: false, error: `send failed: HTTP ${resp.statusCode}` }
+      return { ok: false, error: readableError(resp.body ?? '', resp.statusCode) }
     }
     return { ok: true, queued: false }
   })
@@ -591,7 +730,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // session WITH execution permissions; rejection resumes still in plan mode.
   app.post('/instances/:id/decide-plan', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = request.body as { toolUseId?: unknown; decision?: unknown; feedback?: unknown }
+    const body = (request.body ?? {}) as { toolUseId?: unknown; decision?: unknown; feedback?: unknown }
     const toolUseId = typeof body?.toolUseId === 'string' ? body.toolUseId : ''
     const decision = body?.decision === 'approve' || body?.decision === 'reject' ? body.decision : ''
     const feedback = typeof body?.feedback === 'string' ? body.feedback : ''
@@ -629,7 +768,8 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const row = db.prepare('SELECT id FROM instances WHERE id = ?').get(id) as { id: string } | undefined
     if (!row) { reply.code(404); return { error: 'Not found' } }
     const wasRunning = processRegistry.isTracked(id)
-    const killed = await processRegistry.killProcess(id)
+    const wasStarting = claimKind(chatKey(id)) === 'turn'
+    const [killed] = await processRegistry.stopChats([id])
     if (!killed) {
       // The process survived the kill - do NOT mark it idle (that would lie:
       // the agent is still running). Surface the failure so the user can retry
@@ -637,10 +777,16 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
       reply.code(500)
       return { error: 'kill-failed', message: 'Process survived the kill and is still running. Try again, or use Force Reset.' }
     }
-    db.prepare("UPDATE instances SET state = 'idle', process_state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?").run(id)
+    // A message the user sent after pressing Stop may already be starting or running: that
+    // turn is theirs and keeps its state. Only a chat with nothing on it reads idle.
+    if (!processRegistry.isTracked(id) && !isClaimed(chatKey(id))) {
+      db.prepare("UPDATE instances SET state = 'idle', process_state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?").run(id)
+      broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'idle' } })
+    }
     // Stopping withdraws the question: nothing is waiting on the user any more.
     clearAwaitingInput(id)
-    broadcastEvent({ type: 'instance:state', payload: { instanceId: id, state: 'idle' } })
+    // Say it worked. A stopped chat otherwise just goes quiet, which reads the same as a hang.
+    if (wasRunning || wasStarting) broadcastSystemNote(id, '⏹ Stopped. Anything it was doing in the background was ended too. Send a message to carry on.')
     return { killed: wasRunning }
   })
 
@@ -652,7 +798,12 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
     const row = db.prepare('SELECT id FROM instances WHERE id = ?').get(id) as { id: string } | undefined
     if (!row) { reply.code(404); return { error: 'Not found' } }
     const wasTracked = processRegistry.isTracked(id)
-    await processRegistry.killProcess(id)
+    const [stopped] = await processRegistry.stopChats([id])
+    if (!stopped) {
+      // Marking it idle would hide a live agent and throw away the PID a later try needs.
+      reply.code(500)
+      return { error: 'kill-failed', message: 'This chat is still working and could not be stopped. Wait a moment and try again, or restart OrcStrator.' }
+    }
     db.prepare(
       "UPDATE instances SET state = 'idle', process_state = 'idle', process_pid = NULL, version = version + 1 WHERE id = ?"
     ).run(id)
@@ -668,7 +819,7 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // Pause instance
   app.post('/instances/:id/pause', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const killed = await processRegistry.killProcess(id)
+    const [killed] = await processRegistry.stopChats([id])
     if (!killed) {
       // Could not actually stop the process - keep the instance marked running
       // rather than falsely showing it paused while the agent keeps going.
@@ -684,7 +835,12 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   // Resume instance
   app.post('/instances/:id/resume', async (request) => {
     const { id } = request.params as { id: string }
-    db.prepare("UPDATE instances SET state = 'idle' WHERE id = ?").run(id)
+    // Only a PAUSED chat: a stale Resume (a second tab, a click right after Run now) on a chat
+    // that is working again must not write idle over its live agent.
+    const resumed = db.prepare("UPDATE instances SET state = 'idle' WHERE id = ? AND state = 'paused'").run(id).changes > 0
+    if (!resumed) return { ok: true, unchanged: true }
+    // Resuming is the user starting the chat again: keep-warm and queued notes may run.
+    processRegistry.clearUserStop(id)
     // Belt and braces: pause already clears the flag, so an awaiting+paused instance is
     // hard to reach. Clearing here too means no ordering of pause/resume can strand one.
     clearAwaitingInput(id)
@@ -709,8 +865,10 @@ export default async function instanceRoutes(app: FastifyInstance): Promise<void
   })
 
   // Reorder instances
-  app.put('/instances/reorder', async (request) => {
-    const { ids } = request.body as { ids: string[] }
+  app.put('/instances/reorder', async (request, reply) => {
+    const { ids } = (request.body ?? {}) as { ids: string[] }
+    // A list of ids, or a 400 (no body used to be a raw 500).
+    if (!Array.isArray(ids) || ids.some(x => typeof x !== 'string')) return reply.code(400).send({ error: 'ids must be a list of ids' })
     const stmt = db.prepare('UPDATE instances SET sort_order = ? WHERE id = ?')
     const transaction = db.transaction(() => {
       for (let i = 0; i < ids.length; i++) {

@@ -76,13 +76,47 @@ export function buildKickoffPrompt(task: PipelineTask, comments: TaskComment[]):
 
   const template = getSetting('taskKickoffTemplate', '') || DEFAULT_TASK_KICKOFF_TEMPLATE
   const commentsBlock = comments.length
-    ? '## Comments\n' + comments.map(c => `- ${c.author === 'human' ? 'Human' : c.author}: ${c.body}`).join('\n')
+    // Continuation lines are indented under their bullet, so a comment body cannot start a new
+    // "- Human:" line of its own, with any line break a model reads as one: a lone
+    // CR, VT, FF, NEL, U+2028 or U+2029 as well as LF.
+    ? '## Comments\n' + comments.map(c => `- ${c.author === 'human' ? 'Human' : c.author}: ${c.body.replace(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/g, '\n  ')}`).join('\n')
     : ''
+  return fillKickoffTemplate(template, {
+    title: task.title,
+    description: task.description || '(no description)',
+    comments: commentsBlock,
+  })
+}
+
+/**
+ * One pass over the template, with a FUNCTION replacement.
+ *
+ * A string replacement reads `$$`, `$&`, `` $` `` and `$'` in the card's own text as
+ * replacement patterns, so `echo $$` reached the agent as `echo $` and `$&` became the
+ * placeholder itself. Chained replaceAll calls also re-scanned text already substituted, so a
+ * description containing `{{comments}}` had the comments pasted into it. A single regex pass
+ * with a callback does neither: the card's text is inserted exactly as written.
+ */
+export function fillKickoffTemplate(template: string, values: { title: string; description: string; comments: string }): string {
   return template
-    .replaceAll('{{title}}', task.title)
-    .replaceAll('{{description}}', task.description || '(no description)')
-    .replaceAll('{{comments}}', commentsBlock)
+    .replace(/\{\{(title|description|comments)\}\}/g, (_match, key: 'title' | 'description' | 'comments') => values[key])
     .trim()
+}
+
+// SEND COMMENTS
+// Whether the kickoff carries the card's comments. A verbatim card never does (see the two
+// bypasses above). Otherwise the card's own choice wins, and with none set it is AUTO: on for
+// a plain task, off for a card with a schedule. A routine is a fixed instruction; a year of
+// notes about past runs pasted into every fire costs tokens and steers each run by the last.
+export function sendsComments(task: Pick<PipelineTask, 'description' | 'rawPrompt' | 'sendComments' | 'scheduleKind'>): boolean {
+  if (sendsVerbatim(task)) return false
+  if (task.sendComments != null) return task.sendComments
+  return !task.scheduleKind
+}
+
+/** The comments this card's kickoff carries: all of them, or none. */
+export function kickoffComments(task: PipelineTask): TaskComment[] {
+  return sendsComments(task) ? loadComments(task.id) : []
 }
 
 /** Comments for a card, oldest first, in the shape buildKickoffPrompt wants. */

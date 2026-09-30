@@ -1,4 +1,4 @@
-# First install from the installer's STAGED release (installer plan s4.5).
+# First install from the installer's STAGED release.
 # The installer ships the release zip plus its signed payload manifest in
 # {app}\staging; the launcher installs it through Invoke-OrcArtifactUpdate
 # -StagedDir, i.e. the SAME manifest verifier, sha256 check, extract and
@@ -17,7 +17,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($SetupPath, [re
 foreach ($name in @('Find-Exe', 'Get-LauncherState', 'Save-LauncherState', 'Set-LauncherStateValue',
                     'ConvertTo-OrcCanonicalJson', 'Test-OrcSignedManifest', 'Test-OrcPayload', 'Compare-OrcVersion',
                     'Get-OrcInstallRoot', 'Get-OrcActiveVersion', 'Set-OrcActiveVersion', 'Get-OrcVersionPath',
-                    'Get-OrcUpdateChannel', 'Get-OrcUpdateManifest', 'Get-OrcStagedManifest', 'ConvertFrom-OrcSignedManifestText',
+                    'Get-OrcUpdateChannel', 'Get-OrcInstallId', 'Get-OrcUpdateHeaders', 'Test-OrcManifestFresh', 'Get-OrcUpdateManifest', 'Get-OrcStagedManifest', 'ConvertFrom-OrcSignedManifestText',
                     'Install-OrcRelease', 'Remove-OrcOldVersions', 'Get-OrcDownload', 'Invoke-OrcArtifactUpdate', 'Get-OrcUpdateSkipReason')) {
     $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) | Select-Object -First 1
     if (-not $fn) { throw "Could not find function $name in setup.ps1" }

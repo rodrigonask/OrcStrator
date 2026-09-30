@@ -5,13 +5,14 @@ import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
 import { rest } from '../api/rest'
 import { useConfirm } from './ConfirmModal'
-import { ALLOWED_FLAG_PREFIXES, ANIMATION_TIERS, SOUND_TIERS, VERBOSITY_TIERS, DEFAULT_TASK_KICKOFF_TEMPLATE, OUTPUT_STYLE_BUILTINS, AUTOCOMPACT_OPTIONS, MODEL_OPTIONS as MODEL_OPTIONS_SHARED, DEFAULT_MODEL, DEFAULT_EFFORT } from '@shared/constants'
+import { ALLOWED_FLAG_PREFIXES, ANIMATION_TIERS, SOUND_TIERS, VERBOSITY_TIERS, DEFAULT_TASK_KICKOFF_TEMPLATE, OUTPUT_STYLE_BUILTINS, AUTOCOMPACT_OPTIONS, MODEL_OPTIONS as MODEL_OPTIONS_SHARED, DEFAULT_MODEL, DEFAULT_EFFORT, effectivePermissionMode } from '@shared/constants'
 import type { AgentModel, PermissionMode, EffortLevel, VerbosityLevel } from '@shared/types'
 import { type NamingTheme, THEME_LABELS } from '../utils/naming'
 import { EFFORT_LEVELS } from '../utils/modelOptions'
 import { RuleList, RECOMMENDED_GIT_RULES, RECOMMENDED_GIT_SUMMARY, mergeRules } from './RuleList'
 import { PermissionBundlePicker } from './PermissionBundlePicker'
 import type { PermissionBundleId } from '@shared/permission-bundles'
+import { useUsage } from '../context/LiveStatsContext'
 
 // Derived from the one shared list, so a model ships here without a second edit.
 // 'default' stays in front: it means "whatever the app default is", which is a
@@ -27,7 +28,8 @@ const READING_WIDTH_STOPS = [960, 1200, 1600, 2000, 0]
 const READING_WIDTH_LABELS = ['Narrow', 'Comfortable', 'Wide', 'Extra wide', 'Full width']
 
 export function SettingsPage() {
-  const { settings, usage } = useUI()
+  const { settings } = useUI()
+  const usage = useUsage()
   const { dispatch } = useAppDispatch()
   const { fontSize, setFontSize } = useFontSize()
   const { alert } = useConfirm()
@@ -53,7 +55,7 @@ export function SettingsPage() {
   const [keySet, setKeySet] = useState(false)
   const [keyBusy, setKeyBusy] = useState(false)
   const [keyMsg, setKeyMsg] = useState<string | null>(null)
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.permissionMode ?? 'bypassPermissions')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(effectivePermissionMode(settings))
   const [permissionCycleModes, setPermissionCycleModes] = useState<PermissionMode[]>(
     settings.permissionCycleModes ?? ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']
   )
@@ -74,6 +76,7 @@ export function SettingsPage() {
   const [compactionLossless, setCompactionLossless] = useState(settings.compactionLossless ?? true)
   const [maxTokens, setMaxTokens] = useState(settings.maxTokens ?? 0)
   const [maxConcurrent, setMaxConcurrent] = useState(settings.maxConcurrentProcesses ?? 8)
+  const [maxConcurrentOn, setMaxConcurrentOn] = useState(settings.maxConcurrentLimitOn === true)
   const [maxGridTiles, setMaxGridTiles] = useState(settings.maxGridTiles ?? 12)
   const [maxGridColumns, setMaxGridColumns] = useState(settings.maxGridColumns ?? 6)
   const [chatReadingWidth, setChatReadingWidth] = useState(settings.chatReadingWidth ?? 1200)
@@ -110,13 +113,6 @@ export function SettingsPage() {
       .catch(() => { /* no custom styles is the normal case; the built-ins still render */ })
     return () => { cancelled = true }
   }, [])
-
-  // Cloud Sync state
-  const [cloudSyncUrl, setCloudSyncUrl] = useState(settings.cloudSyncUrl || '')
-  const [cloudSyncKey, setCloudSyncKey] = useState(settings.cloudSyncKey || '')
-  const [machineName, setMachineName] = useState(settings.machineName || '')
-  const [syncTesting, setSyncTesting] = useState(false)
-  const [syncTestResult, setSyncTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
 
   const addFlag = useCallback(async () => {
     const trimmed = newFlag.trim()
@@ -190,6 +186,7 @@ export function SettingsPage() {
       compactionLossless,
       maxTokens: maxTokens > 0 ? maxTokens : undefined,
       maxConcurrentProcesses: maxConcurrent,
+      maxConcurrentLimitOn: maxConcurrentOn,
       maxGridTiles,
       maxGridColumns,
       chatReadingWidth,
@@ -201,9 +198,6 @@ export function SettingsPage() {
       namingMode,
       sessionSummaryMode,
       verbosity: verbosity as VerbosityLevel,
-      cloudSyncUrl: cloudSyncUrl || undefined,
-      cloudSyncKey: cloudSyncKey || undefined,
-      machineName: machineName || undefined,
       customCommands: customCommands.filter(cc => cc.name.trim() && cc.command.trim()),
       // Back to the default: null when a value is pinned (the server deletes a null key),
       // undefined when nothing is (no write at all). undefined alone is dropped by JSON,
@@ -221,25 +215,11 @@ export function SettingsPage() {
     api.updateSettings(payload)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [dispatch, flags, idleTimeout, notifications, showPlanLimits, rootFolder, usagePoll, theme, permissionMode, permissionCycleModes, permissionBundles, blockDestructive, permissionAllowRules, permissionDenyRules, permissionAskRules, autoModeAllow, autoModeSoftDeny, autoModeHardDeny, maxBudgetUsd, fallbackModel, disableCache, promptCache1h, autoRetryOnRateLimit, contextCompactionHook, compactionLossless, maxTokens, maxConcurrent, maxGridTiles, maxGridColumns, chatReadingWidth, animationTier, soundTier, namingThemes, namingMode, sessionSummaryMode, verbosity, cloudSyncUrl, cloudSyncKey, machineName, customCommands, defaultModel, defaultEffort, settings.defaultModel, settings.defaultEffort, taskKickoffTemplate, outputStyle, language, autocompact])
+  }, [dispatch, flags, idleTimeout, notifications, showPlanLimits, rootFolder, usagePoll, theme, permissionMode, permissionCycleModes, permissionBundles, blockDestructive, permissionAllowRules, permissionDenyRules, permissionAskRules, autoModeAllow, autoModeSoftDeny, autoModeHardDeny, maxBudgetUsd, fallbackModel, disableCache, promptCache1h, autoRetryOnRateLimit, contextCompactionHook, compactionLossless, maxTokens, maxConcurrent, maxConcurrentOn, maxGridTiles, maxGridColumns, chatReadingWidth, animationTier, soundTier, namingThemes, namingMode, sessionSummaryMode, verbosity, customCommands, defaultModel, defaultEffort, settings.defaultModel, settings.defaultEffort, taskKickoffTemplate, outputStyle, language, autocompact])
 
   const handleBack = useCallback(() => {
     dispatch({ type: 'CLOSE_SETTINGS' })
   }, [dispatch])
-
-  const handleTestSync = useCallback(async () => {
-    if (!cloudSyncUrl || !cloudSyncKey) return
-    setSyncTesting(true)
-    setSyncTestResult(null)
-    try {
-      const result = await rest.testSyncConnection(cloudSyncUrl, cloudSyncKey)
-      setSyncTestResult(result)
-    } catch {
-      setSyncTestResult({ ok: false, error: 'Connection failed' })
-    } finally {
-      setSyncTesting(false)
-    }
-  }, [cloudSyncUrl, cloudSyncKey])
 
   // Load whether an Anthropic API key is stored (the value is never sent to the client).
   useEffect(() => {
@@ -305,9 +285,9 @@ export function SettingsPage() {
     permissionAllowRules, permissionDenyRules, permissionAskRules,
     autoModeAllow, autoModeSoftDeny, autoModeHardDeny, maxBudgetUsd, fallbackModel,
     disableCache, promptCache1h, autoRetryOnRateLimit, contextCompactionHook,
-    compactionLossless, maxTokens, maxConcurrent, maxGridTiles, maxGridColumns,
+    compactionLossless, maxTokens, maxConcurrent, maxConcurrentOn, maxGridTiles, maxGridColumns,
     chatReadingWidth, animationTier, soundTier, namingThemes, namingMode,
-    sessionSummaryMode, verbosity, cloudSyncUrl, cloudSyncKey, machineName,
+    sessionSummaryMode, verbosity,
     savedCommands(customCommands), defaultModel, defaultEffort, taskKickoffTemplate, outputStyle,
     language, autocompact,
   ])
@@ -336,7 +316,7 @@ export function SettingsPage() {
     setNamingThemes(settings.namingThemes as NamingTheme[] ?? (settings.namingTheme ? [settings.namingTheme as NamingTheme] : ['memes']))
     setNamingMode(settings.namingMode ?? 'random')
     setSessionSummaryMode(settings.sessionSummaryMode ?? 'tasks')
-    setPermissionMode(settings.permissionMode ?? 'bypassPermissions')
+    setPermissionMode(effectivePermissionMode(settings))
     setPermissionCycleModes(settings.permissionCycleModes ?? ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
     setPermissionBundles(settings.permissionBundles ?? [])
     setBlockDestructive(settings.blockDestructive !== false)
@@ -355,6 +335,7 @@ export function SettingsPage() {
     setCompactionLossless(settings.compactionLossless ?? true)
     setMaxTokens(settings.maxTokens ?? 0)
     setMaxConcurrent(settings.maxConcurrentProcesses ?? 8)
+    setMaxConcurrentOn(settings.maxConcurrentLimitOn === true)
     setMaxGridTiles(settings.maxGridTiles ?? 12)
     setMaxGridColumns(settings.maxGridColumns ?? 6)
     setChatReadingWidth(settings.chatReadingWidth ?? 1200)
@@ -366,9 +347,6 @@ export function SettingsPage() {
     setOutputStyle(settings.outputStyle ?? 'Default')
     setLanguage(settings.language ?? '')
     setAutocompact(settings.autocompact ?? '')
-    setCloudSyncUrl(settings.cloudSyncUrl || '')
-    setCloudSyncKey(settings.cloudSyncKey || '')
-    setMachineName(settings.machineName || '')
   }, [settings])
 
   /* A setting card. `id` is the card's canonical name and doubles as its data-card
@@ -421,15 +399,22 @@ export function SettingsPage() {
                 value={permissionMode}
                 onChange={e => setPermissionMode(e.target.value as PermissionMode)}
               >
-                <option value="bypassPermissions">Bypass (auto-approve all)</option>
-                <option value="acceptEdits">Accept Edits (auto-approve file writes)</option>
-                <option value="auto">Auto Mode (Claude decides w/ safeguards)</option>
-                <option value="plan">Plan (read-only)</option>
-                <option value="default">Default (ask every action)</option>
+                <option value="auto">Auto: Claude decides, with safeguards (recommended)</option>
+                <option value="acceptEdits">Accept Edits: approves file changes, asks for the rest</option>
+                <option value="plan">Plan: read only</option>
+                <option value="default">Ask every time</option>
+                <option value="bypassPermissions">Bypass: approves everything, never asks</option>
               </select>
+              {permissionMode === 'bypassPermissions' && (
+                <p className="set-hint set-warn">
+                  Bypass lets every chat do anything on this computer without asking, including deleting
+                  files. Only the commands under Block destructive commands are stopped. For a routine
+                  that runs while you are away, set Bypass on that one card instead.
+                </p>
+              )}
               <div className="set-sub">Modes included in the Shift+Tab cycle</div>
               <div className="set-checks">
-                {(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as PermissionMode[]).map(mode => (
+                {(['auto', 'acceptEdits', 'plan', 'default', 'bypassPermissions'] as PermissionMode[]).map(mode => (
                   <label key={mode}>
                     <input
                       type="checkbox"
@@ -444,8 +429,8 @@ export function SettingsPage() {
                     />
                     {mode === 'bypassPermissions' ? 'Bypass' :
                      mode === 'acceptEdits' ? 'Accept Edits' :
-                     mode === 'plan' ? 'Plan Mode' :
-                     mode === 'auto' ? 'Auto Mode' : 'Default'}
+                     mode === 'plan' ? 'Plan' :
+                     mode === 'auto' ? 'Auto' : 'Ask every time'}
                   </label>
                 ))}
               </div>
@@ -753,12 +738,27 @@ export function SettingsPage() {
 
           {band('capacity', 'Capacity', [
             card('Max Concurrent Agents', 3, <>
-              <p className="set-hint">Hard cap on simultaneous CLI processes.</p>
-              <div className="set-range">
+              <div className="set-checks">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={maxConcurrentOn}
+                    onChange={e => setMaxConcurrentOn(e.target.checked)}
+                  />
+                  Limit how many chats work at once
+                </label>
+              </div>
+              {/* At most two lines in both states, so switching it on or off moves nothing on the page. */}
+              <p className="set-hint" style={{ minHeight: '2.9em' }}>
+                {maxConcurrentOn
+                  ? 'Only this many chats run at once. Scheduled runs wait; a message you send is refused with the reason.'
+                  : 'Off: any number of chats can work at once.'}
+              </p>
+              <div className="set-range" style={maxConcurrentOn ? undefined : { opacity: 0.45, pointerEvents: 'none' }} aria-disabled={!maxConcurrentOn}>
                 <input
                   type="range"
                   className="form-input"
-                  aria-label="Max concurrent agents"
+                  aria-label="How many chats may work at once"
                   value={maxConcurrent}
                   onChange={e => setMaxConcurrent(Number(e.target.value))}
                   min={1}
@@ -769,8 +769,8 @@ export function SettingsPage() {
               </div>
               <div className="set-scale">
                 <span>1</span>
-                <span style={{ color: maxConcurrent > 6 ? 'var(--warning, #f59e0b)' : 'inherit' }}>
-                  {maxConcurrent > 6 ? 'High memory usage' : maxConcurrent <= 3 ? 'Conservative' : 'Balanced'}
+                <span style={{ color: maxConcurrentOn && maxConcurrent > 6 ? 'var(--warning, #f59e0b)' : 'inherit' }}>
+                  {!maxConcurrentOn ? 'No limit' : maxConcurrent > 6 ? 'High memory usage' : maxConcurrent <= 3 ? 'Conservative' : 'Balanced'}
                 </span>
                 <span>20</span>
               </div>
@@ -1056,7 +1056,7 @@ export function SettingsPage() {
               <span className="set-caret">&#9654;</span>
               <h2>Legacy</h2>
               <span className="set-legacy-count">
-                7 settings and 1 control that nothing on this machine is using. Out of the way, not deleted.
+                6 settings and 1 control that nothing on this machine is using. Out of the way, not deleted.
               </span>
             </summary>
             <div className="set-legacy-lede">
@@ -1123,57 +1123,6 @@ export function SettingsPage() {
                   <div className={`toggle-switch ${disableCache ? 'active' : ''}`} onClick={() => setDisableCache(v => !v)} />
                 </div>
               </div>
-
-              {legacyCard('Cloud Sync (Supabase)', 'never', 'never used',
-                cloudSyncUrl || cloudSyncKey || machineName
-                  ? 'Partly filled in. Sync runs once all three are set.'
-                  : 'Not set up: the machine name, address and key are all empty.', <>
-                <p className="set-guide">
-                  Sync your pipeline across machines. Create a free{' '}
-                  <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Supabase</a>{' '}
-                  project, run the schema from <code>server/supabase/schema.sql</code>, then paste the credentials below.
-                </p>
-                <label className="set-flab">Machine name</label>
-                <input
-                  className="form-input"
-                  placeholder="e.g. Desktop"
-                  value={machineName}
-                  onChange={e => setMachineName(e.target.value)}
-                />
-                <label className="set-flab">Supabase URL</label>
-                <input
-                  className="form-input"
-                  placeholder="https://abc123.supabase.co"
-                  value={cloudSyncUrl}
-                  onChange={e => setCloudSyncUrl(e.target.value)}
-                />
-                <label className="set-flab">Supabase anon key</label>
-                <input
-                  className="form-input"
-                  type="password"
-                  placeholder="eyJ..."
-                  value={cloudSyncKey}
-                  onChange={e => setCloudSyncKey(e.target.value)}
-                />
-                <div className="set-withbtn">
-                  <button
-                    className="btn btn-sm"
-                    onClick={handleTestSync}
-                    disabled={syncTesting || !cloudSyncUrl || !cloudSyncKey}
-                  >
-                    {syncTesting ? 'Testing...' : 'Test Connection'}
-                  </button>
-                  {syncTestResult && (
-                    <span style={{
-                      fontSize: 11,
-                      alignSelf: 'center',
-                      color: syncTestResult.ok ? 'var(--success)' : 'var(--error)',
-                    }}>
-                      {syncTestResult.ok ? 'Connected!' : syncTestResult.error || 'Failed'}
-                    </span>
-                  )}
-                </div>
-              </>)}
 
               {legacyCard('Task Kickoff Prompt', 'never', 'never used',
                 taskKickoffTemplate.trim()

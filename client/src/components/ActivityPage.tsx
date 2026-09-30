@@ -52,7 +52,7 @@ export function ActivityPage() {
   // the events are rare, so a full re-read is simpler and safer than patching rows.
   useEffect(() => {
     load()
-    const unsubs = ['task:run-started', 'task:run-finished', 'wakeup:scheduled', 'wakeup:fired', 'wakeup:cancelled']
+    const unsubs = (['task:run-started', 'task:run-finished', 'wakeup:scheduled', 'wakeup:fired', 'wakeup:cancelled'] as const)
       .map(ev => api.onEvent(ev, () => load()))
     return () => { unsubs.forEach(u => u()) }
   }, [load])

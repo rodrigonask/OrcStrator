@@ -14,7 +14,11 @@ export const DEFAULT_PORT = 3334
 export const KEEPALIVE_TEXT = 'Keep-alive ping to hold the prompt cache warm. Reply with exactly: ok'
 /** The port actually listened on — ALLOWED_HOSTS is derived from this, so a custom PORT still works. */
 export const PORT = parseInt(process.env.PORT || String(DEFAULT_PORT), 10)
-const DEFAULT_ALLOWED_ORIGINS = 'http://localhost:5174,http://localhost:5175,http://localhost:5176,http://localhost:3334'
+// 5175 and 5176 are just Vite's next free ports, so any other local web project
+// could land there and be trusted. Production (installed mode) trusts only its own address;
+// the dev client's 5174 is added only outside production.
+const IS_PRODUCTION = process.env.NODE_ENV === 'production'
+const DEFAULT_ALLOWED_ORIGINS = IS_PRODUCTION ? '' : 'http://localhost:5174'
 
 // In production the client is served BY this server, so the app's own origin must
 // always be allowed. The default list hardcodes 3334; without deriving these from
@@ -47,14 +51,16 @@ export const ALLOWED_ORIGINS = Array.from(new Set([
 //      where Vite proxies to the backend forwarding the browser's `localhost:5174`
 //      Host (a port-pinned allowlist wrongly 403'd that, killing the WS/live UI).
 //
-// Deliberately NOT included: a bearer token. It would only guard against other
-// processes already executing on this machine — and at that point the attacker can
-// read the token file too. Layers 1–3 close every browser/network vector.
+// A fourth layer: a token on every write (services/api-auth.ts). It
+// exists because the processes already executing on this machine include the agents this
+// app runs, and they are told to call this API.
 export const BIND_HOST = process.env.ORCSTRATOR_BIND_HOST || '127.0.0.1'
 
 // Loopback hostnames a legitimate local client resolves to. DNS rebinding cannot
 // forge these (it uses the attacker's own domain as Host), so port is irrelevant.
-const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0'])
+// Not 0.0.0.0: it is not a name a local client uses, and "0.0.0.0 day" showed
+// some browsers route page requests for it to local servers.
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
 
 // Optional exact host:port extras (e.g. a custom LAN hostname) via env override.
 export const ALLOWED_HOSTS = (process.env.ORCSTRATOR_ALLOWED_HOSTS || '')

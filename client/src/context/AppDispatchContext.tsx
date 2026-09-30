@@ -13,7 +13,8 @@ export interface AppDispatchContextValue {
   sendMessage: (instanceId: string, text: string, images?: string[], flags?: string[]) => Promise<void>
   deleteInstance: (id: string) => Promise<void>
   /** Close a session AND permanently scrub secrets from its transcript file. */
-  secureCloseInstance: (id: string, name: string, taskStatus?: 'done' | 'inbox') => Promise<void>
+  /** Resolves true once the server has closed the chat, false when it refused (the chat stays). */
+  secureCloseInstance: (id: string, name: string, taskStatus?: 'done' | 'inbox') => Promise<boolean>
   loadOlderMessages: (instanceId: string) => Promise<void>
 }
 
@@ -25,7 +26,7 @@ const defaultValue: AppDispatchContextValue = {
   ackSurface: () => {},
   sendMessage: async () => {},
   deleteInstance: async () => {},
-  secureCloseInstance: async () => {},
+  secureCloseInstance: async () => false,
   loadOlderMessages: async () => {},
 }
 

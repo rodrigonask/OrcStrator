@@ -17,19 +17,11 @@ export function useAgents() {
     }
   }, [])
 
-  const syncNative = useCallback(async () => {
-    try {
-      const result = await api.syncNativeAgents()
-      if (result.agents) setAgents(result.agents)
-    } catch (err) {
-      console.error('Failed to sync native agents:', err)
-    }
-  }, [])
-
+  // This used to also ask the server to sync "native" agents on every open, from a
+  // server folder that no longer exists, so it always synced nothing. That endpoint is gone.
   useEffect(() => {
     refresh()
-    syncNative()
-  }, [refresh, syncNative])
+  }, [refresh])
 
   // Listen for WebSocket agent events
   useEffect(() => {
@@ -37,10 +29,10 @@ export function useAgents() {
       api.onEvent('agent:created', () => refresh()),
       api.onEvent('agent:updated', () => refresh()),
       api.onEvent('agent:deleted', () => refresh()),
-      api.onEvent('agents:synced', () => refresh()),
+      // No 'agents:synced' listener: only the removed sync endpoint ever sent that event.
     ]
     return () => unsubs.forEach(u => u())
   }, [refresh])
 
-  return { agents, loading, refresh, syncNative }
+  return { agents, loading, refresh }
 }

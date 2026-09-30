@@ -63,6 +63,13 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CreateUninstallRegKey=not IsScratchInstall
 CloseApplications=yes
 RestartApplications=no
+; Authenticode. Build-Installer.ps1 defines CodeSign and passes the
+; OrcSign tool (signtool with Azure Artifact Signing) only when the signing
+; account is configured; otherwise the installer is built unsigned as before.
+#ifdef CodeSign
+SignTool=OrcSign
+SignedUninstaller=yes
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"; Check: not IsScratchInstall
@@ -83,6 +90,12 @@ Name: "{autodesktop}\OrcStrator"; Filename: "{app}\OrcStrator.exe"; WorkingDir: 
 [Run]
 Filename: "{app}\OrcStrator.exe"; Description: "Launch OrcStrator"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+; Stop OrcStrator's own background server first, so it cannot hold
+; files open and leave the uninstall half done. stop-server.ps1 stops only the
+; recorded process running from <data root>\app, and never fails the uninstall.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\installer\stop-server.ps1"" -DataRoot ""{code:OrcDataRootParam}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopOrcServer"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\staging"
 
@@ -99,6 +112,12 @@ begin
   Result := GetEnv('ORCSTRATOR_DATA_DIR');
   if Result = '' then
     Result := ExpandConstant('{localappdata}') + '\OrcStrator';
+end;
+
+// The same, in the shape a code constant needs ([UninstallRun]).
+function OrcDataRootParam(Param: String): String;
+begin
+  Result := OrcDataRoot;
 end;
 
 { Uninstall keeps the user's data: the database, logs and launcher settings in

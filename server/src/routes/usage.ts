@@ -4,6 +4,7 @@ import { scanUntrackedSessions } from '../services/session-scanner.js'
 import { runBackfill } from '../services/backfill.js'
 import { ingestCompactionLog, getCompactionSavingsSummary } from '../services/compaction-savings.js'
 import { db } from '../db.js'
+import { clampLimit } from '../services/limits.js'
 import { resolvePricing, MODEL_PRICING } from '@orcstrator/shared'
 import { promptCacheTtl } from '../services/prompt-cache.js'
 import type { DailySavingsEntry, SavingsSummary, UsageTrendDay, UsageByColumn, UsageForecast, UsageAnomaly, UsageEfficiencyDay } from '@orcstrator/shared'
@@ -95,7 +96,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       WITH ${UNIFIED_CTE}
       SELECT
-        date(created_at / 1000, 'unixepoch') AS day,
+        date(created_at / 1000, 'unixepoch', 'localtime') AS day,
         COALESCE(SUM(input_tokens) - SUM(cache_read_tokens) - SUM(cache_creation_tokens), 0) AS cold_input,
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read,
@@ -158,7 +159,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       WITH ${UNIFIED_CTE}
       SELECT
-        date(created_at / 1000, 'unixepoch') AS day,
+        date(created_at / 1000, 'unixepoch', 'localtime') AS day,
         COALESCE(SUM(cost_usd), 0) AS cost_usd
       FROM unified
       WHERE created_at >= ?
@@ -216,13 +217,15 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
       FROM sessions s
       LEFT JOIN pipeline_tasks pt ON s.task_id = pt.id
       ORDER BY s.cost_usd DESC
+      LIMIT 20000
     `).all(since) as Array<Record<string, unknown>>
 
     const costs = rows.map(r => Number(r.cost_usd) || 0).sort((a, b) => a - b)
     const median = costs.length > 0 ? costs[Math.floor(costs.length / 2)] : 0
     const threshold = median * 2
 
-    return rows.map(r => {
+    // The costliest sessions first, capped, so one request cannot return the whole ledger.
+    return rows.slice(0, 500).map(r => {
       const cost = Number(r.cost_usd) || 0
       return {
         sessionId: r.session_id as string,
@@ -245,7 +248,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       WITH ${UNIFIED_CTE}
       SELECT
-        date(created_at / 1000, 'unixepoch') AS day,
+        date(created_at / 1000, 'unixepoch', 'localtime') AS day,
         CASE WHEN SUM(input_tokens) > 0
           THEN CAST(SUM(output_tokens) AS REAL) / SUM(input_tokens)
           ELSE 0 END AS yield_ratio,
@@ -287,7 +290,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
       FROM token_usage
       ORDER BY created_at DESC
       LIMIT ?
-    `).all(Math.min(parseInt(limit) || 50, 200))
+    `).all(clampLimit(limit, 50, 200))
     return rows
   })
 
@@ -299,7 +302,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       WITH ${UNIFIED_CTE}
       SELECT
-        date(created_at / 1000, 'unixepoch') AS day,
+        date(created_at / 1000, 'unixepoch', 'localtime') AS day,
         SUM(input_tokens) AS total_input,
         SUM(cache_read_tokens) AS cache_read,
         SUM(cache_creation_tokens) AS cache_creation,
@@ -471,7 +474,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
       whereClause = 'WHERE created_at >= ?'
       params.push(since)
     }
-    params.push(Math.min(parseInt(limit) || 100, 500))
+    params.push(clampLimit(limit, 100, 500))
     const rows = db.prepare(`
       WITH ${UNIFIED_CTE}, grouped AS (
         SELECT
@@ -597,7 +600,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const byWeekday = db.prepare(`
       WITH ${UNIFIED_CTE}
       SELECT
-        CAST(strftime('%w', created_at / 1000, 'unixepoch') AS INTEGER) AS weekday,
+        CAST(strftime('%w', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS weekday,
         COUNT(DISTINCT ${SESSION_KEY}) AS session_count,
         SUM(cost_usd) AS total_cost_usd
       FROM unified
@@ -609,7 +612,7 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     const byDay = db.prepare(`
       WITH ${UNIFIED_CTE}
       SELECT
-        date(created_at / 1000, 'unixepoch') AS day,
+        date(created_at / 1000, 'unixepoch', 'localtime') AS day,
         COUNT(DISTINCT ${SESSION_KEY}) AS session_count,
         SUM(cost_usd) AS total_cost_usd
       FROM unified
@@ -692,8 +695,9 @@ export default async function usageRoutes(app: FastifyInstance): Promise<void> {
     return getCurrentUsage()
   })
 
-  // Start OAuth PKCE flow: returns the authorize URL, stores the verifier
-  app.get('/plan-usage/connect', async () => {
+  // Start OAuth PKCE flow: returns the authorize URL, stores the verifier. A POST:
+  // starting a login resets the stored verifier, which a GET let any web page do.
+  app.post('/plan-usage/connect', async () => {
     return generateAuthUrl()
   })
 

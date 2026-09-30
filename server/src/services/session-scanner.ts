@@ -1,8 +1,7 @@
 import fs from 'fs'
-import path from 'path'
-import os from 'os'
 import readline from 'readline'
 import { db } from '../db.js'
+import { getSessionIndex } from './session-index.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -10,19 +9,35 @@ interface ScanResult {
   imported: number
   scanned: number
   errors: number
+  /** Transcripts skipped because they were read before, had nothing to import, and have not changed since. */
+  unchanged?: number
 }
+
+/**
+ * Transcripts already read in full that held no usage line, keyed by session id, with the
+ * size and mtime they had at the time.
+ *
+ * A session is skipped only once it has a token_usage row, and a CLI transcript
+ * never gets one (it contains no "type":"result" line at all: 0 of a 200-file sample did).
+ * So every click of "Sync untracked sessions" re-streamed the entire transcript store,
+ * gigabytes of it, to learn the same nothing again. A file that has not changed since it
+ * came up empty is now skipped; one that grew or was rewritten is read again.
+ *
+ * In memory on purpose: the worst case after a restart is one full pass, which is what every
+ * click used to cost, and it needs no new table.
+ */
+const emptyReads = new Map<string, { mtime: number; size: number }>()
 
 /**
  * Scan ~/.claude/projects for .jsonl session files not yet tracked in token_usage.
  * Extract usage from the last 'result' line and insert with role='direct'.
  */
 export async function scanUntrackedSessions(): Promise<ScanResult> {
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects')
-  const result: ScanResult = { imported: 0, scanned: 0, errors: 0 }
+  const result: ScanResult = { imported: 0, scanned: 0, errors: 0, unchanged: 0 }
 
-  if (!fs.existsSync(projectsDir)) return result
-
-  const jsonlFiles = collectJsonlFiles(projectsDir, 0, 3)
+  // The shared transcript index (session-index.ts): an asynchronous walk that already holds
+  // each file's size and mtime, instead of a second synchronous walk of the same tree.
+  const entries = await getSessionIndex(true)
 
   const checkStmt = db.prepare('SELECT 1 FROM token_usage WHERE session_id = ?')
   const insertStmt = db.prepare(`
@@ -30,20 +45,27 @@ export async function scanUntrackedSessions(): Promise<ScanResult> {
     VALUES (?, NULL, 'direct', NULL, 0, ?, ?, ?, ?, ?, 0, ?)
   `)
 
-  for (const filePath of jsonlFiles) {
-    const sessionId = path.basename(filePath, '.jsonl')
+  for (const entry of entries) {
+    const { sessionId, filePath, mtime, size } = entry
     if (!UUID_RE.test(sessionId)) continue
 
     result.scanned++
 
     if (checkStmt.get(sessionId)) continue
 
+    const seen = emptyReads.get(sessionId)
+    if (seen && seen.mtime === mtime && seen.size === size) {
+      result.unchanged!++
+      continue
+    }
+
     try {
       const usage = await extractUsageFromJsonl(filePath)
-      if (!usage) continue
-
-      const stat = fs.statSync(filePath)
-      const createdAt = stat.mtimeMs
+      if (!usage) {
+        emptyReads.set(sessionId, { mtime, size })
+        continue
+      }
+      emptyReads.delete(sessionId)
 
       insertStmt.run(
         sessionId,
@@ -52,7 +74,7 @@ export async function scanUntrackedSessions(): Promise<ScanResult> {
         usage.cacheReadTokens,
         usage.cacheCreationTokens,
         usage.costUsd,
-        Math.round(createdAt),
+        Math.round(mtime),
       )
       result.imported++
     } catch {
@@ -61,29 +83,6 @@ export async function scanUntrackedSessions(): Promise<ScanResult> {
   }
 
   return result
-}
-
-function collectJsonlFiles(dir: string, depth: number, maxDepth: number): string[] {
-  if (depth > maxDepth) return []
-  const files: string[] = []
-
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return files
-  }
-
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      files.push(...collectJsonlFiles(fullPath, depth + 1, maxDepth))
-    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-      files.push(fullPath)
-    }
-  }
-
-  return files
 }
 
 interface UsageData {

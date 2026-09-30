@@ -63,9 +63,8 @@ another folder, and `PORT` to change the server port.
 OrcStrator has no telemetry and no analytics. Network traffic: the web UI loads
 its fonts from Google Fonts; the server polls your Claude plan usage from
 api.anthropic.com with your own Claude login; if you add an Anthropic API key,
-chat naming and summaries call the Anthropic API; if you set up Cloud Sync, it
-talks to the Supabase project you configure; plus whatever the Claude Code CLI
-itself sends.
+chat naming and summaries call the Anthropic API; plus whatever the Claude Code
+CLI itself sends.
 
 For the usage poll, the server reads the Claude Code CLI's local credentials
 file (`~/.claude/.credentials.json`) to get your login token. The poll runs

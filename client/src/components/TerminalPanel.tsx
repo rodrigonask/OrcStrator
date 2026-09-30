@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useUI } from '../context/UIContext'
-import { useMessages } from '../context/MessagesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { api } from '../api'
 
@@ -22,7 +22,10 @@ function parseCommand(input: string): string {
 
 export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const { selectedInstanceId: instanceId } = useUI()
-  const { messages: allMessages, streamingToolCalls, rawOutput } = useMessages()
+  // This chat's entries only.
+  const chatMessages = useMessagesSelector(s => (instanceId ? s.messages[instanceId] : undefined))
+  const chatCalls = useMessagesSelector(s => (instanceId ? s.streamingToolCalls[instanceId] : undefined))
+  const chatRaw = useMessagesSelector(s => (instanceId ? s.rawOutput[instanceId] : undefined))
   const [tab, setTab] = useState<'bash' | 'stream'>('stream')
 
   useEffect(() => {
@@ -33,7 +36,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
 
   const historicalEntries = useMemo<BashEntry[]>(() => {
     if (!instanceId) return []
-    const msgs = allMessages[instanceId] || []
+    const msgs = chatMessages || []
     const toolResults = new Map<string, { output: string; isError?: boolean }>()
     for (const msg of msgs) {
       for (const block of msg.content) {
@@ -58,11 +61,11 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
       }
     }
     return entries
-  }, [allMessages, instanceId])
+  }, [chatMessages, instanceId])
 
   const liveEntries = useMemo<BashEntry[]>(() => {
     if (!instanceId) return []
-    return (streamingToolCalls[instanceId] || [])
+    return (chatCalls || [])
       .filter(tc => tc.toolName === 'Bash')
       .map(tc => ({
         key: tc.toolId,
@@ -71,10 +74,10 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
         isError: tc.isError,
         isRunning: tc.isRunning,
       }))
-  }, [streamingToolCalls, instanceId])
+  }, [chatCalls, instanceId])
 
   const entries = [...historicalEntries, ...liveEntries]
-  const rawLines = instanceId ? (rawOutput[instanceId] || []) : []
+  const rawLines = chatRaw || []
 
   const bashScrollRef = useAutoScroll([entries.length, liveEntries])
   const streamScrollRef = useAutoScroll([rawLines.length])

@@ -1,9 +1,10 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useInstances } from '../context/InstancesContext'
+import { useInstancesSelector, type InstancesContextValue } from '../context/InstancesContext'
+import { shallowEqual } from '../context/store'
 import { useUI } from '../context/UIContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { api } from '../api'
@@ -17,7 +18,7 @@ import { UsageRail } from './UsageRail'
 import { usePinnedChats } from '../hooks/usePinnedChats'
 import { useGoHome } from '../hooks/useGoHome'
 
-import type { FolderConfig } from '@shared/types'
+import type { FolderConfig, InstanceConfig } from '@shared/types'
 
 interface FolderTreeNode {
   folder: FolderConfig
@@ -25,10 +26,10 @@ interface FolderTreeNode {
 }
 
 function buildFolderTree(folders: FolderConfig[]): FolderTreeNode[] {
-  const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '')
+  const normalize = (p: string | null | undefined) => (p ?? '').replace(/\\/g, '/').toLowerCase().replace(/\/$/, '')
 
   // Sort by path length so parents come before children
-  const sorted = [...folders].sort((a, b) => a.path.length - b.path.length)
+  const sorted = [...folders].sort((a, b) => (a.path ?? '').length - (b.path ?? '').length)
 
   const nodes: FolderTreeNode[] = []
 
@@ -78,20 +79,36 @@ function SortableFolderGroup({ node }: { node: FolderTreeNode }) {
  *   button that changes this panel now lives on this panel.
  */
 export function Sidebar({ collapsed, railToggle }: { collapsed: boolean; railToggle?: () => void }) {
-  const { folders } = useInstances()
+  // Folders and the pinned rows only: a running chat's progress does not re-render the whole
+  // project tree.
+  const folders = useInstancesSelector(s => s.folders)
   const { editingFolderId, showFolderBrowser, settings } = useUI()
   const { dispatch } = useAppDispatch()
-  const { instances } = useInstances()
   const goHome = useGoHome()
   const { pinnedIds } = usePinnedChats()
-  const pinnedInstances = useMemo(() =>
-    pinnedIds.map(id => instances.find(i => i.id === id)).filter(Boolean) as typeof instances,
-    [pinnedIds, instances]
+  const selectPinned = useCallback(
+    (s: InstancesContextValue) => pinnedIds.map(id => s.instances.find(i => i.id === id)).filter((i): i is InstanceConfig => !!i),
+    [pinnedIds],
   )
+  const pinnedInstances = useInstancesSelector(selectPinned, shallowEqual)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
-  const sortedFolders = [...folders].sort((a, b) => {
+  // Hidden projects stay in state (their chats, cards and routines are all still there) and
+  // are only left out of the tree. They are listed, with an Unhide, under the tree.
+  const hiddenFolders = folders.filter(f => f.hidden)
+  const [showHidden, setShowHidden] = useState(false)
+  // Hiding makes a project vanish from the tree; opening the list at that moment shows where it
+  // went, so a first-time user does not think it was deleted.
+  // Only a project that was VISIBLE a moment ago and is hidden now opens the list: the first load
+  // of the app also takes the hidden count from 0 to N, and that must not pop it open every time.
+  const visibleIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (hiddenFolders.some(f => visibleIdsRef.current.has(f.id))) setShowHidden(true)
+    visibleIdsRef.current = new Set(folders.filter(f => !f.hidden).map(f => f.id))
+  }, [folders, hiddenFolders])
+
+  const sortedFolders = [...folders].filter(f => !f.hidden).sort((a, b) => {
     if (a.stealthMode && !b.stealthMode) return -1
     if (!a.stealthMode && b.stealthMode) return 1
     return a.sortOrder - b.sortOrder
@@ -168,6 +185,42 @@ export function Sidebar({ collapsed, railToggle }: { collapsed: boolean; railTog
           </DndContext>
         </div>
 
+        {!collapsed && hiddenFolders.length > 0 && (
+          <div className="sidebar-hidden-projects">
+            <button
+              className="sidebar-hidden-toggle"
+              onClick={() => setShowHidden(v => !v)}
+              title="Projects you hid. Nothing in them was deleted."
+            >
+              {showHidden ? '\u25BE' : '\u25B8'} Hidden projects ({hiddenFolders.length})
+            </button>
+            {showHidden && hiddenFolders.map(f => (
+              <div key={f.id} className="sidebar-hidden-row">
+                {/* Two hidden projects can share a name; the folder tells them apart. */}
+                <span className="sidebar-hidden-name" title={f.path}>
+                  {f.emoji || '\uD83D\uDCC1'} {f.displayName || f.name}
+                  {hiddenFolders.some(o => o.id !== f.id && (o.displayName || o.name) === (f.displayName || f.name)) && (
+                    <span className="sidebar-hidden-path"> {(f.path || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop()}</span>
+                  )}
+                </span>
+                <button
+                  className="sidebar-hidden-unhide"
+                  onClick={async () => {
+                    try {
+                      await api.unhideFolder(f.id)
+                      dispatch({ type: 'UPDATE_FOLDER', payload: { id: f.id, updates: { hidden: false } } })
+                    } catch (err) {
+                      console.error('Failed to unhide project:', err)
+                    }
+                  }}
+                >
+                  Unhide
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
 
         <div className="sidebar-add-folder">
           <button
@@ -229,9 +282,31 @@ export function Sidebar({ collapsed, railToggle }: { collapsed: boolean; railTog
           onClose={() => dispatch({ type: 'CLOSE_FOLDER_BROWSER' })}
           onSelect={async (path) => {
             dispatch({ type: 'CLOSE_FOLDER_BROWSER' })
+            // Adding a folder that is already a HIDDEN project brings that project back, with its
+            // cards and chats, instead of failing: the server refuses a second project for one folder.
+            // Case is ignored only for Windows-style paths (a drive letter); POSIX paths are case-sensitive.
+            const norm = (x: string) => {
+              const n = x.replace(/\\/g, '/').replace(/\/+$/, '')
+              return /^[a-zA-Z]:\//.test(n) ? n.toLowerCase() : n
+            }
+            const sameFolder = (a: string, b: string) => norm(a) === norm(b)
+            const existing = folders.find(f => f.path && sameFolder(f.path, path))
+            if (existing) {
+              if (existing.hidden) {
+                api.unhideFolder(existing.id).catch(console.error)
+                dispatch({ type: 'UPDATE_FOLDER', payload: { id: existing.id, updates: { hidden: false } } })
+              }
+              return
+            }
             try {
-              const folder = await (await import('../api')).api.createFolder({ path, name: path.replace(/^.*[\\/]/, '') })
-              dispatch({ type: 'ADD_FOLDER', payload: folder })
+              const result = await api.createFolderOrFindOwner({ path, name: path.replace(/^.*[\\/]/, '') })
+              if ('folder' in result) {
+                dispatch({ type: 'ADD_FOLDER', payload: result.folder })
+              } else if (result.hidden) {
+                // Another spelling of a hidden project's folder: bring that project back.
+                await api.unhideFolder(result.ownerId)
+                dispatch({ type: 'UPDATE_FOLDER', payload: { id: result.ownerId, updates: { hidden: false } } })
+              }
             } catch (err) {
               console.error('Failed to create folder:', err)
             }

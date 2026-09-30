@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { AppSettings, ChatMessage, MessageContentBlock, PermissionRequestData, PermissionRuleSet } from '@shared/types'
 import { addAllowRulesUpdate, ruleSubjects } from '@shared/permission-rules'
-import { useMessages } from '../context/MessagesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useUI } from '../context/UIContext'
-import { useInstances } from '../context/InstancesContext'
+import { useInstance } from '../context/InstancesContext'
 import { api } from '../api'
 import { effectiveRules, planStandingAllow, ruleMatches } from '../utils/permissionMatch'
 import { usePermissionScope } from '../hooks/usePermissionScope'
@@ -117,16 +117,17 @@ export function offerAllowAlways(
  * the session update still rides along, so the turn in front of the operator unblocks either way.
  */
 export function PermissionBanner({ instanceId }: { instanceId: string }) {
-  const { permissionRequests, messages } = useMessages()
+  const queue = useMessagesSelector(s => s.permissionRequests[instanceId])
+  const chatMessages = useMessagesSelector(s => s.messages[instanceId])
   const { dispatch } = useAppDispatch()
   const { settings } = useUI()
-  const { instances } = useInstances()
+  const thisInstance = useInstance(instanceId)
   const [notice, setNotice] = useState<string | null>(null)
   const scopeControl = usePermissionScope(instanceId)
 
-  const queue = permissionRequests[instanceId]
+
   const perm = queue?.[0]
-  const chatRules = useMemo(() => instances.find(i => i.id === instanceId)?.permissionRules, [instances, instanceId])
+  const chatRules = useMemo(() => thisInstance?.permissionRules, [thisInstance])
   const projectRules = scopeControl.projectRules
   const always = useMemo(
     () => (perm ? offerAllowAlways(perm, settings, chatRules, projectRules) : null),
@@ -190,7 +191,7 @@ export function PermissionBanner({ instanceId }: { instanceId: string }) {
   }
 
   const hasInput = perm.input && Object.keys(perm.input).length > 0
-  const rationale = findRationale(messages[instanceId], perm)
+  const rationale = findRationale(chatMessages, perm)
   const alwaysRules = always?.rules ?? null
 
   return (

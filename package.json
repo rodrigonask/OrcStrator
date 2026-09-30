@@ -15,13 +15,14 @@
     "build": "npm run build -w shared && npm run build -w client && npm run build -w server",
     "test:schedule": "tsx shared/test/next-run.test.ts",
     "test:server": "tsx server/test/pretty-slug.test.ts",
-    "test": "npm run test:schedule && npm run test:server && npm run build",
+    "test:unit": "node scripts/run-tests.mjs",
+    "test": "npm run test:unit && npm run build",
     "start": "npm run start -w server",
     "prepare": "node -e \"require('fs').existsSync('scripts/install-hooks.cjs')&&require('./scripts/install-hooks.cjs')\""
   },
   "devDependencies": {
     "concurrently": "^9",
-    "sharp": "^0.34.5",
+    "jsdom": "^26.1.0",
     "typescript": "^5.6"
   },
   "version": "2.0.0",

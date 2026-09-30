@@ -11,12 +11,14 @@
  *   resolves it (src/config.ts), so the lock it writes is the lock read here.
  * - If lockfile exists with alive PID: queues restart, polls every 5s
  * - If lockfile exists with dead PID: treats as stale, deletes it, proceeds
+ * - If the PID is alive but provably no longer the server that wrote the lock (it is not
+ *   a node process, or it started after the lock was written): stale too
  * - 500ms debounce on file changes
  */
 
-import { spawn, execSync } from 'child_process'
+import { spawn, execSync, execFileSync } from 'child_process'
 import { existsSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
+import { join, basename } from 'path'
 import { homedir } from 'os'
 
 const DATA_DIR = process.env.ORCSTRATOR_DATA_DIR || join(homedir(), '.orcstrator-v2')
@@ -38,19 +40,73 @@ function isProcessAlive(pid) {
   }
 }
 
+// The lock's `since` is stamped by the server after it has been running for a while, so a
+// genuine owner always started well before it. This slack only absorbs clock rounding.
+const START_SLACK_MS = 2_000
+
+/**
+ * The program name and start time (ms since epoch) of a live PID, or null when the OS
+ * cannot tell us (the lookup failed, access was denied, the PID just exited). Null always
+ * means "keep trusting the lock": this decides whether a running chat's server may be
+ * killed, so only a positive answer is allowed to unblock a restart.
+ */
+function processInfo(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true }
+  try {
+    if (process.platform === 'win32') {
+      const script = `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.ProcessName + '|' + ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds()`
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], opts).trim()
+      const sep = out.lastIndexOf('|')
+      const name = out.slice(0, sep)
+      const startedAt = Number(out.slice(sep + 1))
+      return sep > 0 && Number.isFinite(startedAt) && startedAt > 0 ? { name, startedAt } : null
+    }
+    const name = basename(execFileSync('ps', ['-p', String(pid), '-o', 'comm='], opts).trim())
+    const startedAt = Date.parse(execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], opts).trim())
+    return name && Number.isFinite(startedAt) ? { name, startedAt } : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A live PID alone does not mean the lock's owner is still running. After a crash
+ * the lock stays behind, Windows hands the same PID to some other program, and the old check
+ * then blocked every restart until someone deleted the file by hand. Returns why the lock
+ * is stale, or null when it must still be honoured (including when we simply cannot tell).
+ */
+function reusedPidReason(data) {
+  const info = processInfo(data.pid)
+  if (!info) return null
+  // The name test is Windows-only: there the server is always node.exe. Elsewhere a process
+  // can rename its own thread (ps then shows that name), so only the start time is trusted.
+  if (process.platform === 'win32' && !/node/i.test(info.name)) {
+    return `PID ${data.pid} now belongs to "${info.name}", not the server`
+  }
+  if (typeof data.since === 'number' && info.startedAt > data.since + START_SLACK_MS) {
+    return `PID ${data.pid} is a newer process, started after the lock was written`
+  }
+  return null
+}
+
 function isLockActive() {
   if (!existsSync(LOCK_PATH)) return false
   try {
     const data = JSON.parse(readFileSync(LOCK_PATH, 'utf-8'))
     if (data.pid && isProcessAlive(data.pid)) {
-      return true
+      const reused = reusedPidReason(data)
+      if (!reused) return true
+      console.log(`[dev-watch] Stale lockfile (${reused}), removing`)
+      unlinkSync(LOCK_PATH)
+      return false
     }
-    // Stale lock — PID is dead
-    console.log(`[dev-watch] Stale lockfile (PID ${data.pid} dead) — removing`)
+    // Stale lock: PID is dead
+    console.log(`[dev-watch] Stale lockfile (PID ${data.pid} dead), removing`)
     unlinkSync(LOCK_PATH)
     return false
   } catch {
-    // Corrupt lockfile — remove it
+    // Corrupt lockfile: remove it
     try { unlinkSync(LOCK_PATH) } catch { /* ignore */ }
     return false
   }
@@ -82,7 +138,7 @@ function killServer() {
     let settled = false
     const finish = () => { if (settled) return; settled = true; clearTimeout(timeout); resolve() }
 
-    // On Windows, proc.kill() only signals the `npx`/cmd.exe wrapper — NOT the
+    // On Windows, proc.kill() only signals the `npx`/cmd.exe wrapper, NOT the
     // tsx/node server underneath it, which keeps holding port 3334. The restart
     // then spawns a server that can't bind, so the STALE server keeps serving
     // (edits never apply). Tree-kill the wrapper's whole process tree instead.
@@ -115,11 +171,11 @@ async function restart() {
           clearInterval(pollTimer)
           pollTimer = null
           restartQueued = false
-          console.log('[dev-watch] Lock cleared — proceeding with restart')
+          console.log('[dev-watch] Lock cleared, proceeding with restart')
           await killServer()
           startServer()
         } else {
-          console.log('[dev-watch] Still locked — waiting...')
+          console.log('[dev-watch] Still locked, waiting...')
         }
       }, POLL_INTERVAL_MS)
     }

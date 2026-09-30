@@ -1,6 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import DOMPurify from 'dompurify'
+// Link and image rules for every sanitize call.
+import { installSanitizerHooks } from '../utils/sanitize'
 import type { ChatMessage, MessageContentBlock, VerbosityLevel } from '@shared/types'
 import { findSecretMatches, SECRET_HOVER_HINT } from '@shared/secrets'
 import { ToolCallBlock } from './ToolCallBlock'
@@ -8,6 +10,9 @@ import { useUI } from '../context/UIContext'
 import { api } from '../api'
 import { parseMarkdown, truncateMarkdown } from '../utils/markdown'
 import { formatDuration } from '../utils/duration'
+import { autoLinkify } from '../utils/linkify'
+
+installSanitizerHooks()
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -41,7 +46,10 @@ function formatTimestamp(ts: number): string {
 }
 
 export const MessageBubble = memo(function MessageBubble({ message, toolResults, verbosity = 3, workedForMs }: MessageBubbleProps) {
-  const { role, content, createdAt } = message
+  const { role, createdAt } = message
+  // A message whose content is not a list (a bad row, a malformed event) renders as empty
+  // rather than throwing and blanking the chat.
+  const content = Array.isArray(message.content) ? message.content.filter(b => b && typeof b === 'object') : []
 
   const nonToolContent = content.filter(b => {
     if (b.type === 'tool-call' || b.type === 'tool-result') return false
@@ -245,11 +253,18 @@ function ContentBlock({
   if (block.type === 'thinking') return null
 
   if (block.type === 'image') {
+    // A stored image carries a url to the full picture (kept on disk, not in the chat history)
+    // plus a small inline thumbnail. The full one loads when it scrolls into view;
+    // if it cannot load (the file was removed) the thumbnail stays.
+    // No thumbnail (it could not be made) means no fallback: an empty data URL is just a broken image.
+    const thumb = block.base64 ? `data:${block.mediaType};base64,${block.base64}` : null
     return (
       <div className="message-content">
         <img
-          src={`data:${block.mediaType};base64,${block.base64}`}
+          src={block.url ?? thumb ?? undefined}
+          loading="lazy"
           alt="Attached image"
+          onError={e => { if (block.url && thumb && e.currentTarget.src !== thumb) e.currentTarget.src = thumb }}
           style={{ maxWidth: '100%', borderRadius: 8, marginTop: 4 }}
         />
       </div>
@@ -299,28 +314,7 @@ function ContentBlock({
   return null
 }
 
-// Auto-linkify URLs (http/https) in rendered HTML. Runs after marked so it sees the
-// actual rendered output (including inside <code>); skips content already inside <a>
-// tags so markdown links aren't double-wrapped. File paths are linkified earlier, by
-// parseMarkdown({ linkPaths: true }): they have to be lifted out before parsing, or
-// markdown's escape rules eat the backslashes.
-const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
-const TRAILING_PUNCT_RE = /([.,;:!?)\]}'"`]+)$/
-
-function autoLinkify(html: string): string {
-  const parts = html.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/g)
-  return parts.map((part, i) => {
-    if (i % 2 === 1) return part
-    return part
-      .replace(URL_RE, (m) => {
-        const trail = m.match(TRAILING_PUNCT_RE)
-        const core = trail ? m.slice(0, m.length - trail[0].length) : m
-        const trailing = trail ? trail[0] : ''
-        const safe = core.replace(/"/g, '&quot;')
-        return `<a class="auto-url" href="${safe}" target="_blank" rel="noopener noreferrer">${core}</a>${trailing}`
-      })
-  }).join('')
-}
+// autoLinkify lives in utils/linkify.ts (text runs only).
 
 // Wrap API-key / password shaped tokens in a red flag with a hover hint. Operates
 // on rendered HTML: split into tag vs. text runs and scan only the text runs, so a
@@ -528,9 +522,9 @@ function TextContent({ text, collapseChars = 600, escapeHtml = false, persistKey
       <div className="message-content" onClick={handleClick} dangerouslySetInnerHTML={{ __html: html }} />
       {openError && <CursorToast msg={openError.msg} x={openError.x} y={openError.y} />}
       {isTall && (
-        <span className="view-more-inline" onClick={() => setExpanded(e => !e)}>
+        <button type="button" className="view-more-inline" aria-expanded={expanded} onClick={() => setExpanded(e => !e)}>
           {expanded ? 'View less ↑' : '... View more ↓'}
-        </span>
+        </button>
       )}
     </div>
   )

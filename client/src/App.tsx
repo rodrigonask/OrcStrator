@@ -1,8 +1,7 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo } from 'react'
 import { useFontSize } from './hooks/useFontSize'
 import { AppProvider } from './context/AppContext'
-import { useInstances } from './context/InstancesContext'
-import { useMessages } from './context/MessagesContext'
+import { useInstancesSelector } from './context/InstancesContext'
 import { useUI } from './context/UIContext'
 import { useAppDispatch } from './context/AppDispatchContext'
 import { PipelineProvider } from './context/PipelineContext'
@@ -10,24 +9,29 @@ import { AllTasksProvider } from './context/AllTasksContext'
 import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/ChatView'
 import { GridView } from './components/grid/GridView'
-import { PipelineBoard } from './components/pipeline/PipelineBoard'
-import { SettingsPage } from './components/SettingsPage'
-import { AgentsPage } from './components/AgentsPage'
-import { UsageReportPage } from './components/UsageReportPage'
-import { SessionsPage } from './components/SessionsPage'
-import { SkillsPage } from './components/SkillsPage'
-import { ActivityPage } from './components/ActivityPage'
+// The pages you open now and then load on first visit, not with the app: Grid and
+// Chat stay in the main bundle because they are the app.
+const PipelineBoard = lazy(() => import('./components/pipeline/PipelineBoard').then(m => ({ default: m.PipelineBoard })))
+const SettingsPage = lazy(() => import('./components/SettingsPage').then(m => ({ default: m.SettingsPage })))
+const AgentsPage = lazy(() => import('./components/AgentsPage').then(m => ({ default: m.AgentsPage })))
+const UsageReportPage = lazy(() => import('./components/UsageReportPage').then(m => ({ default: m.UsageReportPage })))
+const SessionsPage = lazy(() => import('./components/SessionsPage').then(m => ({ default: m.SessionsPage })))
+const SkillsPage = lazy(() => import('./components/SkillsPage').then(m => ({ default: m.SkillsPage })))
+const ActivityPage = lazy(() => import('./components/ActivityPage').then(m => ({ default: m.ActivityPage })))
 import { VFXOverlay } from './components/VFXOverlay'
 import { CommandMenu } from './components/CommandMenu'
 import { QuickTaskHotkey } from './components/pipeline/QuickTaskHotkey'
 import { TopBar } from './components/TopBar'
 import { CompactRail } from './components/CompactRail'
 import { SecurityBanner } from './components/SecurityBanner'
+import { ServerErrorBanner } from './components/ServerErrorBanner'
 import { ConfirmProvider } from './components/ConfirmModal'
 import { resolveAnimTier } from './hooks/useVFX'
 import { useUltraCompact, useUltraCompactHotkey } from './hooks/useUltraCompact'
 import { UIContext } from './context/UIContext'
 import { api } from './api'
+import { ReadOnlyBanner } from './components/ReadOnlyBanner'
+import { useRenderCount } from './utils/renderCount'
 
 function PaneProvider({ instanceId, children }: { instanceId: string; children: React.ReactNode }) {
   const ui = useUI()
@@ -36,8 +40,9 @@ function PaneProvider({ instanceId, children }: { instanceId: string; children: 
 }
 
 function AppContent() {
-  const { instances, folders } = useInstances()
-  const { messages } = useMessages()
+  useRenderCount('AppContent')
+  // Ids only, as one string: a running chat's progress does not re-render the app shell.
+  const instanceIdList = useInstancesSelector(s => s.instances.map(i => i.id).join(','))
   const { selectedInstanceId, view, settings, showSettings } = useUI()
   const { dispatch: appDispatch } = useAppDispatch()
   const { zoom } = useFontSize()
@@ -80,9 +85,9 @@ function AppContent() {
 
   // Clean up split panes that reference deleted instances
   useEffect(() => {
-    const instanceIds = new Set(instances.map(i => i.id))
+    const instanceIds = new Set(instanceIdList.split(','))
     setSplitPanes(prev => prev.filter(id => instanceIds.has(id)))
-  }, [instances])
+  }, [instanceIdList])
 
   // Resolve 'system' theme to actual dark/light based on OS preference
   const [osPrefersDark, setOsPrefersDark] = useState(
@@ -135,32 +140,12 @@ function AppContent() {
     height: `${(100 / zoom).toFixed(4)}vh`,
   } : {}
   useEffect(() => { api.connect() }, [])
-
-  // Dynamic page title (note: AppProvider also sets title; this handles the App-level concern)
-  useEffect(() => {
-    const instance = instances.find(i => i.id === selectedInstanceId)
-    if (!instance) {
-      document.title = 'OrcStrator'
-      return
-    }
-    const folder = folders.find(f => f.id === instance.folderId)
-    const parts: string[] = []
-    if (folder) parts.push(folder.displayName || folder.name)
-    parts.push(instance.name)
-    const msgs = messages[instance.id]
-    if (msgs?.length) {
-      const last = msgs[msgs.length - 1]
-      const textBlock = last.content.find(b => b.type === 'text')
-      if (textBlock && textBlock.type === 'text') {
-        const preview = textBlock.text.replace(/[#*_~`>\n]+/g, ' ').trim().slice(0, 40)
-        if (preview) parts.push(preview)
-      }
-    }
-    document.title = parts.join(' | ')
-  }, [selectedInstanceId, instances, folders, messages])
+  // The page title is AppProvider's job. A copy here subscribed the whole app to every chunk
+  // of every chat's output, which re-rendered every Grid tile with it.
 
   return (
     <div className="app" data-theme={resolvedTheme} data-anim-tier={animTier} style={scaleStyle}>
+      <ReadOnlyBanner />
       {!ultra && <TopBar sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(c => !c)} />}
       <div className="app-body">
         {/* In ultra the sidebar collapses to a 32px strip rather than disappearing: the
@@ -173,6 +158,8 @@ function AppContent() {
           railToggle={ultra ? () => setUltraSidebarShown(s => !s) : undefined}
         />
         <main className="main-content">
+          {/* A lazy page loads from disk in a few ms; an empty frame beats a spinner flash. */}
+          <Suspense fallback={<div className="page-loading" />}>
           {showSettings ? (
             <SettingsPage />
           ) : (
@@ -209,6 +196,7 @@ function AppContent() {
               )}
             </>
           )}
+          </Suspense>
         </main>
         {/* Last child of app-body so it pins to the right edge of the whole window,
             outside main-content, and every view keeps its full width minus 32px. */}
@@ -218,6 +206,7 @@ function AppContent() {
       <CommandMenu />
       <QuickTaskHotkey />
       <SecurityBanner />
+      <ServerErrorBanner />
     </div>
   )
 }

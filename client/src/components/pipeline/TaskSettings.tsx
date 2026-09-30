@@ -109,7 +109,7 @@ interface SchedulePayload {
  *
  * Every run setting is sent on every save, null included, because null is a value here:
  * it means "inherit the app default". That is also why the form must never be mounted
- * against a card whose settings were not loaded — see `task` below.
+ * against a card whose settings were not loaded (see `task` below).
  */
 export interface TaskSettingsPayload extends SchedulePayload {
   targetInstanceId: string | null
@@ -121,6 +121,9 @@ export interface TaskSettingsPayload extends SchedulePayload {
   budgetCapUsd: number | null
   autoCompact: boolean
   autoClose: boolean
+  selfClose: boolean
+  /** null = auto: on for a task, off for a card with a schedule. */
+  sendComments: boolean | null
   maxRunMinutes: number | null
   disarmAfterFailures: number
   fallbackModel: string | null
@@ -219,10 +222,17 @@ export function TaskSettings({ ref, task, projectId, onDirty }: TaskSettingsProp
   const [budgetCapUsd, setBudgetCapUsd] = useState(task?.budgetCapUsd != null ? String(task.budgetCapUsd) : '')
   const [autoCompact, setAutoCompact] = useState(task?.autoCompact ?? false)
   const [autoClose, setAutoClose] = useState(task?.autoClose ?? false)
+  const [selfClose, setSelfClose] = useState(task?.selfClose ?? false)
   const [fallbackModel, setFallbackModel] = useState(task?.fallbackModel || '')
   const [outputStyle, setOutputStyle] = useState(task?.outputStyle || '')
   const [language, setLanguage] = useState(task?.language || '')
   const [silent, setSilent] = useState(task?.silent ?? false)
+  // null is AUTO, and stays null until the box is actually clicked, so a task that later
+  // gains a schedule follows the routine default instead of a choice nobody made.
+  const [sendComments, setSendComments] = useState<boolean | null>(task?.sendComments ?? null)
+  // A verbatim card (raw prompt, or a description that opens with a /command) sends its
+  // description as the whole message, so there is nowhere for comments to go.
+  const verbatim = !!task?.rawPrompt || /^\/[a-z][a-z0-9-]*(\s|$)/i.test((task?.description || '').trimStart())
   const [targetInstanceId, setTargetInstanceId] = useState(task?.targetInstanceId || '')
 
   const projectChats = useMemo(
@@ -344,6 +354,8 @@ export function TaskSettings({ ref, task, projectId, onDirty }: TaskSettingsProp
       budgetCapUsd: weekly,
       autoCompact,
       autoClose,
+      selfClose,
+      sendComments,
       maxRunMinutes: maxRunMinutes.trim() ? Number(maxRunMinutes) : null,
       disarmAfterFailures: disarmAfterFailures.trim() === '' ? 3 : Number(disarmAfterFailures),
       fallbackModel: fallbackModel || null,
@@ -352,7 +364,7 @@ export function TaskSettings({ ref, task, projectId, onDirty }: TaskSettingsProp
     }
   }, [
     buildSchedule, targetInstanceId, silent, model, effort, permissionMode, maxBudgetUsd,
-    budgetCapUsd, autoCompact, autoClose, maxRunMinutes, disarmAfterFailures,
+    budgetCapUsd, autoCompact, autoClose, selfClose, sendComments, maxRunMinutes, disarmAfterFailures,
     fallbackModel, outputStyle, language,
   ])
 
@@ -841,6 +853,40 @@ export function TaskSettings({ ref, task, projectId, onDirty }: TaskSettingsProp
             <option value="">App default</option>
             {CARD_PERMISSION_MODES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
+          {/* A routine runs while nobody is watching. On Auto (the new-install default) anything
+              Claude will not do on its own is skipped, and a question waits for a click. Saying
+              so here is the other half of that default: the safe default ships WITH the per-card way
+              out of it, so an unattended routine is never silently stuck. */}
+          {when !== 'now' && (
+            <div className="task-perm-hint">
+              {permissionMode === 'bypassPermissions'
+                ? 'This routine will approve everything on its own. Only use this for work you trust.'
+                : 'Runs while you are away? Anything that needs your OK will wait for you. Pick Bypass here if this routine must never stop.'}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Comments as context. On every card, not folded into Advanced: whether a year of
+          run notes rides along with every fire is the thing that decides what a routine costs. ── */}
+      <div className="form-group">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: 'var(--font-mono)', cursor: verbatim ? 'default' : 'pointer', opacity: verbatim ? 0.5 : 1 }}>
+          <input
+            type="checkbox"
+            disabled={verbatim}
+            checked={!verbatim && (sendComments ?? when === 'now')}
+            onChange={e => on(setSendComments)(e.target.checked)}
+          />
+          Send comments as context when starting
+        </label>
+        <div className="schedule-hint">
+          {verbatim
+            ? 'This card sends its description word for word, so comments are never included.'
+            : sendComments === null
+              ? when === 'now'
+                ? 'On by default for tasks.'
+                : 'Off by default for routines, so notes about past runs do not steer the next one.'
+              : <>Set by hand. <button type="button" style={{ background: 'none', border: 0, padding: 0, color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }} onClick={() => on(setSendComments)(null)}>Use the default</button></>}
         </div>
       </div>
 
@@ -957,6 +1003,17 @@ export function TaskSettings({ ref, task, projectId, onDirty }: TaskSettingsProp
                 : autoCompact
                   ? 'Keeps a long-running chat from growing without end. The chat stays open.'
                   : 'A scheduled card leaves its chat open by default, which is what you want while you are watching it and not what you want after a month of nightly runs.'}
+            </div>
+            {/* Any card, started by hand or on a schedule. The run has to PROVE it worked
+                (a last line of RESULT: OK); anything else is kept for a human to look at. */}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: 'var(--font-mono)', cursor: 'pointer', marginTop: 10 }}>
+              <input type="checkbox" checked={selfClose} onChange={e => on(setSelfClose)(e.target.checked)} />
+              Close itself when it succeeds
+            </label>
+            <div className="schedule-hint">
+              {selfClose
+                ? 'The run must end by reporting it succeeded. Then the card goes to Done and its chat is closed. If it reports a problem, says nothing, or crashes, the card waits in Review with the reason and the chat is kept.'
+                : 'Off: the card waits for you after every run, as usual.'}
             </div>
           </div>
 

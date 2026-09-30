@@ -2,6 +2,7 @@ import { useMemo, useEffect, useReducer } from 'react'
 import { useInstances } from '../context/InstancesContext'
 import { useUI } from '../context/UIContext'
 import type { InstanceConfig } from '@shared/types'
+import { useSessionCosts } from '../context/LiveStatsContext'
 
 export interface CacheInfo {
   ratio: number | null
@@ -46,7 +47,8 @@ export function cacheTier(pct: number): string {
  */
 export function useActiveInstances(): ActiveInstance[] {
   const { instances } = useInstances()
-  const { sessionCosts, settings } = useUI()
+  const { settings } = useUI()
+  const sessionCosts = useSessionCosts()
 
   // Keep cache TTLs fresh (drops expired actives, ticks the minutes-left)
   const [, tick] = useReducer(x => x + 1, 0)

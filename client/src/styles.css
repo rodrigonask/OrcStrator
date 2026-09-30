@@ -1282,6 +1282,51 @@ body::after {
 }
 
 /* Add Folder Button */
+/* Hidden projects: a quiet list under the tree, collapsed by default. Muted text, no
+   status colour, so it never competes with the live projects above it. */
+.sidebar-hidden-projects {
+  flex-shrink: 0;
+  padding: 2px 8px 4px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-hidden-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.sidebar-hidden-toggle:hover { color: var(--text-secondary); }
+.sidebar-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 2px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.sidebar-hidden-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-hidden-path { color: var(--text-muted); font-size: 10.5px; }
+.sidebar-hidden-unhide {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.sidebar-hidden-unhide:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
 .sidebar-add-folder {
   /* Layout lives here, not in a style={} on the element: an inline display beats
      every selector, so the row survived .collapsed's display:none and leaked two
@@ -2445,6 +2490,20 @@ body::after {
   opacity: 0.85;
 }
 .view-more-inline:hover { text-decoration: underline; }
+/* It is a real button now, so Tab and Enter reach it; strip the button look so it
+   still reads as the inline link it always was. */
+button.view-more-inline,
+button.tool-call-group-header {
+  background: none;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+button.view-more-inline { padding: 0; }
+button.tool-call-group-header { color: inherit; }
+button.view-more-inline:focus-visible,
+button.tool-call-group-header:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 /* On the violet user bubble, the accent-colored affordance is violet-on-violet
    (invisible). Render it as translucent white so it stays legible but subordinate
@@ -5491,7 +5550,7 @@ body::after {
    swaps a line of text for a date input and everything below jumps. */
 /* Tall enough for the form-input the "on a date" and "after so many runs" options reveal,
    which is about 40px once its border and padding are counted, not for the 11px sentence
-   the "never" option shows. Measured, not guessed: see A4-modal-height-measurements.txt. */
+   the "never" option shows. Measured, not guessed. */
 .schedule-hint--ends {
   min-height: 42px;
 }
@@ -5603,6 +5662,21 @@ body::after {
   background: var(--bg-tertiary);
   padding: 2px 8px;
   border-radius: 10px;
+  /* Live numbers hold their width: equal-width digits and room for three of them, so a
+     count going 9 to 10 does not nudge the column header. */
+  display: inline-block;
+  min-width: calc(3ch + 16px); /* border-box: three digits plus the 8px padding each side */
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The card's cost ticks while its run is going. Equal-width digits and a fixed floor for the
+   widest form it takes ($0.0034), so the chips beside it stay put. */
+.task-cost-badge {
+  display: inline-block;
+  min-width: 7ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .pipeline-open-agent-btn {
@@ -9534,6 +9608,30 @@ body::after {
 
 /* ── Security scan banner (close-and-scrub). Fixed overlay so it never shifts
    layout; neutral surface with only a thin accent rail (green stays restrained). */
+/* A server problem that belongs to no chat: same shape as the security banner, amber
+   edge, below it so the two never overlap. Portalled to <body>, so it is scaled by --ui-zoom. */
+.server-error-banner {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%) scale(var(--ui-zoom, 1));
+  transform-origin: top center;
+  z-index: 219;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-left: 3px solid #d97706;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.server-error-banner button { background: none; border: 0; color: var(--text-muted); cursor: pointer; font: inherit; }
+
 .security-banner {
   position: fixed;
   top: 14px;
@@ -11505,7 +11603,7 @@ body::after {
   top: 0;
   left: 0;
   right: 0;
-  /* 3px full bleed, matching the surfaced rule one notch down (H2). Was a 2px fading
+  /* 3px full bleed, matching the surfaced rule one notch down. Was a 2px fading
      gradient; the fade made it read as decoration rather than as the same signal at a
      lower level, which is the whole point of the pairing. */
   height: 3px;
@@ -11694,6 +11792,7 @@ body::after {
   margin: 0;
 }
 .set-hint { font-size: 13px; color: var(--text-tertiary); line-height: 1.45; margin: 0; }
+.set-hint.set-warn { color: var(--warning, #d9a441); margin-top: 6px; }
 .set-guide { font-size: 12.5px; color: var(--text-muted); line-height: 1.45; margin: 0; }
 .set-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .set-flab { font-size: 12px; color: var(--text-secondary); display: block; }
@@ -12150,3 +12249,33 @@ body::after {
 .advanced-toggle:hover {
   color: var(--text-primary);
 }
+
+/* Error boundaries: a calm panel in place of a white window or a dead tile. */
+.error-boundary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.error-boundary-tile {
+  height: 100%;
+  min-height: 0;
+  justify-content: center;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary, transparent);
+  overflow: auto;
+}
+.error-boundary-app {
+  max-width: 520px;
+  margin: 15vh auto 0;
+}
+.error-boundary-title { color: var(--text-primary); font-weight: 600; font-size: 14px; }
+.error-boundary-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.error-boundary-details { font-size: 11px; color: var(--text-muted); }
+.error-boundary-details code { display: block; white-space: pre-wrap; word-break: break-word; margin-top: 4px; }
+
+.task-perm-hint { font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-top: 4px; }

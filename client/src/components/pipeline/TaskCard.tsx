@@ -4,6 +4,7 @@ import { usePipeline } from '../../context/PipelineContext'
 import { useInstances } from '../../context/InstancesContext'
 import { useOpenInstance } from '../../hooks/useOpenInstance'
 import { schedulePill } from '../../utils/taskSchedule'
+import { useConfirm } from '../ConfirmModal'
 
 interface TaskCardProps {
   task: PipelineTask
@@ -21,8 +22,12 @@ const PRIORITY_CLASSES: Record<number, string> = {
 }
 
 export function TaskCard({ task, onClick, onContextMenu, projectColor }: TaskCardProps) {
-  const isStuck = task.labels.includes('stuck')
+  // The server coerces labels on read; this is the second line, so one bad row can never
+  // take the board down with it.
+  const labels = Array.isArray(task.labels) ? task.labels.filter(l => typeof l === 'string') : []
+  const isStuck = labels.includes('stuck')
   const { startTask } = usePipeline()
+  const { alert } = useConfirm()
   const { instances } = useInstances()
   const openInstance = useOpenInstance()
   const [starting, setStarting] = useState(false)
@@ -51,10 +56,17 @@ export function TaskCard({ task, onClick, onContextMenu, projectColor }: TaskCar
       await startTask(task.id, undefined, task.projectId)
     } catch (err) {
       console.error('Quick start failed:', err)
+      // Say why (the agent limit, a chat already working), as the card menu does. A spinner that
+      // just stops read as the button doing nothing.
+      const reason = err instanceof Error ? err.message : ''
+      // Stopped by the user before it began: their Stop already said so, no second message.
+      if (!/^Stopped before the chat started/.test(reason)) {
+        await alert(reason || 'Something went wrong starting this task. Try again, or open the chat from the card menu.', 'Could not start')
+      }
     } finally {
       setStarting(false)
     }
-  }, [starting, linkedInstance, openInstance, startTask, task.id, task.projectId])
+  }, [starting, linkedInstance, openInstance, startTask, alert, task.id, task.projectId])
 
   const handleDragStart = useCallback((e: React.DragEvent) => {
     e.dataTransfer.setData('text/plain', task.id)
@@ -105,12 +117,12 @@ export function TaskCard({ task, onClick, onContextMenu, projectColor }: TaskCar
           {isStuck ? (
             <span className="task-stuck-badge">STUCK</span>
           ) : (
-            task.labels.slice(0, 3).map(label => (
+            labels.slice(0, 3).map(label => (
               <span key={label} className="task-label">{label}</span>
             ))
           )}
-          {!isStuck && task.labels.length > 3 && (
-            <span className="task-label">+{task.labels.length - 3}</span>
+          {!isStuck && labels.length > 3 && (
+            <span className="task-label">+{labels.length - 3}</span>
           )}
           {/* When this card next runs, or why it will not. Drawn by the card itself now:
               a schedule used to need a whole separate RoutineCard because a routine had no

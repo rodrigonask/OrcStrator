@@ -1,6 +1,7 @@
 import { useEffect, useReducer } from 'react'
 import type { SessionCostState } from '@shared/types'
 import { useUI } from '../context/UIContext'
+import { useSessionCost } from '../context/LiveStatsContext'
 
 /**
  * The one test for "this chat's prompt cache is still alive", kept as a plain function so
@@ -33,12 +34,13 @@ export function isCacheWarm(sc: SessionCostState | undefined, promptCache1h?: bo
  * nothing else would re-render the tile at the moment it goes cold.
  */
 export function useCacheWarm(instanceId: string): boolean {
-  const { sessionCosts, settings } = useUI()
+  const { settings } = useUI()
+  const sessionCost = useSessionCost(instanceId)
   const [, tick] = useReducer(x => x + 1, 0)
   useEffect(() => {
     const id = setInterval(tick, 30_000)
     return () => clearInterval(id)
   }, [])
 
-  return isCacheWarm(sessionCosts[instanceId], settings.promptCache1h)
+  return isCacheWarm(sessionCost, settings.promptCache1h)
 }

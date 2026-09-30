@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { DATA_DIR, DB_PATH } from './config.js'
+import { acquireDataDirLock } from './data-dir-lock.js'
 import { canonicalizeCwd } from './services/canonical-path.js'
 import { DEFAULT_SETTINGS, computeCostUsd } from '@orcstrator/shared'
 
@@ -14,13 +15,23 @@ function ensureDataDir(): void {
   }
 }
 
+/**
+ * The applied schema version. 0 only for a database that has no schema_version table yet
+ * (a new one). Any other error is thrown: reading 0 by mistake would re-run every
+ * migration from 001 over a live database.
+ */
 function getSchemaVersion(): number {
   try {
     const row = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number } | undefined
     return row?.version ?? 0
-  } catch {
-    return 0
+  } catch (err) {
+    if (err instanceof Error && /no such table: schema_version/i.test(err.message)) return 0
+    throw err
   }
+}
+
+function isNoSuchColumnError(err: unknown): boolean {
+  return err instanceof Error && /no such column/i.test(err.message)
 }
 
 function setSchemaVersion(version: number): void {
@@ -188,20 +199,18 @@ function migration001(): void {
 }
 
 function migration003(): void {
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS task_comments (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL REFERENCES pipeline_tasks(id) ON DELETE CASCADE,
-        author TEXT NOT NULL DEFAULT 'human',
-        body TEXT NOT NULL DEFAULT '',
-        created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_task_comments_task_id ON task_comments(task_id, created_at);
-    `)
-  } catch {
-    // already exists
-  }
+  // IF NOT EXISTS already makes this idempotent. The try/catch that used to wrap it swallowed
+  // every other error too, so a failed CREATE was recorded as applied.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_comments (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES pipeline_tasks(id) ON DELETE CASCADE,
+      author TEXT NOT NULL DEFAULT 'human',
+      body TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_comments_task_id ON task_comments(task_id, created_at);
+  `)
   setSchemaVersion(3)
 }
 
@@ -267,8 +276,10 @@ function migration009(): void {
 }
 
 function migration010(): void {
-  db.prepare('ALTER TABLE instances ADD COLUMN xp_total INTEGER DEFAULT 0').run()
-  db.prepare('ALTER TABLE instances ADD COLUMN level INTEGER DEFAULT 1').run()
+  // safeAddColumn: a bare ADD COLUMN made this the one migration that could not
+  // run twice, so a crash between it and its version row bricked the next boot.
+  safeAddColumn('instances', 'xp_total INTEGER DEFAULT 0')
+  safeAddColumn('instances', 'level INTEGER DEFAULT 1')
   setSchemaVersion(10)
 }
 
@@ -524,10 +535,9 @@ function migration022(): void {
     safeAddColumn(table, col)
   }
 
-  // Cloud Sync settings (URL, key, machine identity)
+  // Machine identity. This also seeded the Cloud Sync URL and key, which were removed with
+  // the feature (see migration052).
   const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
-  insertSetting.run('cloudSyncUrl', JSON.stringify(''))
-  insertSetting.run('cloudSyncKey', JSON.stringify(''))
   insertSetting.run('machineName', JSON.stringify(''))
   insertSetting.run('machineId', JSON.stringify(''))
 
@@ -731,7 +741,10 @@ function migration029(): void {
   for (const [table, col] of dropColumns) {
     try {
       db.exec(`ALTER TABLE ${table} DROP COLUMN ${col}`)
-    } catch { /* column absent (fresh DB) or already dropped */ }
+    } catch (err) {
+      // Absent (fresh DB) or already dropped. Anything else is a real failure.
+      if (!isNoSuchColumnError(err)) throw err
+    }
   }
 
   db.exec('DROP TABLE IF EXISTS pipeline_blueprints')
@@ -903,7 +916,7 @@ function migration037(): void {
 
 function migration038(): void {
   // The last five orchestrator fields. migration029 removed the orchestration layer but
-  // left these behind, and the pipeline audit proved every one of them renders somewhere
+  // left these behind, and a review of the pipeline proved every one of them renders somewhere
   // and reaches nothing: a task carrying a skill, an attachment and an unmet dependency
   // started anyway with none of them honoured, because buildKickoffPrompt interpolates
   // only title, description and comments.
@@ -925,7 +938,10 @@ function migration038(): void {
   for (const col of ['skill', 'depends_on', 'group_id', 'group_index', 'group_total']) {
     try {
       db.exec(`ALTER TABLE pipeline_tasks DROP COLUMN ${col}`)
-    } catch { /* column absent (fresh DB) or already dropped */ }
+    } catch (err) {
+      // Absent (fresh DB) or already dropped. Anything else is a real failure.
+      if (!isNoSuchColumnError(err)) throw err
+    }
   }
 
   setSchemaVersion(38)
@@ -1057,38 +1073,119 @@ function migration044(): void {
 }
 
 /**
+ * Split a CREATE TABLE body on its top-level commas: parentheses, quotes and brackets are
+ * respected, so `CHECK (a IN (1, 2))` or a DEFAULT holding a comma stays one piece.
+ */
+export function splitTopLevel(body: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let quote: string | null = null
+  let cur = ''
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]
+    if (quote) {
+      cur += ch
+      if (ch === quote) {
+        if (body[i + 1] === quote) { cur += body[++i]; continue } // doubled quote = escaped
+        quote = null
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; cur += ch; continue }
+    if (ch === '[') { quote = ']'; cur += ch; continue }
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  if (cur.trim()) out.push(cur)
+  return out
+}
+
+/** Remove NOT NULL (and any ON CONFLICT clause attached to it) from ONE column definition, outside parentheses. */
+function stripNotNull(def: string): string {
+  let depth = 0
+  let out = ''
+  for (let i = 0; i < def.length; i++) {
+    const ch = def[i]
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (depth === 0) {
+      const m = /^NOT\s+NULL(\s+ON\s+CONFLICT\s+\w+)?/i.exec(def.slice(i))
+      if (m && /\s/.test(def[i - 1] ?? ' ')) { i += m[0].length - 1; continue }
+    }
+    out += ch
+  }
+  return out.replace(/\s{2,}/g, ' ')
+}
+
+/**
+ * Build the CREATE TABLE statement for `table` with NOT NULL removed from `column` and
+ * NOTHING else changed. Works on the table's own stored SQL, so every CHECK,
+ * UNIQUE, FOREIGN KEY, COLLATE and table option survives. The old version rebuilt the table
+ * from `PRAGMA table_info`, which knows none of those, and silently dropped them.
+ */
+export function createSqlWithoutNotNull(storedSql: string, column: string, newName: string): string {
+  const open = storedSql.indexOf('(')
+  const close = storedSql.lastIndexOf(')')
+  if (open < 0 || close < open) throw new Error(`cannot parse CREATE TABLE: ${storedSql.slice(0, 80)}`)
+  const parts = splitTopLevel(storedSql.slice(open + 1, close))
+  const colName = (p: string) => {
+    const m = /^\s*(?:"((?:[^"]|"")+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][\w$]*))/.exec(p)
+    return m ? (m[1]?.replace(/""/g, '"') ?? m[2] ?? m[3] ?? m[4]) : null
+  }
+  let hit = 0
+  const rebuilt = parts.map(p => {
+    if (colName(p)?.toLowerCase() !== column.toLowerCase()) return p
+    hit++
+    return stripNotNull(p)
+  })
+  if (hit !== 1) throw new Error(`column ${column} not found exactly once in the stored CREATE TABLE`)
+  return `CREATE TABLE "${newName}" (${rebuilt.join(',')})${storedSql.slice(close + 1)}`
+}
+
+/**
  * Drop a NOT NULL constraint from one column. SQLite has no ALTER COLUMN, so the table is
- * rebuilt: same columns, same order, same defaults, same data, and every index recreated
- * from its own stored SQL (dropping a table drops its indexes with it). Wrapped in a
+ * rebuilt from its own stored SQL with only that constraint removed (SQLite's documented
+ * 12-step procedure, steps that apply here), the data copied, and every index and trigger
+ * recreated from its stored SQL (dropping a table drops both). Runs inside the migration's
  * transaction, so a failure halfway leaves the original table untouched.
+ *
+ * Refuses a table that other tables reference: with foreign keys on, DROP TABLE runs an
+ * implicit DELETE that would fire their ON DELETE actions, and foreign keys cannot be turned
+ * off inside a transaction. No such rebuild exists today; this makes sure one never runs.
  */
 function dropNotNull(table: string, column: string): void {
-  interface ColInfo { name: string; type: string; notnull: number; dflt_value: string | null; pk: number }
-  const info = db.prepare(`PRAGMA table_info(${table})`).all() as ColInfo[]
+  interface ColInfo { name: string; notnull: number }
+  const info = db.prepare(`PRAGMA table_info("${table}")`).all() as ColInfo[]
   const target = info.find(c => c.name === column)
   if (!target || target.notnull === 0) return
 
-  const indexes = db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL"
-  ).all(table) as Array<{ sql: string }>
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>
+  for (const t of tables) {
+    const fks = db.prepare(`PRAGMA foreign_key_list("${t.name}")`).all() as Array<{ table: string }>
+    if (t.name !== table && fks.some(fk => fk.table.toLowerCase() === table.toLowerCase())) {
+      throw new Error(`dropNotNull: refusing to rebuild ${table}, table ${t.name} references it`)
+    }
+  }
 
-  const defs = info.map(c => {
-    const parts = [`"${c.name}"`, c.type || 'TEXT']
-    if (c.pk) parts.push('PRIMARY KEY')
-    if (c.notnull && c.name !== column) parts.push('NOT NULL')
-    if (c.dflt_value != null) parts.push(`DEFAULT ${c.dflt_value}`)
-    return parts.join(' ')
-  })
+  const stored = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string }
+  const dependents = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = ? AND sql IS NOT NULL"
+  ).all(table) as Array<{ sql: string }>
   const names = info.map(c => `"${c.name}"`).join(', ')
 
   db.transaction(() => {
-    db.exec(`CREATE TABLE "${table}__rebuild" (${defs.join(', ')})`)
+    db.exec(createSqlWithoutNotNull(stored.sql, column, `${table}__rebuild`))
     db.exec(`INSERT INTO "${table}__rebuild" (${names}) SELECT ${names} FROM "${table}"`)
     db.exec(`DROP TABLE "${table}"`)
     db.exec(`ALTER TABLE "${table}__rebuild" RENAME TO "${table}"`)
-    for (const idx of indexes) db.exec(idx.sql)
+    for (const d of dependents) db.exec(d.sql)
   })()
 }
+
+/** Test hook: the rebuild helper, against whatever `db` is open. */
+export const _dropNotNull = dropNotNull
 
 function migration045(): void {
   // A routine may now be aimed at a PROJECT instead of a chat: leave the chat unpicked and
@@ -1271,7 +1368,7 @@ function migration047(): void {
     for (const r of routines) {
       const column = columnFor(r)
       insertTask.run({
-        id: r.id, // D3: keep the UUID, so routine_runs.routine_id becomes task_runs.task_id with no remap
+        id: r.id, // keep the UUID, so routine_runs.routine_id becomes task_runs.task_id with no remap
         project_id: placements.get(r.id)!,
         title: r.name,
         description: r.prompt,
@@ -1285,7 +1382,7 @@ function migration047(): void {
         next_run_at: r.next_run_at,
         last_run_at: r.last_run_at,
         queued_since: r.queued_since,
-        // D2: the routine's instance_id was always "the chat to FIRE AT", which is config.
+        // The routine's instance_id was always "the chat to FIRE AT", which is config.
         // It becomes target_instance_id. pipeline_tasks.instance_id (runtime) stays NULL:
         // no run has happened under the new model yet.
         target_instance_id: r.instance_id,
@@ -1538,6 +1635,68 @@ function migration050(): void {
   setSchemaVersion(50)
 }
 
+function migration051(): void {
+  // A real "hidden" flag for projects.
+  //
+  // "Hide Project" used to call the delete route, so one click wiped every card, routine,
+  // comment and chat in the project. Hiding is now this flag and nothing else: the sidebar
+  // leaves a hidden project out, a list at the bottom brings it back, and every row stays
+  // where it is. Delete is a separate action with its own confirmation.
+  //
+  // Additive with a default, so an old server running against this column is unaffected
+  // and every existing project reads as visible.
+  safeAddColumn('folders', 'hidden INTEGER NOT NULL DEFAULT 0')
+  setSchemaVersion(51)
+}
+
+export function migration052(): void {
+  // Cloud Sync was removed. Its URL and service key sat in the settings table,
+  // where the key was returned by /api/state and broadcast to every WebSocket client on
+  // each settings change. Delete both rows so the key is gone from existing databases too.
+  // Idempotent: deleting rows that are not there is a no-op. The folders.cloud_sync column
+  // is left in place (nothing reads it any more, and dropping a column is not done here).
+  db.prepare("DELETE FROM settings WHERE key IN ('cloudSyncUrl', 'cloudSyncKey')").run()
+  setSchemaVersion(52)
+}
+
+export function migration053(): void {
+  // All additive and idempotent.
+  //
+  // turn_costs(task_id): every task turn re-sums its card's tokens and cost with subqueries
+  // filtered on task_id, each a full scan of a table that is never pruned.
+  // turn_costs(created_at): the usage page's date-range filters, a full scan per query.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_turn_costs_task ON turn_costs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_turn_costs_created ON turn_costs(created_at);
+  `)
+  // When the chat's process started, recorded with its PID. After a restart the PID alone
+  // cannot tell the agent apart from an unrelated program that was later given the same number.
+  safeAddColumn('instances', 'process_started_at INTEGER DEFAULT NULL')
+  setSchemaVersion(53)
+}
+
+export function migration054(): void {
+  // Per-card "send comments as context". NULL is AUTO, not off: a plain task sends its
+  // comments, a card with a schedule does not. Stored as NULL so every existing routine
+  // turns off without a data rewrite, and a card that gains a schedule later follows too.
+  // An explicit 1 or 0 is the user's own choice and always wins.
+  safeAddColumn('pipeline_tasks', 'send_comments INTEGER DEFAULT NULL')
+  // Where a routine's close summary lands. It used to become a comment, and a daily card
+  // collected one a day until the comments a human wrote were buried under them.
+  safeAddColumn('task_runs', 'summary TEXT DEFAULT NULL')
+  setSchemaVersion(54)
+}
+
+export function migration055(): void {
+  // Close itself when it succeeds: the run must end with `RESULT: OK` (verdict.ts). Any card,
+  // manual or scheduled. 0 keeps today's behaviour exactly.
+  // It first shipped inside an already-applied migration's column list, so every database
+  // that was past it never got the column and the server crashed at boot on the scheduler's
+  // first SELECT. A migration that has shipped is never edited: a new column is a new number.
+  safeAddColumn('pipeline_tasks', 'self_close INTEGER NOT NULL DEFAULT 0')
+  setSchemaVersion(55)
+}
+
 const migrations = [
   migration001, migration002, migration003, migration004, migration005,
   migration006, migration007, migration008, migration009, migration010,
@@ -1549,24 +1708,110 @@ const migrations = [
   migration036, migration037, migration038, migration039, migration040,
   migration041, migration042, migration043, migration044, migration045,
   migration046, migration047, migration048, migration049, migration050,
+  migration051, migration052, migration053, migration054, migration055,
 ]
 
-function runMigrations(): void {
-  const currentVersion = getSchemaVersion()
-  for (let i = currentVersion; i < migrations.length; i++) {
-    migrations[i]()
+export const LATEST_SCHEMA_VERSION = migrations.length
+
+/** Test hook: run migration number `n` (1-based) against the open database, as the runner would. */
+export function _runMigrationForTest(n: number): void {
+  db.transaction(() => { migrations[n - 1]() }).immediate()
+}
+
+/** Where automatic pre-migration backups go, and how many are kept. */
+export const BACKUP_DIR = path.join(DATA_DIR, 'backups')
+const BACKUPS_KEPT = 3
+
+export class MigrationBackupError extends Error {}
+
+/**
+ * Before ANY pending migration runs, take a WAL-safe copy of the database with
+ * SQLite's online backup API, then open that copy and prove it: integrity_check must say ok
+ * and every table must hold the same number of rows as the live one. A copy that fails either
+ * test is deleted and a MigrationBackupError thrown, and the caller then refuses to migrate.
+ *
+ * Returns the verified backup's path.
+ */
+async function backupBeforeMigrating(fromVersion: number, toVersion: number): Promise<string> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const dest = path.join(BACKUP_DIR, `pre-migration-v${fromVersion}-to-v${toVersion}-${stamp}.db`)
+  try {
+    if (process.env.ORCSTRATOR_FORCE_BACKUP_FAILURE === '1') throw new Error('forced by ORCSTRATOR_FORCE_BACKUP_FAILURE')
+    fs.mkdirSync(BACKUP_DIR, { recursive: true })
+    await db.backup(dest)
+    // The copy inherits WAL mode; make it one self-contained file (no -wal/-shm beside it).
+    const single = new Database(dest, { fileMustExist: true })
+    try { single.pragma('journal_mode = DELETE') } finally { single.close() }
+    const copy = new Database(dest, { readonly: true, fileMustExist: true })
+    try {
+      const integrity = copy.pragma('integrity_check', { simple: true })
+      if (integrity !== 'ok') throw new Error(`integrity_check on the backup said: ${String(integrity)}`)
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>
+      for (const { name } of tables) {
+        const live = (db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get() as { n: number }).n
+        const saved = (copy.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get() as { n: number }).n
+        if (live !== saved) throw new Error(`table ${name}: ${live} rows live, ${saved} in the backup`)
+      }
+    } finally {
+      copy.close()
+    }
+  } catch (err) {
+    try { fs.rmSync(dest, { force: true }) } catch { /* nothing written */ }
+    throw new MigrationBackupError(`Could not make a verified backup before updating the database: ${(err as Error).message}`)
   }
+  // Keep the newest few.
+  try {
+    const old = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('pre-migration-') && f.endsWith('.db'))
+      .map(f => ({ f, t: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .slice(BACKUPS_KEPT)
+    for (const o of old) fs.rmSync(path.join(BACKUP_DIR, o.f), { force: true })
+  } catch { /* pruning is housekeeping, never a reason to fail */ }
+  console.log(`[db] Backup before migrating v${fromVersion} -> v${toVersion}: ${dest} (integrity ok, row counts match)`)
+  return dest
+}
+
+/**
+ * Apply every pending migration, each in its own IMMEDIATE transaction: a crash or
+ * a power cut mid-migration now rolls that migration back whole, instead of leaving a
+ * half-applied data rewrite with no version row. Nothing runs unless the verified backup
+ * above succeeded first.
+ */
+async function runMigrations(): Promise<{ from: number; to: number; backup: string | null }> {
+  const currentVersion = getSchemaVersion()
+  if (currentVersion >= migrations.length) return { from: currentVersion, to: currentVersion, backup: null }
+  const backup = await backupBeforeMigrating(currentVersion, migrations.length)
+  for (let i = currentVersion; i < migrations.length; i++) {
+    db.transaction(() => { migrations[i]() }).immediate()
+  }
+  return { from: currentVersion, to: migrations.length, backup }
 }
 
 // One-time import: on first boot (no v2 DB yet), adopt the OrcStrator v1 database
 // so chats, pipeline tasks, and cost history carry over.
-function importV1Database(): boolean {
+//
+// V1 may still be running, and its database is in WAL mode, so copying the .db,
+// -wal and -shm files one after another can capture an inconsistent snapshot. SQLite's
+// online backup API reads a consistent one from a read-only connection; the result is then
+// quick_check'ed, and a copy that fails is discarded rather than migrated.
+async function importV1Database(): Promise<boolean> {
   if (fs.existsSync(DB_PATH)) return false
-  const v1Db = path.join(os.homedir(), '.orcstrator', 'orcstrator.db')
+  const v1Db = process.env.ORCSTRATOR_V1_DB || path.join(os.homedir(), '.orcstrator', 'orcstrator.db')
   if (!fs.existsSync(v1Db)) return false
-  fs.copyFileSync(v1Db, DB_PATH)
-  for (const suffix of ['-wal', '-shm']) {
-    if (fs.existsSync(v1Db + suffix)) fs.copyFileSync(v1Db + suffix, DB_PATH + suffix)
+  const tmp = `${DB_PATH}.import-${process.pid}`
+  try {
+    const src = new Database(v1Db, { readonly: true, fileMustExist: true })
+    try { await src.backup(tmp) } finally { src.close() }
+    const check = new Database(tmp, { readonly: true })
+    let verdict: unknown
+    try { verdict = check.pragma('quick_check', { simple: true }) } finally { check.close() }
+    if (verdict !== 'ok') throw new Error(`quick_check said: ${String(verdict)}`)
+    fs.renameSync(tmp, DB_PATH)
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* nothing to clean */ }
+    console.error(`[db] First boot: could NOT import the OrcStrator v1 database from ${v1Db} (${(err as Error).message}); starting empty instead`)
+    return false
   }
   console.log(`[db] First boot: imported OrcStrator v1 database from ${v1Db}`)
   return true
@@ -1579,13 +1824,25 @@ function sanitizeImportedRuntimeState(): void {
   console.log(`[db] Import sanitized: ${inst.changes} instance(s) reset to idle`)
 }
 
-function initDb(): void {
-  ensureDataDir()
-  const imported = importV1Database()
-  db = new Database(DB_PATH)
-  db.pragma('journal_mode = WAL')
+/**
+ * Set when the pre-migration backup failed: the database is open READ-ONLY and no migration
+ * ran. index.ts reads it to refuse writes with this message instead of half-working.
+ */
+let dbReadOnlyReason: string | null = null
+
+function openDb(readonly: boolean): void {
+  db = new Database(DB_PATH, readonly ? { readonly: true } : {})
+  // `auto_vacuum = INCREMENTAL` only takes effect on a database that has no tables
+  // yet. It used to be set on every open, which read as if existing databases reclaimed their
+  // free pages; they never did (the live one was 79% empty pages). It is now set only where it
+  // works, a brand-new file. An existing database is switched over once, with the app stopped,
+  // by scripts/vacuum-db.mjs; maintenance then runs incremental_vacuum.
+  if (!readonly) {
+    const tables = (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get() as { n: number }).n
+    if (tables === 0) db.pragma('auto_vacuum = INCREMENTAL')
+    db.pragma('journal_mode = WAL')
+  }
   db.pragma('foreign_keys = ON')
-  db.pragma('auto_vacuum = INCREMENTAL')
   // Contention default is busy_timeout=0: a second writer throws SQLITE_BUSY
   // instantly, and the hot-path writes wrapped in bare `catch` (turn_costs,
   // token updates) silently DROP the row. 5s of retrying absorbs any realistic
@@ -1595,10 +1852,44 @@ function initDb(): void {
   // autocommit. Worst case on OS crash is losing the last few transactions, never
   // corruption - the right trade for per-turn streaming writes.
   db.pragma('synchronous = NORMAL')
-  runMigrations()
+  // Keep the -wal file from growing without bound between checkpoints.
+  if (!readonly) db.pragma('journal_size_limit = 67108864')
+}
+
+/**
+ * Open the database: take the data dir's single-owner lock, import v1 on a first
+ * boot, back up and migrate. Throws DataDirLockedError when another server owns the folder.
+ * A failed pre-migration backup does NOT throw: the database opens read-only and
+ * dbReadOnlyReason says why.
+ */
+async function initDb(opts: { port?: number } = {}): Promise<void> {
+  ensureDataDir()
+  await acquireDataDirLock(DATA_DIR, { port: opts.port })
+  // A second call in one process (tests, a script) must not leave the first connection open.
+  if (db?.open) db.close()
+  dbReadOnlyReason = null
+  const imported = await importV1Database()
+  openDb(false)
+  try {
+    await runMigrations()
+  } catch (err) {
+    if (!(err instanceof MigrationBackupError)) throw err
+    dbReadOnlyReason = err.message
+    console.error('')
+    console.error('================================================================')
+    console.error(`[db] ${err.message}`)
+    console.error('[db] The database was NOT updated. OrcStrator is starting READ-ONLY so nothing')
+    console.error('[db] can be written to a database that has no restore point. Free some disk')
+    console.error(`[db] space or check ${BACKUP_DIR}, then restart.`)
+    console.error('================================================================')
+    console.error('')
+    db.close()
+    openDb(true)
+    return
+  }
   if (imported) sanitizeImportedRuntimeState()
 }
 
 export function closeDb(): void { db.close() }
 
-export { db, initDb }
+export { db, initDb, dbReadOnlyReason }

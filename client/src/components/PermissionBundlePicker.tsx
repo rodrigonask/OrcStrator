@@ -2,6 +2,21 @@ import { PERMISSION_BUNDLES, ALL_BUNDLE_IDS, SAFE_BUNDLE_IDS, DESTRUCTIVE_FENCE,
 import { useUI } from '../context/UIContext'
 
 /**
+ * The fence's patterns grouped into what they protect, for people, with the raw list one more
+ * click away for whoever wants to check it. A wall of a thousand glob patterns reads as a list of
+ * a thousand dangers.
+ */
+function fenceGroups(): Array<{ label: string; count: number }> {
+  const groups = [
+    { label: 'Rewriting or deleting git history that is already pushed', test: (r: string) => /\bgit\b/.test(r) },
+    { label: 'Deleting your home folder', test: (r: string) => /~|HOME|home|USERPROFILE|userprofile|Users|users/.test(r) },
+    { label: 'Deleting the folders Windows needs', test: (r: string) => /indows|INDOWS|rogram|ROGRAM|WINDIR|windir|SYSTEMROOT|systemroot|SystemRoot|programfiles/.test(r) },
+    { label: 'Deleting the whole drive', test: (r: string) => / \/\)| \/ \*\)/.test(r) },
+  ]
+  return groups.map(g => ({ label: g.label, count: DESTRUCTIVE_FENCE.filter(g.test).length }))
+}
+
+/**
  * The app-wide fence, shown read-only where it cannot be changed.
  *
  * Without this the per-chat modal gave no hint the fence existed, so a chat blocked by it
@@ -17,22 +32,33 @@ function FenceNote() {
         <strong>Block destructive commands is {on ? 'ON' : 'OFF'}</strong>, app-wide, set in
         Settings.{' '}
         {on
-          ? <>It refuses {DESTRUCTIVE_FENCE.length} things no matter what this chat is granted:
+          ? <>It refuses a short list of catastrophes no matter what this chat is granted:
               rewriting or deleting history that is already pushed, deleting a trunk branch such
-              as main on the remote, and deleting the folders Windows needs. Deleting a merged
-              feature branch is not on that list. A deny cannot be lifted for one chat, so this
-              is the one thing on this screen you cannot change from here.</>
+              as main on the remote, deleting your whole home folder, and deleting the folders
+              Windows needs. It is a list of spellings, not an understanding of the command, so an
+              unusual one can still get past it: deleting everything INSIDE your home folder with
+              a wildcard is the known gap. Deleting a merged feature branch, or a folder inside
+              your home folder, is allowed. A deny cannot be lifted for one chat, so this is the
+              one thing on this screen you cannot change from here.</>
           : <>Nothing is fenced, for any chat, including force-pushing over work that is already
               on GitHub.</>}
       </p>
       {on && (
         <details className="set-advanced">
-          <summary>See the {DESTRUCTIVE_FENCE.length} patterns</summary>
-          <div className="set-tags">
-            {DESTRUCTIVE_FENCE.map(rule => (
-              <span key={rule} className="settings-flag">{rule}</span>
+          <summary>What it blocks</summary>
+          <ul className="set-guide" style={{ margin: '6px 0', paddingLeft: 18 }}>
+            {fenceGroups().map(g => (
+              <li key={g.label}>{g.label} <span style={{ color: 'var(--text-muted)' }}>({g.count} spellings)</span></li>
             ))}
-          </div>
+          </ul>
+          <details className="set-advanced">
+            <summary>Technical: every pattern</summary>
+            <div className="set-tags" style={{ maxHeight: 220, overflowY: 'auto' }}>
+              {DESTRUCTIVE_FENCE.map(rule => (
+                <span key={rule} className="settings-flag">{rule}</span>
+              ))}
+            </div>
+          </details>
         </details>
       )}
     </div>
@@ -83,7 +109,7 @@ export function PermissionBundlePicker({
             <button
               className="btn btn-sm"
               onClick={() => { onChange([...SAFE_BUNDLE_IDS]); onBlockDestructive!(true) }}
-            >Allow everything except destructive</button>
+            >Allow everything except the catastrophic</button>
             <button
               className="btn btn-sm"
               onClick={() => { onChange([...ALL_BUNDLE_IDS]); onBlockDestructive!(false) }}
@@ -108,9 +134,10 @@ export function PermissionBundlePicker({
               <div className="perm-bundle-main">
                 <span className="perm-bundle-label">
                   {bundle.label}
-                  {bundle.readOnly && <span className="perm-bundle-tag">cannot break anything</span>}
+                  {bundle.readOnly && <span className="perm-bundle-tag">asks before any change</span>}
                 </span>
                 <span className="perm-bundle-desc">{bundle.description}</span>
+                {bundle.autoModeNote && <span className="perm-bundle-desc perm-bundle-auto-note">{bundle.autoModeNote}</span>}
               </div>
               <div
                 className={`toggle-switch ${on ? 'active' : ''}`}
@@ -139,9 +166,10 @@ export function PermissionBundlePicker({
           </div>
           <p className="set-guide">
             {blockDestructive
-              ? <>On. Refuses {DESTRUCTIVE_FENCE.length} things: rewriting or deleting history that
-                  is already pushed, and deleting the folders Windows needs. That is all it covers,
-                  and it wins over every allow above.</>
+              ? <>On. Refuses rewriting or deleting git history that is already pushed, deleting
+                  your whole home folder, and deleting the folders Windows needs, in the usual
+                  spellings. It matches spellings, so an unusual one can slip past. It overrides
+                  every switch above.</>
               : <>Off. Nothing is fenced, including force-pushing over work that is already on
                   GitHub. This is what makes the button above mean everything.</>}
           </p>

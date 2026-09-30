@@ -124,7 +124,7 @@ export function SecurityBanner() {
               ? <>The security scan didn’t finish, so rotate any keys you pasted to be safe.</>
               : total > 0
                 ? <>Chat cleaned: removed {found}.</>
-                : <>Chat cleaned, no secrets found.</>}
+                : <>Chat cleaned. No key or password formats OrcStrator recognises were found.</>}
           </>
         )}
 
@@ -132,7 +132,7 @@ export function SecurityBanner() {
             yet and the banner is holding the line open for it. */}
         {securityNotice.phase === 'done' && !log && (total > 0
           ? <><strong>Chat cleaned.</strong> Removed {found} from “{name}”.</>
-          : <><strong>Chat cleaned.</strong> No secrets found in “{name}”.</>)}
+          : <><strong>Chat cleaned.</strong> No key or password formats OrcStrator recognises were found in “{name}”.</>)}
         {securityNotice.phase === 'error' && !log && (
           <>Closed “{name}”, but the scan didn’t finish. Rotate any keys you pasted to be safe.</>
         )}

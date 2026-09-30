@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../db.js'
+import { clampLimit } from '../services/limits.js'
 import type { ActivityEntry } from '@orcstrator/shared'
 
 // Task Activity: every scheduled fire in one list, newest first. Scheduled card runs and
@@ -104,7 +105,7 @@ export function listActivity(limit: number): ActivityEntry[] {
 export default async function activityRoutes(app: FastifyInstance): Promise<void> {
   app.get('/activity', async (request) => {
     const q = request.query as { limit?: string }
-    const limit = parseInt(q.limit ?? '100', 10)
+    const limit = clampLimit(q.limit, 100, MAX_LIMIT)
     return { entries: listActivity(Number.isFinite(limit) ? limit : 100) }
   })
 }

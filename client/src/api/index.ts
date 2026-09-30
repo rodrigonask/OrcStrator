@@ -1,28 +1,32 @@
 import { rest } from './rest'
 import { wsClient } from './ws'
+import type { WsEventMap, WsEventName, WsClientEventMap } from '@shared/ws-events'
+
+type Handler<K extends WsEventName> = (payload: WsEventMap[K]) => void
 
 export const api = {
   ...rest,
 
-  // WebSocket event subscriptions
-  onClaudeOutputBatch: (cb: (payload: any) => void) =>
+  // WebSocket event subscriptions. Event names and payloads come from the shared map the server
+  // broadcasts through (shared/src/ws-events.ts), so a renamed event is a type error.
+  onClaudeOutputBatch: (cb: Handler<'claude:output-batch'>) =>
     wsClient.on('claude:output-batch', cb),
-  onClaudeProcessExit: (cb: (payload: any) => void) =>
+  onClaudeProcessExit: (cb: Handler<'claude:process-exit'>) =>
     wsClient.on('claude:process-exit', cb),
-  onUsageUpdated: (cb: (payload: any) => void) =>
+  onUsageUpdated: (cb: Handler<'usage:plan-updated'>) =>
     wsClient.on('usage:plan-updated', cb),
-  onPipelineUpdated: (cb: (payload: any) => void) =>
+  onPipelineUpdated: (cb: Handler<'pipeline:updated'>) =>
     wsClient.on('pipeline:updated', cb),
-  onUsageAlert: (cb: (payload: any) => void) =>
+  onUsageAlert: (cb: Handler<'usage:alert'>) =>
     wsClient.on('usage:alert', cb),
-  onConnection: (cb: (payload: { connected: boolean }) => void) =>
+  onConnection: (cb: (payload: WsClientEventMap['connection']) => void) =>
     wsClient.on('connection', cb),
-  onMessageAdded: (cb: (payload: any) => void) =>
+  onMessageAdded: (cb: Handler<'message:added'>) =>
     wsClient.on('message:added', cb),
-  onInstanceOverdrive: (cb: (payload: any) => void) =>
+  onInstanceOverdrive: (cb: Handler<'instance:overdrive'>) =>
     wsClient.on('instance:overdrive', cb),
-  onEvent: (event: string, cb: (payload: any) => void) =>
-    wsClient.on(event, cb),
+  onEvent: <K extends WsEventName>(event: K, cb: Handler<K>) =>
+    wsClient.on(event, cb as (payload: unknown) => void),
 
   // Connection management
   connect: () => wsClient.connect(),

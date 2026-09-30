@@ -79,16 +79,60 @@ export function isInRollout(installId, percent) {
   return rolloutBucket(installId) < p;
 }
 
-/** Parse "Authorization: Bearer <key>", or the ?key= fallback for curl. */
+/** Parse "Authorization: Bearer <key>". Header only: a key in the
+ *  URL ends up in access logs, proxies and browser history. */
 export function extractKey(request) {
   const auth = request.headers.get('authorization') || '';
   const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
-  if (m) return m[1].trim();
+  return m ? m[1].trim() : null;
+}
+
+/** An install id is a GUID the launcher generated. Anything else
+ *  is treated as no id, which never rides a partial rollout. */
+export const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function extractInstallId(request) {
+  const id = (request.headers.get('x-orc-install-id') || '').trim();
+  return INSTALL_ID_RE.test(id) ? id.toLowerCase() : '';
+}
+
+/** Telemetry limits: the body is tiny and every field has a shape. */
+export const TELEMETRY_MAX_BYTES = 1024;
+export const TELEMETRY_OUTCOMES = ['installed', 'updated', 'up-to-date', 'rolled-back', 'failed'];
+
+/** Read at most `max` bytes of a body; null when it is longer. */
+async function readLimited(request, max) {
+  const len = request.headers.get('content-length');
+  if (len != null && Number(len) > max) return null;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) { try { await reader.cancel(); } catch { /* ignore */ } return null; }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.byteLength; }
+  return new TextDecoder().decode(all);
+}
+
+/**
+ * Rate limit through the Workers Rate Limiting binding ORC_RATE_LIMITER
+ * (wrangler.toml), keyed by client IP and route class. No binding (local
+ * tests, or before it is deployed) means no limit, never a refusal.
+ */
+async function rateLimited(env, request, what) {
+  if (!env.ORC_RATE_LIMITER) return false;
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
   try {
-    const k = new URL(request.url).searchParams.get('key');
-    return k ? k.trim() : null;
+    const { success } = await env.ORC_RATE_LIMITER.limit({ key: `${what}:${ip}` });
+    return !success;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -231,6 +275,38 @@ async function sha256Bytes(s) {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(s))));
 }
 
+/** -1 / 0 / 1 by semver precedence (same rules as the launcher's Compare-OrcVersion). */
+export function compareVersions(a, b) {
+  const split = (s) => {
+    const v = String(s).split('+')[0];
+    const i = v.indexOf('-');
+    const core = (i < 0 ? v : v.slice(0, i)).split('.').map((x) => parseInt(x, 10) || 0);
+    while (core.length < 3) core.push(0);
+    return { core, pre: i < 0 ? [] : v.slice(i + 1).split('.') };
+  };
+  const x = split(a); const y = split(b);
+  for (let i = 0; i < Math.max(x.core.length, y.core.length); i++) {
+    const d = (x.core[i] || 0) - (y.core[i] || 0);
+    if (d) return Math.sign(d);
+  }
+  if (!x.pre.length && !y.pre.length) return 0;
+  if (!x.pre.length) return 1;
+  if (!y.pre.length) return -1;
+  for (let i = 0; i < Math.min(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i]; const q = y.pre[i];
+    const pn = /^\d+$/.test(p); const qn = /^\d+$/.test(q);
+    let c;
+    if (pn && qn) {
+      const p2 = p.replace(/^0+/, ''); const q2 = q.replace(/^0+/, '');
+      c = p2.length !== q2.length ? Math.sign(p2.length - q2.length) : (p2 < q2 ? -1 : p2 > q2 ? 1 : 0);
+    } else if (pn) c = -1;
+    else if (qn) c = 1;
+    else c = p < q ? -1 : p > q ? 1 : 0;
+    if (c) return c;
+  }
+  return Math.sign(x.pre.length - y.pre.length);
+}
+
 /** Constant-time token check: both sides are hashed to 32 bytes first, so
  *  neither the length nor the first differing byte leaks through timing. */
 export async function tokenMatches(given, expected) {
@@ -305,6 +381,84 @@ async function checkReferenced(bucket, key, size, sha256) {
   if (Number(obj.size) !== Number(size)) return `${key} is ${obj.size} bytes in storage but the manifest says ${size}`;
   const stored = storedSha256(obj);
   if (stored && stored !== String(sha256 || '').toLowerCase()) return `${key} sha256 in storage does not match the manifest`;
+  return null;
+}
+
+/**
+ * The signed manifest of policy.fallbackVersion, as stored text, or null.
+ * Only a version stored through the upload route (so signature-checked), on
+ * the same channel, and not itself withdrawn. Never rewritten.
+ */
+async function readFallback(env, channel, cfg) {
+  const v = String(cfg?.fallbackVersion || '');
+  if (!v || !UPLOAD_VERSION_RE.test(v) || !env.ORC_RELEASES) return null;
+  const blocked = Array.isArray(cfg.blockedVersions) ? cfg.blockedVersions : [];
+  if (blocked.includes(v)) return null;
+  try {
+    const obj = await env.ORC_RELEASES.get(`${v}/manifest.json`);
+    if (!obj) return null;
+    const text = await obj.text();
+    const m = JSON.parse(text.trimStart())?.manifest;
+    if (!m || m.version !== v || m.channel !== channel) return null;
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which signed manifest names the download `<version>/<file>`?
+ * Looks at that version's stored manifest (<version>/manifest.json), then at
+ * each channel pointer that is on that version. Every manifest in the bucket
+ * got there either through PUT /admin/upload, which verifies its signature
+ * against RELEASE_PUBLIC_KEY before storing it, or by the maintainer's hand,
+ * so a manifest found here is a signed one. The upload token alone can add a
+ * zip or exe but never a manifest naming it.
+ * Returns { ok: true, sha256, size } or { ok: false, reason }.
+ */
+export async function findNamingManifest(env, key) {
+  const [version, file] = key.split('/');
+  const candidates = [];
+  const read = async (name) => {
+    try {
+      if (env.ORC_RELEASES) {
+        const obj = await env.ORC_RELEASES.get(name);
+        return obj ? JSON.parse(await obj.text()) : null;
+      }
+      if (env.PUBLIC_BASE) {
+        const r = await fetch(`${env.PUBLIC_BASE.replace(/\/$/, '')}/${name}`, { cf: { cacheTtl: 30 } });
+        return r.ok ? await r.json() : null;
+      }
+    } catch {
+      // unreadable or not JSON: it names nothing
+    }
+    return null;
+  };
+  candidates.push(await read(`${version}/manifest.json`));
+  for (const ch of CHANNELS) {
+    const e = await read(`${ch}.json`);
+    if (e?.manifest?.version === version) candidates.push(e);
+  }
+  for (const e of candidates) {
+    const m = e?.manifest;
+    if (!m || m.version !== version) continue;
+    if (m.file === file) return { ok: true, sha256: String(m.sha256 || ''), size: m.size };
+    if (m.installer && m.installer.file === file) return { ok: true, sha256: String(m.installer.sha256 || ''), size: m.installer.size };
+  }
+  return { ok: false, reason: 'no signed manifest names this file' };
+}
+
+/** The stored object must be the one the manifest signed for: its size, and
+ *  its sha256 whenever R2 holds one (everything uploaded through
+ *  PUT /admin/upload does). Returns an error string or null. */
+function storedMismatch(obj, want) {
+  if (want.size != null && obj.size != null && Number(obj.size) !== Number(want.size)) {
+    return 'stored file does not match its signed manifest (size)';
+  }
+  const stored = storedSha256(obj);
+  if (stored && stored !== String(want.sha256 || '').toLowerCase()) {
+    return 'stored file does not match its signed manifest (sha256)';
+  }
   return null;
 }
 
@@ -388,7 +542,24 @@ async function handleUpload(request, env, url) {
   if (!versioned || (await versioned.text()) !== text) {
     return json({ error: `${UPLOAD_CHANNEL}.json must be byte-identical to an uploaded ${v}/manifest.json` }, 409);
   }
-  await put(target.key, { cacheControl: 'no-cache, max-age=0' });
+  // Never backwards: the upload token alone must not be able to
+  // point the channel at an OLDER signed release and freeze every install on
+  // it. Withdrawing a release is the KV kill switch (blockedVersions), not a
+  // pointer rollback.
+  const current = await bucket.get(`${UPLOAD_CHANNEL}.json`);
+  if (current) {
+    let cv = null;
+    try { cv = JSON.parse((await current.text()).trimStart())?.manifest?.version ?? null; } catch { cv = null; }
+    if (cv && compareVersions(v, cv) < 0) {
+      return json({ error: `${UPLOAD_CHANNEL}.json is on ${cv}; it never moves back to ${v}. Use the kill switch (blockedVersions) to withdraw a release.` }, 409);
+    }
+  }
+  // Conditional on the pointer we just compared against, so two uploads
+  // racing cannot land an older version after a newer one.
+  const opts = { httpMetadata: { contentType: 'application/json', cacheControl: 'no-cache, max-age=0' } };
+  if (current?.etag) opts.onlyIf = { etagMatches: current.etag };
+  const done = await bucket.put(target.key, text, opts);
+  if (done === null) return json({ error: `${UPLOAD_CHANNEL}.json changed while this upload was checked; send it again` }, 409);
   return json({ status: 'published', key: target.key, version: v, channel: UPLOAD_CHANNEL }, 200);
 }
 
@@ -437,11 +608,49 @@ ${ver}
 `;
 }
 
+/**
+ * A person clicking "Download for Windows" gets a plain page, not JSON, when
+ * a download cannot be served. Programs (the launcher, CI) still get the
+ * JSON; the technical reason is kept in the x-orc-error header either way.
+ */
+export function renderDownloadProblem(status) {
+  const msg = status === 429 ? 'Too many downloads from this connection. Please wait a minute and try again.'
+    : (status === 401 || status === 403) ? 'This download is by invitation. Use the download link you were sent.'
+    : status === 404 ? 'This download link is not valid any more. Go back and use the current download button.'
+    : 'The download is not available right now. Please try again in a few minutes.';
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OrcStrator</title>
+<style>body{font-family:Segoe UI,system-ui,sans-serif;background:#12121a;color:#e8e8ef;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}main{max-width:520px;padding:32px;text-align:center}a{color:#8fb0ff}</style>
+</head>
+<body><main><h1>OrcStrator</h1><p>${escapeHtml(msg)}</p><p><a href="/">Back</a></p></main></body>
+</html>
+`;
+}
+
+async function friendlyDownloadError(request, url, res) {
+  if (res.status < 400 || !url.pathname.startsWith('/download/')) return res;
+  if (!/text\/html/i.test(request.headers.get('accept') || '')) return res;
+  let reason = '';
+  try { reason = String((await res.clone().json())?.error || ''); } catch { /* not JSON */ }
+  return new Response(request.method === 'HEAD' ? null : renderDownloadProblem(res.status), {
+    status: res.status,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-orc-error': reason.slice(0, 200) },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    return friendlyDownloadError(request, url, await handle(request, env));
+  },
+};
+
+async function handle(request, env) {
+  {
+    const url = new URL(request.url);
     const requireKey = String(env.REQUIRE_KEY ?? 'false') === 'true';
-    const installId = request.headers.get('x-orc-install-id') || url.searchParams.get('install') || '';
+    const installId = extractInstallId(request);
 
     if (url.pathname === '/health') return json({ status: 'ok' });
 
@@ -469,6 +678,7 @@ export default {
     if (url.pathname === '/stable.json' || url.pathname === '/beta.json') {
       const channel = url.pathname.slice(1).replace('.json', '');
 
+      if (requireKey && await rateLimited(env, request, 'licence')) return json({ error: 'too many requests' }, 429);
       const lic = await checkLicence(env.ORC_KV, extractKey(request), requireKey);
       if (!lic.ok) return json({ error: lic.reason }, lic.status);
 
@@ -483,6 +693,18 @@ export default {
       });
 
       if (!decision.serve) {
+        // Launchers released before 2.2 read a 204 as a failed
+        // signature and show a red alarm. With policy fallbackVersion set
+        // (the release before the withheld one), serve THAT version's signed
+        // manifest instead: every launcher already on it sees "up to date",
+        // and the downgrade guard keeps anyone newer where they are.
+        const fb = await readFallback(env, channel, cfg);
+        if (fb) {
+          return new Response(fb, {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-orc-reason': `${decision.reason}; serving ${cfg.fallbackVersion}` },
+          });
+        }
         // 204 rather than an error: the launcher is healthy and correctly
         // configured, there is simply nothing for it to install right now.
         return new Response(null, {
@@ -499,6 +721,7 @@ export default {
 
     // --- installer (stable download link for the website) -----------------
     if (url.pathname === '/download/latest') {
+      if (requireKey && await rateLimited(env, request, 'licence')) return json({ error: 'too many requests' }, 429);
       const lic = await checkLicence(env.ORC_KV, extractKey(request), requireKey);
       if (!lic.ok) return json({ error: lic.reason }, lic.status);
 
@@ -530,6 +753,8 @@ export default {
           ? await env.ORC_RELEASES.head(target.key)
           : await env.ORC_RELEASES.get(target.key);
         if (!obj) return json({ error: 'installer missing from storage' }, 404);
+        const bad = storedMismatch(obj, { sha256: target.sha256, size: envelope.manifest.installer.size });
+        if (bad) return json({ error: bad }, 409);
         if (obj.size != null) headers['content-length'] = String(obj.size);
         return new Response(request.method === 'HEAD' ? null : obj.body, { status: 200, headers });
       }
@@ -541,10 +766,12 @@ export default {
 
     // --- payload ----------------------------------------------------------
     if (url.pathname.startsWith('/download/')) {
+      if (requireKey && await rateLimited(env, request, 'licence')) return json({ error: 'too many requests' }, 429);
       const lic = await checkLicence(env.ORC_KV, extractKey(request), requireKey);
       if (!lic.ok) return json({ error: lic.reason }, lic.status);
 
-      const key = decodeURIComponent(url.pathname.slice('/download/'.length));
+      let key;
+      try { key = decodeURIComponent(url.pathname.slice('/download/'.length)); } catch { return json({ error: 'bad payload path' }, 400); }
       // Path traversal guard: exactly "<version>/<name>.zip",
       // "<version>/<name>.exe" (that release's installer) or
       // "<version>/manifest.json" (that release's signed manifest, so a
@@ -561,9 +788,22 @@ export default {
       }
       const ext = m[1] || m[2];
       const TYPES = { zip: 'application/zip', exe: 'application/vnd.microsoft.portable-executable', json: 'application/json' };
+      // A zip or exe is served only when a signed manifest names
+      // it. Without this, anyone holding the upload token could put any exe
+      // at <version>/OrcStrator-Setup-<version>.exe and have it served from
+      // the official address.
+      let named = null;
+      if (ext !== 'json') {
+        named = await findNamingManifest(env, key);
+        if (!named.ok) return json({ error: named.reason }, 404);
+      }
       if (env.ORC_RELEASES) {
         const obj = await env.ORC_RELEASES.get(key);
         if (!obj) return json({ error: 'not found' }, 404);
+        if (named) {
+          const bad = storedMismatch(obj, named);
+          if (bad) return json({ error: bad }, 409);
+        }
         const headers = {
           'content-type': TYPES[ext],
           'cache-control': ext === 'json' ? 'no-store' : 'public, max-age=31536000, immutable',
@@ -579,16 +819,20 @@ export default {
 
     // --- telemetry --------------------------------------------------------
     if (url.pathname === '/telemetry' && request.method === 'POST') {
+      // Bounded, validated and rate limited, so nobody can fill the
+      // update server's storage. A refused report is still a 204 (or a 429),
+      // never an error a client could trip over.
+      if (await rateLimited(env, request, 'telemetry')) return new Response(null, { status: 429 });
       try {
-        const body = await request.json();
-        if (installId) {
+        const text = await readLimited(request, TELEMETRY_MAX_BYTES);
+        if (text == null) return new Response(null, { status: 413 });
+        const body = JSON.parse(text);
+        const version = typeof body?.version === 'string' && UPLOAD_VERSION_RE.test(body.version) ? body.version : null;
+        const outcome = TELEMETRY_OUTCOMES.includes(body?.outcome) ? body.outcome : null;
+        if (installId && version && outcome) {
           await env.ORC_KV.put(
             `install:${installId}`,
-            JSON.stringify({
-              version: body.version ?? null,
-              outcome: body.outcome ?? null,
-              at: new Date().toISOString(),
-            }),
+            JSON.stringify({ version, outcome, at: new Date().toISOString() }),
             { expirationTtl: 60 * 60 * 24 * 90 }
           );
         }
@@ -599,5 +843,5 @@ export default {
     }
 
     return json({ error: 'not found' }, 404);
-  },
-};
+  }
+}

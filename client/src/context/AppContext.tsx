@@ -1,4 +1,5 @@
-import React, { useReducer, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, { useReducer, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useState } from 'react'
+import { sendFailureText } from '../utils/sendFailure'
 import { api } from '../api'
 import type {
   FolderConfig,
@@ -16,16 +17,16 @@ import { vfxBus } from '../systems/vfx-bus'
 import { notifyChatEvent } from '../utils/notifications'
 import { soundEngine } from '../systems/sound-engine'
 import { enqueueSurface, dropSurface, setSurfaceGate, pendingSurfaceIds } from '../systems/surface-queue'
-import { InstancesContext } from './InstancesContext'
-import { MessagesContext } from './MessagesContext'
+import { InstancesContext, createInstancesStore } from './InstancesContext'
+import { MessagesContext, createMessagesStore } from './MessagesContext'
 import type { CliPromptData, ScheduledWakeup } from './MessagesContext'
 import { UIContext } from './UIContext'
+import { LiveStatsContext, createLiveStatsStore } from './LiveStatsContext'
 import type { ViewName, GridNotice, SecurityNotice, SessionLogResult } from './UIContext'
 import { AppDispatchContext } from './AppDispatchContext'
-import { useInstances } from './InstancesContext'
-import { useMessages } from './MessagesContext'
-import { useUI } from './UIContext'
-import { useAppDispatch } from './AppDispatchContext'
+import { appendCapped, mergeNewestPage } from '../utils/messageCap'
+import { chatsToRefetchOnReconnect } from '../utils/reconnectRefetch'
+import { forgetChat, pruneChatKeys } from '../utils/chatStorage'
 
 /**
  * Backstop for the attention banner. The server's stream-parser is the primary gate
@@ -58,6 +59,8 @@ interface MessagesSlice {
   messages: Record<string, ChatMessage[]>
   messageOrder: string[]
   hasMore: Record<string, boolean>
+  /** Chats the user paged back through with "Load older": their loaded history is not capped. */
+  pagedBack: Record<string, boolean>
   streamingContent: Record<string, string>
   streamingToolCalls: Record<string, StreamingToolCall[]>
   /**
@@ -162,7 +165,7 @@ export type Action =
   // it still resolves the notice that was waiting on it.
   | { type: 'SET_SESSION_LOG'; payload: { instanceId: string; name?: string; log: SessionLogResult | null } }
   | { type: 'CLEAR_SECURITY_NOTICE' }
-  | { type: 'SET_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[]; hasMore?: boolean } }
+  | { type: 'SET_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[]; hasMore?: boolean; mergeNewest?: boolean } }
   | { type: 'PREPEND_MESSAGES'; payload: { instanceId: string; messages: ChatMessage[]; hasMore: boolean } }
   | { type: 'ADD_MESSAGE'; payload: ChatMessage }
   | { type: 'APPEND_STREAMING'; payload: { instanceId: string; text: string } }
@@ -233,6 +236,7 @@ const initialMessages: MessagesSlice = {
   messages: {},
   messageOrder: [],
   hasMore: {},
+  pagedBack: {},
   streamingContent: {},
   streamingToolCalls: {},
   toolResults: {},
@@ -354,7 +358,15 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
   switch (action.type) {
     case 'SET_MESSAGES': {
       const MAX_CACHED_INSTANCES = 10
-      const { instanceId: smId, messages: smMsgs, hasMore: smHasMore } = action.payload
+      const { instanceId: smId, mergeNewest } = action.payload
+      // A refetch of the newest page keeps what the user paged back to.
+      const merged = mergeNewest
+        ? mergeNewestPage(state.messages[smId] ?? [], action.payload.messages, action.payload.hasMore ?? false, state.hasMore[smId])
+        : null
+      // A merge that found no overlap replaced the list (history was cleared or renewed): that is a
+      // fresh list, not a paged-back one.
+      const smMsgs = merged ? merged.list : action.payload.messages
+      const smHasMore = merged ? merged.hasMore : action.payload.hasMore
       // Protected ids: the selected instance + every grid tile. These are visible
       // (or one click away) and must never lose their message cache.
       const protectIds: string[] = (action as any)._protectIds ?? []
@@ -375,12 +387,19 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
           finalOrder = newOrder.filter(id => id !== evict)
         }
       }
-      return { ...state, messages: newMessages, messageOrder: finalOrder, hasMore: newHasMore }
+      // A plain load (a chat opened fresh) starts un-paged; a newest-page merge keeps the user's state.
+      const newPagedBack = mergeNewest && merged && !merged.replaced ? state.pagedBack : { ...state.pagedBack, [smId]: false }
+      return { ...state, messages: newMessages, messageOrder: finalOrder, hasMore: newHasMore, pagedBack: newPagedBack }
     }
     case 'PREPEND_MESSAGES': {
       const { instanceId: pmId, messages: pmMsgs, hasMore: pmHasMore } = action.payload
       const existing = state.messages[pmId] || []
-      return { ...state, messages: { ...state.messages, [pmId]: [...pmMsgs, ...existing] }, hasMore: { ...state.hasMore, [pmId]: pmHasMore } }
+      return {
+        ...state,
+        messages: { ...state.messages, [pmId]: [...pmMsgs, ...existing] },
+        hasMore: { ...state.hasMore, [pmId]: pmHasMore },
+        pagedBack: { ...state.pagedBack, [pmId]: true },
+      }
     }
     case 'ADD_MESSAGE': {
       const instId = action.payload.instanceId
@@ -388,9 +407,13 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
       if (action.payload.id && existing.some(m => m.id === action.payload.id)) {
         return state
       }
-      const updated = [...existing, action.payload]
-      const capped = updated.length > 200 ? updated.slice(-200) : updated
-      return { ...state, messages: { ...state.messages, [instId]: capped } }
+      // Never trims history the user paged back to, and keeps "Load older" when it does trim.
+      const { list, trimmed } = appendCapped(existing, action.payload, !!state.pagedBack[instId])
+      return {
+        ...state,
+        messages: { ...state.messages, [instId]: list },
+        ...(trimmed ? { hasMore: { ...state.hasMore, [instId]: true } } : {}),
+      }
     }
     case 'APPEND_STREAMING': {
       const { instanceId, text } = action.payload
@@ -441,7 +464,9 @@ function messagesReducer(state: MessagesSlice, action: Action): MessagesSlice {
     case 'CLEAR_MESSAGES': {
       const { [action.payload]: _, ...restMessages } = state.messages
       const { [action.payload]: _r, ...restRaw } = state.rawOutput
-      return { ...state, messages: restMessages, rawOutput: restRaw }
+      // A cleared chat is no longer paged back; left set, it would stay uncapped.
+      const { [action.payload]: _p, ...restPaged } = state.pagedBack
+      return { ...state, messages: restMessages, rawOutput: restRaw, pagedBack: restPaged }
     }
     case 'APPEND_RAW_LINE': {
       const { instanceId, line, isStderr } = action.payload
@@ -811,11 +836,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const uiStateRef = useRef(uiState)
   uiStateRef.current = uiState
 
+  const prunedChatKeysRef = useRef(false)
+
   // Combined dispatch: routes each action to the correct sub-reducer(s)
   const dispatch = useCallback((action: Action) => {
     switch (action.type) {
       // Instances slice
       case 'SET_STATE':
+        instDispatch(action)
+        // Once per page load, drop browser-stored prefs of chats that no longer exist.
+        if (!prunedChatKeysRef.current && Array.isArray(action.payload?.instances)) {
+          prunedChatKeysRef.current = true
+          pruneChatKeys(new Set(action.payload.instances.map(i => i.id)))
+        }
+        break
       case 'ADD_FOLDER':
       case 'UPDATE_FOLDER':
       case 'REORDER_FOLDERS':
@@ -832,7 +866,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const fid = action.payload || action.folderId
         instStateRef.current.instances
           .filter(i => i.folderId === fid)
-          .forEach(i => msgDispatch({ type: 'CLEAR_MESSAGES', payload: i.id }))
+          .forEach(i => { msgDispatch({ type: 'CLEAR_MESSAGES', payload: i.id }); forgetChat(i.id) })
         instDispatch(action)
         break
       }
@@ -840,6 +874,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Cross-cutting: REMOVE_INSTANCE clears messages + deselects + removes its grid tile
       case 'REMOVE_INSTANCE':
         msgDispatch({ type: 'CLEAR_MESSAGES', payload: action.payload })
+        forgetChat(action.payload)
         instDispatch(action)
         if (uiStateRef.current.selectedInstanceId === action.payload) {
           uiDispatch({ type: 'SELECT_INSTANCE', payload: null })
@@ -1031,15 +1066,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               }
             }).catch((err) => console.error('Failed to re-sync state after reconnect:', err))
 
-            if (uiStateRef.current.selectedInstanceId) {
-              const id = uiStateRef.current.selectedInstanceId
+            // Every chat on screen, not just the selected one: a Grid tile whose answer finished
+            // while the socket was down would otherwise stay stale until a reload.
+            const selectedId = uiStateRef.current.selectedInstanceId
+            for (const id of chatsToRefetchOnReconnect(selectedId, uiStateRef.current.gridInstanceIds)) {
               api.getHistory(id, { limit: 150 }).then((data) => {
                 const messages = (data as any).messages ?? data
                 const hasMore = (data as any).hasMore ?? false
-                dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore } })
+                dispatch({ type: 'SET_MESSAGES', payload: { instanceId: id, messages, hasMore, mergeNewest: true } })
               }).catch(() => {})
-              api.getSessionCostSummary(id).then((cost) => {
-                dispatch({ type: 'SET_SESSION_COST', payload: { instanceId: id, cost } })
+              api.getWakeups(id).then((res) => {
+                dispatch({ type: 'SET_INSTANCE_WAKEUPS', payload: { instanceId: id, wakeups: res.wakeups } })
+              }).catch(() => {})
+            }
+            if (selectedId) {
+              api.getSessionCostSummary(selectedId).then((cost) => {
+                dispatch({ type: 'SET_SESSION_COST', payload: { instanceId: selectedId, cost } })
               }).catch(() => {})
             }
           }
@@ -1192,7 +1234,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const fetchHistory = () => api.getHistory(instanceId, { limit: 150 }).then((data) => {
           const messages = (data as any).messages ?? data
           const hasMore = (data as any).hasMore ?? false
-          dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages, hasMore } })
+          dispatch({ type: 'SET_MESSAGES', payload: { instanceId, messages, hasMore, mergeNewest: true } })
           dispatch({ type: 'SET_HISTORY_ERROR', payload: { instanceId, error: null } })
         })
         fetchHistory().catch(() => {
@@ -1429,6 +1471,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(
       api.onEvent('cache:touch', (payload: { instanceId: string; at: number }) => {
         dispatch({ type: 'TOUCH_SESSION_CACHE', payload: { instanceId: payload.instanceId, at: payload.at } })
+      })
+    )
+
+    // A write the server could not save: said in the chat it belongs to, in plain
+    // words, so a reply that will be missing after a reload is not a surprise. The server already
+    // throttles these to one per kind per minute. One with no chat goes to the console only.
+    unsubs.push(
+      api.onEvent('server:error', (payload) => {
+        if (!payload?.instanceId) return // shown by ServerErrorBanner
+        dispatch({
+          type: 'ADD_MESSAGE',
+          payload: { id: `server-error-${payload.at}-${payload.site}`, instanceId: payload.instanceId, role: 'system', content: [{ type: 'text', text: `⚠ ${payload.message}` }], createdAt: payload.at },
+        })
       })
     )
 
@@ -1739,14 +1794,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // This used to be a bare `catch {}`. A failed send then looked EXACTLY like a normal
       // one: the message bubble stayed on screen and nothing ever answered it, with no
       // error anywhere in the UI. Say so instead of going quiet.
-      const reason = err instanceof Error ? err.message : String(err)
       dispatch({
         type: 'ADD_MESSAGE',
         payload: {
           id: crypto.randomUUID(),
           instanceId,
           role: 'system',
-          content: [{ type: 'text', text: `⚠ Couldn't send that message: ${reason}. It was not delivered — try again.` }],
+          content: [{ type: 'text', text: sendFailureText('that message', err) }],
           createdAt: Date.now(),
         },
       })
@@ -1758,30 +1812,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'REMOVE_INSTANCE', payload: id })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close + permanently scrub secrets from the transcript. The card closes
-  // instantly (optimistic REMOVE_INSTANCE); the app-level banner reports the
-  // scan result. The server deletes the DB row regardless of scrub outcome, so
-  // the optimistic removal always stays consistent.
+  // Close + permanently scrub secrets from the transcript. The card closes once the
+  // server answers (it refuses when the chat's agent cannot be stopped, and a card
+  // removed up front would then hide a live agent); the app-level banner reports the
+  // scan result. The server deletes the DB row regardless of scrub outcome.
   const secureCloseInstance = useCallback(async (id: string, name: string, taskStatus?: 'done' | 'inbox') => {
     dispatch({ type: 'SET_SECURITY_NOTICE', payload: { id, name, phase: 'scanning', apiKeys: 0, passwords: 0, at: Date.now() } })
-    dispatch({ type: 'REMOVE_INSTANCE', payload: id })
+    let res: Awaited<ReturnType<typeof api.secureCloseInstance>>
     try {
-      const res = await api.secureCloseInstance(id, taskStatus)
-      // `summarizing` is the server saying a background Haiku call is running and will
-      // report where the summary landed. The notice holds itself open for it (pendingLog)
-      // so the close is announced ONCE, in one banner, instead of the scrub and the
-      // summary each posting one. An older server omits the field, in which case nothing
-      // waits and a late summary merges in if the banner is still up.
-      const pendingLog = res.summarizing === true
+      res = await api.secureCloseInstance(id, taskStatus)
+    } catch (err) {
+      // Refused (its agent could not be stopped) or unreachable: the chat was NOT closed, so it
+      // stays on screen and says why, instead of vanishing while its agent keeps running.
+      dispatch({ type: 'CLEAR_SECURITY_NOTICE' })
+      const reason = err instanceof Error ? err.message : String(err)
       dispatch({
-        type: 'SET_SECURITY_NOTICE',
-        payload: res.ok
-          ? { id, name, phase: 'done', apiKeys: res.apiKeys, passwords: res.passwords, at: Date.now(), pendingLog }
-          : { id, name, phase: 'error', apiKeys: 0, passwords: 0, at: Date.now(), pendingLog },
+        type: 'ADD_MESSAGE',
+        payload: { id: crypto.randomUUID(), instanceId: id, role: 'system', content: [{ type: 'text', text: `⚠ Still open: ${reason}${taskStatus ? ' Its card was left as it was.' : ''}` }], createdAt: Date.now() },
       })
-    } catch {
-      dispatch({ type: 'SET_SECURITY_NOTICE', payload: { id, name, phase: 'error', apiKeys: 0, passwords: 0, at: Date.now() } })
+      return false
     }
+    // Closed on the server (it deletes the row whatever the scan found).
+    dispatch({ type: 'REMOVE_INSTANCE', payload: id })
+    // `summarizing` is the server saying a background Haiku call is running and will
+    // report where the summary landed. The notice holds itself open for it (pendingLog)
+    // so the close is announced ONCE, in one banner, instead of the scrub and the
+    // summary each posting one. An older server omits the field, in which case nothing
+    // waits and a late summary merges in if the banner is still up.
+    const pendingLog = res.summarizing === true
+    dispatch({
+      type: 'SET_SECURITY_NOTICE',
+      payload: res.ok
+        ? { id, name, phase: 'done', apiKeys: res.apiKeys, passwords: res.passwords, at: Date.now(), pendingLog }
+        : { id, name, phase: 'error', apiKeys: 0, passwords: 0, at: Date.now(), pendingLog },
+    })
+    return true
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadOlderMessages = useCallback(async (instanceId: string) => {
@@ -1799,11 +1864,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     () => ({ folders: instState.folders, instances: instState.instances }),
     [instState.folders, instState.instances]
   )
+  const [instancesStore] = useState(() => createInstancesStore(instancesValue))
+  useLayoutEffect(() => { instancesStore.publish(instancesValue) }, [instancesStore, instancesValue])
 
   const messagesValue = useMemo(
     () => ({
       messages: msgState.messages,
       hasMore: msgState.hasMore,
+      pagedBack: msgState.pagedBack,
       streamingContent: msgState.streamingContent,
       streamingToolCalls: msgState.streamingToolCalls,
       toolResults: msgState.toolResults,
@@ -1814,8 +1882,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       pendingCommand: msgState.pendingCommand,
       pendingWakeups: msgState.pendingWakeups,
     }),
-    [msgState.messages, msgState.hasMore, msgState.streamingContent, msgState.streamingToolCalls, msgState.toolResults, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts, msgState.permissionRequests, msgState.pendingCommand, msgState.pendingWakeups]
+    [msgState.messages, msgState.hasMore, msgState.pagedBack, msgState.streamingContent, msgState.streamingToolCalls, msgState.toolResults, msgState.unreadCounts, msgState.rawOutput, msgState.cliPrompts, msgState.permissionRequests, msgState.pendingCommand, msgState.pendingWakeups]
   )
+  // The provider hands out a store that never changes and publishes each new slice to it.
+  // Subscribers re-render only when their own selection changes.
+  const [messagesStore] = useState(() => createMessagesStore(messagesValue))
+  useLayoutEffect(() => { messagesStore.publish(messagesValue) }, [messagesStore, messagesValue])
 
   const uiValue = useMemo(
     () => ({
@@ -1836,14 +1908,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       pendingTaskFocusId: uiState.pendingTaskFocusId,
       connected: uiState.connected,
       serverRestarted: uiState.serverRestarted,
-      usage: uiState.usage,
       settings: instState.settings,
       verbosityOverrides: uiState.verbosityOverrides,
-      sessionCosts: uiState.sessionCosts,
       historyErrors: uiState.historyErrors,
     }),
-    [uiState, instState.settings]
+    // Field by field, not `uiState`: a change to a field this value does not carry (usage,
+    // session costs, the boot time) must not hand every UI consumer a new object.
+    [uiState.view, uiState.selectedInstanceId, uiState.gridInstanceIds, uiState.gridFocusedId, uiState.gridMaximizedId,
+      uiState.gridNotice, uiState.securityNotice, uiState.gridEvicted, uiState.sidebarCollapsed, uiState.terminalPanelOpen,
+      uiState.showSettings, uiState.showFolderBrowser, uiState.editingFolderId, uiState.activePipelineId,
+      uiState.pendingTaskFocusId, uiState.connected, uiState.serverRestarted, instState.settings,
+      uiState.verbosityOverrides, uiState.historyErrors]
   )
+
+  // Usage and session costs tick on their own; they get their own store.
+  const liveStatsValue = useMemo(
+    () => ({ usage: uiState.usage, sessionCosts: uiState.sessionCosts }),
+    [uiState.usage, uiState.sessionCosts]
+  )
+  const [liveStatsStore] = useState(() => createLiveStatsStore(liveStatsValue))
+  useLayoutEffect(() => { liveStatsStore.publish(liveStatsValue) }, [liveStatsStore, liveStatsValue])
 
   const dispatchValue = useMemo(
     () => ({ dispatch, selectInstance, addToGrid, addToGridBackground, ackSurface: ackSurfaceIfPending, sendMessage, deleteInstance, secureCloseInstance, loadOlderMessages }),
@@ -1852,82 +1936,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AppDispatchContext.Provider value={dispatchValue}>
-      <InstancesContext.Provider value={instancesValue}>
-        <MessagesContext.Provider value={messagesValue}>
+      <InstancesContext.Provider value={instancesStore}>
+        <MessagesContext.Provider value={messagesStore}>
           <UIContext.Provider value={uiValue}>
-            {children}
+            <LiveStatsContext.Provider value={liveStatsStore}>
+              {children}
+            </LiveStatsContext.Provider>
           </UIContext.Provider>
         </MessagesContext.Provider>
       </InstancesContext.Provider>
     </AppDispatchContext.Provider>
-  )
-}
-
-// === Backward-Compatible useApp() shim ===
-// Used by components not yet migrated to domain hooks.
-
-interface AppContextValue {
-  state: State
-  dispatch: React.Dispatch<Action>
-  selectInstance: (id: string | null) => void
-  addToGrid: (id: string) => void
-  deleteInstance: (id: string) => Promise<void>
-  sendMessage: (instanceId: string, text: string, images?: string[], flags?: string[]) => Promise<void>
-  loadOlderMessages: (instanceId: string) => Promise<void>
-}
-
-export function useApp(): AppContextValue {
-  const { folders, instances } = useInstances()
-  const msgs = useMessages()
-  const ui = useUI()
-  const { dispatch, selectInstance, addToGrid, sendMessage, deleteInstance, loadOlderMessages } = useAppDispatch()
-
-  const state = useMemo<State>(
-    () => ({
-      folders,
-      instances,
-      settings: ui.settings,
-      messages: msgs.messages,
-      messageOrder: [],
-      hasMore: msgs.hasMore,
-      streamingContent: msgs.streamingContent,
-      streamingToolCalls: msgs.streamingToolCalls,
-      toolResults: msgs.toolResults,
-      unreadCounts: msgs.unreadCounts,
-      rawOutput: msgs.rawOutput,
-      cliPrompts: msgs.cliPrompts,
-      permissionRequests: msgs.permissionRequests,
-      pendingCommand: msgs.pendingCommand,
-      pendingWakeups: msgs.pendingWakeups,
-      selectedInstanceId: ui.selectedInstanceId,
-      gridInstanceIds: ui.gridInstanceIds,
-      gridFocusOrder: [],
-      gridFocusedId: ui.gridFocusedId,
-      gridMaximizedId: ui.gridMaximizedId,
-      gridNotice: ui.gridNotice,
-      securityNotice: ui.securityNotice,
-      gridEvicted: ui.gridEvicted,
-      sidebarCollapsed: ui.sidebarCollapsed,
-      showFolderBrowser: ui.showFolderBrowser,
-      editingFolderId: ui.editingFolderId,
-      view: ui.view,
-      activePipelineId: ui.activePipelineId,
-      pendingTaskFocusId: ui.pendingTaskFocusId,
-      connected: ui.connected,
-      serverRestarted: ui.serverRestarted,
-      serverBootTime: null,
-      usage: ui.usage,
-      sessionCosts: ui.sessionCosts,
-      terminalPanelOpen: ui.terminalPanelOpen,
-      showSettings: ui.showSettings,
-      verbosityOverrides: ui.verbosityOverrides,
-      historyErrors: ui.historyErrors,
-    }),
-    [folders, instances, ui, msgs]
-  )
-
-  return useMemo(
-    () => ({ state, dispatch, selectInstance, addToGrid, sendMessage, deleteInstance, loadOlderMessages }),
-    [state, dispatch, selectInstance, addToGrid, sendMessage, deleteInstance, loadOlderMessages]
   )
 }

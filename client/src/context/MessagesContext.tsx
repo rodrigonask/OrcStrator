@@ -1,4 +1,5 @@
-import { createContext, useContext } from 'react'
+import { createContext } from 'react'
+import { createStore, useStoreSelector, useStoreState, type Store } from './store'
 import type { ChatMessage, PermissionRequestData } from '@shared/types'
 
 export interface StreamingToolCall {
@@ -31,6 +32,8 @@ export interface ScheduledWakeup {
 export interface MessagesContextValue {
   messages: Record<string, ChatMessage[]>
   hasMore: Record<string, boolean>
+  /** Chats the user paged back through with "Load older"; their history is not capped. */
+  pagedBack: Record<string, boolean>
   streamingContent: Record<string, string>
   streamingToolCalls: Record<string, StreamingToolCall[]>
   /** toolId -> result, per instance. Outlives the streaming buffers; see AppContext. */
@@ -47,6 +50,7 @@ export interface MessagesContextValue {
 const defaultValue: MessagesContextValue = {
   messages: {},
   hasMore: {},
+  pagedBack: {},
   streamingContent: {},
   streamingToolCalls: {},
   toolResults: {},
@@ -58,8 +62,27 @@ const defaultValue: MessagesContextValue = {
   pendingWakeups: {},
 }
 
-export const MessagesContext = createContext<MessagesContextValue>(defaultValue)
+/**
+ * The context value is a store whose identity never changes (see ./store.ts). Anything
+ * rendered per chat (a Grid tile, a sidebar row, a message list) reads its own chat's entries
+ * through useMessagesSelector, so another chat streaming does not re-render it.
+ */
+export type MessagesStore = Store<MessagesContextValue>
 
+export function createMessagesStore(initial: MessagesContextValue = defaultValue): MessagesStore {
+  return createStore(initial)
+}
+
+export const MessagesContext = createContext<MessagesStore>(createMessagesStore())
+
+export function useMessagesSelector<T>(selector: (s: MessagesContextValue) => T, equal?: (a: T, b: T) => boolean): T {
+  return useStoreSelector(MessagesContext, selector, equal)
+}
+
+/**
+ * The WHOLE messages state: re-renders on every change of any chat. Only for components that
+ * exist once and genuinely need several chats at once. Nothing rendered per chat may use it.
+ */
 export function useMessages(): MessagesContextValue {
-  return useContext(MessagesContext)
+  return useStoreState(MessagesContext)
 }

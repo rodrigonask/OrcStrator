@@ -4,12 +4,6 @@ import { broadcastEvent } from '../ws/handler.js'
 import type { AgentConfig } from '@orcstrator/shared'
 import { buildInterviewPrompt } from '../services/agent-interview-prompt.js'
 import crypto from 'crypto'
-import fs from 'fs'
-import path from 'path'
-import os from 'os'
-import { fileURLToPath } from 'url'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default async function agentRoutes(app: FastifyInstance): Promise<void> {
   // List all agents
@@ -20,7 +14,7 @@ export default async function agentRoutes(app: FastifyInstance): Promise<void> {
 
   // Create agent
   app.post('/agents', async (request, reply) => {
-    const body = request.body as Partial<AgentConfig>
+    const body = (request.body ?? {}) as Partial<AgentConfig>
     const id = crypto.randomUUID()
     const now = Date.now()
 
@@ -56,7 +50,7 @@ export default async function agentRoutes(app: FastifyInstance): Promise<void> {
   // Update agent
   app.put('/agents/:id', async (request) => {
     const { id } = request.params as { id: string }
-    const body = request.body as Partial<AgentConfig>
+    const body = (request.body ?? {}) as Partial<AgentConfig>
 
     const sets: string[] = []
     const params: unknown[] = []
@@ -88,41 +82,7 @@ export default async function agentRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true }
   })
 
-  // Sync native agents from server/agents/*.md
-  app.post('/agents/sync-native', async () => {
-    const agentsDir = path.resolve(__dirname, '../../agents')
-    if (!fs.existsSync(agentsDir)) return { synced: 0 }
-
-    const entries = fs.readdirSync(agentsDir, { withFileTypes: true })
-    let synced = 0
-
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.md')) continue
-      const filePath = path.join(agentsDir, entry.name)
-      const content = fs.readFileSync(filePath, 'utf-8')
-      const name = entry.name.replace(/-master\.md$/, '').replace(/\.md$/, '')
-      const displayName = name.charAt(0).toUpperCase() + name.slice(1)
-
-      // Upsert by name + source=native
-      const existing = db.prepare("SELECT id FROM agents WHERE name = ? AND source = 'native'").get(displayName) as { id: string } | undefined
-      if (existing) {
-        db.prepare("UPDATE agents SET content = ? WHERE id = ?").run(content, existing.id)
-      } else {
-        const id = crypto.randomUUID()
-        db.prepare(`
-          INSERT INTO agents (id, name, content, level, skills, mcp_servers, source, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'native', ?)
-        `).run(id, displayName, content, 1, '[]', '[]', Date.now())
-      }
-      synced++
-    }
-
-    const rows = db.prepare('SELECT * FROM agents ORDER BY created_at DESC').all() as Record<string, unknown>[]
-    broadcastEvent({ type: 'agents:synced', payload: rows.map(rowToAgent) })
-    return { synced, agents: rows.map(rowToAgent) }
-  })
-
-  // Edit session — create a Claude instance with interview prompt
+  // Edit session: create a Claude instance with interview prompt
   app.post('/agents/:id/edit-session', async (request) => {
     const { id } = request.params as { id: string }
     // The UI says 'user'; anything that does not is treated as an agent and surfaces.
@@ -157,62 +117,11 @@ export default async function agentRoutes(app: FastifyInstance): Promise<void> {
     return { instanceId }
   })
 
-  // Scan for agent markdown files in a directory
-  app.post('/agents/scan', async (request) => {
-    const { directory } = request.body as { directory: string }
-    if (!directory) {
-      return { agents: [] }
-    }
-
-    // Validate directory is under an allowed root
-    const resolved = path.resolve(directory)
-    const allowedRoots = [
-      path.resolve(os.homedir()),
-      path.resolve(os.tmpdir()),
-    ]
-    try {
-      const folderRows = db.prepare('SELECT path FROM folders').all() as Array<{ path: string }>
-      for (const r of folderRows) {
-        allowedRoots.push(path.resolve(r.path))
-      }
-    } catch {
-      // DB may not have 'folders' table yet
-    }
-
-    const isAllowed = allowedRoots.some(root => {
-      const rel = path.relative(root, resolved)
-      return !rel.startsWith('..') && !path.isAbsolute(rel)
-    })
-
-    if (!isAllowed) {
-      throw { statusCode: 403, message: 'Directory not in allowed paths' }
-    }
-
-    if (!fs.existsSync(resolved)) {
-      return { agents: [] }
-    }
-
-    const found: Array<{ name: string; path: string; content: string }> = []
-
-    try {
-      const entries = fs.readdirSync(resolved, { withFileTypes: true })
-      for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith('.md')) {
-          const filePath = path.join(resolved, entry.name)
-          const content = fs.readFileSync(filePath, 'utf-8')
-          found.push({
-            name: entry.name.replace(/\.md$/, ''),
-            path: filePath,
-            content
-          })
-        }
-      }
-    } catch {
-      // ignore scan errors
-    }
-
-    return { agents: found }
-  })
+  // Two dead endpoints were removed from here. /agents/sync-native read
+  // server/agents/*.md, a folder that went away with the orchestration layer, yet
+  // the Agents page still called it on every open. /agents/scan returned every .md file, with
+  // its contents, from any single folder under the home folder, and nothing in the app ever
+  // called it with a folder to scan.
 }
 
 function rowToAgent(row: Record<string, unknown>): AgentConfig {

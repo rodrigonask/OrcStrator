@@ -2,8 +2,8 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import type { ChatMessage, VerbosityLevel, SkillConfig } from '@shared/types'
 import { VERBOSITY_TIERS, resolveContextWindow, resolveModelId, DEFAULT_MODEL_ID } from '@shared/constants'
 import { useUI } from '../context/UIContext'
-import { useMessages } from '../context/MessagesContext'
-import { useInstances } from '../context/InstancesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
+import { useInstance } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useOverdriveLevel } from '../hooks/useOverdriveLevel'
 import { useVerbosity } from '../hooks/useVerbosity'
@@ -13,6 +13,7 @@ import { useCacheKeeper } from '../hooks/useCacheKeeper'
 import { IconFlame, IconCompact } from './icons'
 import { OutputStyleSelect } from './OutputStyleSelect'
 import './instance-extras.css'
+import { useSessionCost } from '../context/LiveStatsContext'
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -44,14 +45,14 @@ const QUICK_COMMANDS = [
 ] as const
 
 export function ChatHeader() {
-  const { selectedInstanceId: instanceId, terminalPanelOpen, settings, sessionCosts } = useUI()
-  const { messages: allMessages } = useMessages()
-  const { instances } = useInstances()
+  const { selectedInstanceId: instanceId, terminalPanelOpen, settings } = useUI()
+  const chatMessages = useMessagesSelector(s => (instanceId ? s.messages[instanceId] : undefined))
+  const instance = useInstance(instanceId)
   const { dispatch } = useAppDispatch()
-  const instance = instances.find(i => i.id === instanceId)
-  const messages: ChatMessage[] = instanceId ? (allMessages[instanceId] || []) : []
-  const { confirm } = useConfirm()
-  const sessionCost = instanceId ? sessionCosts[instanceId] : undefined
+
+  const messages: ChatMessage[] = useMemo(() => chatMessages ?? [], [chatMessages])
+  const { confirm, alert } = useConfirm()
+  const sessionCost = useSessionCost(instanceId)
 
   // Auto-compact fires at 80% of the window (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80);
   // warn from 90% of that threshold (= 72% of the window).
@@ -120,18 +121,22 @@ export function ChatHeader() {
 
   const handleForceReset = useCallback(async () => {
     if (!instanceId) return
-    const ok = await confirm('Force reset this instance? Kills any running process.')
+    const ok = await confirm('Force reset this chat? Anything it is running is stopped, and it is marked ready again.')
     if (!ok) return
     try {
       await api.forceResetInstance(instanceId)
     } catch (err) {
+      // The server refused because the agent is still alive: showing the chat as idle would hide
+      // it. Say so, and leave the chat as it is.
       console.error('Force reset failed:', err)
+      await alert(err instanceof Error ? err.message : String(err), 'Could not reset the chat')
+      return
     }
-    // Clear local optimistic/streaming state regardless — this is the escape hatch
+    // Clear local optimistic/streaming state: this is the escape hatch
     dispatch({ type: 'CLEAR_STREAMING', payload: instanceId })
     dispatch({ type: 'CLEAR_CLI_PROMPT', payload: instanceId })
     dispatch({ type: 'UPDATE_INSTANCE', payload: { id: instanceId, updates: { state: 'idle', activeTaskId: undefined, activeTaskTitle: undefined, taskStartedAt: undefined } } })
-  }, [instanceId, confirm, dispatch])
+  }, [instanceId, confirm, alert, dispatch])
 
   const [burgerOpen, setBurgerOpen] = useState(false)
   const burgerRef = useRef<HTMLDivElement>(null)

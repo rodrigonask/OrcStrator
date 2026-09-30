@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, master]
 
+# Least privilege: CI reads the code and nothing else. Every
+# third-party action below is pinned to a full commit SHA (the tag it was is
+# in the comment); Dependabot's github-actions updates keep the pins fresh.
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -14,9 +20,9 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # The Node major the Windows installer bundles. Native modules are
           # ABI-bound, so CI must test against the Node users actually run
@@ -45,31 +51,39 @@ jobs:
         run: npx vite build
         working-directory: client
 
+      # Every suite in one runner: shared/test and server/test, each file in its own
+      # process against its own temp database, plus the compaction hook and stream-parser
+      # suites. A new *.test.ts file is picked up without touching this workflow. The hook test
+      # gives the spawned hook its own scratch home and telemetry file, so nothing here writes
+      # into a real data dir.
+      - name: Unit and route tests
+        run: npm run test:unit
+
+      # Every other root test:* script, by name, the same set the public
+      # snapshot verifier runs (test:unit above covers their files too).
       - name: Schedule tests
         run: npm run test:schedule
 
-      - name: Server tests
+      - name: Slug tests
         run: npm run test:server
 
-      # The hook test gives the spawned hook its own scratch home and
-      # telemetry file, so it never writes into a real data dir.
-      - name: Compaction hook tests
-        run: node server/hooks/test/run-tests.mjs
-
-      - name: Stream parser permission test
-        run: npx tsx scripts/test-parser-permission.ts
+      # Known advisories in runtime dependencies: a hard gate since the runtime advisories
+      # were cleared (0 at that merge). A new high advisory in something users run fails the build; dev-only
+      # tooling advisories are left to Dependabot.
+      - name: Dependency audit (runtime, high and above)
+        run: npm audit --omit=dev --audit-level=high
 
   # The Windows launcher and release tooling (PowerShell 5.1, like users run).
   installer-tests:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history and NO stored credentials (the updater tests must see
           # GitHub unauthenticated).
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -99,7 +113,10 @@ jobs:
           $failed = @()
           # Every launcher test runs, whatever the history depth: the updater
           # tests build the history they need in their own scratch clones.
-          $tests = @(Get-ChildItem installer -Filter 'test-*.ps1') + @(Get-ChildItem installer/release -Filter 'test-*.ps1')
+          # unit-*.ps1 are the pure ones (no install, no app start): workflow
+          # rules, old-launcher compatibility, extracted launcher functions.
+          $tests = @(Get-ChildItem installer -Filter 'test-*.ps1') + @(Get-ChildItem installer/release -Filter 'test-*.ps1') +
+                   @(Get-ChildItem installer -Filter 'unit-*.ps1') + @(Get-ChildItem installer/release -Filter 'unit-*.ps1')
           foreach ($t in $tests) {
             Write-Host "::group::$($t.Name)"
             & powershell -NoProfile -ExecutionPolicy Bypass -File $t.FullName

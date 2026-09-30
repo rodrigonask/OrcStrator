@@ -1,4 +1,4 @@
-import { expandBundles, DESTRUCTIVE_FENCE, DEPLOY_FENCE } from '@shared/permission-bundles'
+import { expandBundles, expandBundleAsks, DESTRUCTIVE_FENCE, DEPLOY_FENCE } from '@shared/permission-bundles'
 import {
   deriveAllowRules,
   isAncestorPath,
@@ -219,9 +219,10 @@ export function effectiveRules(
   // lift a rule that is not what stopped them. The spawn side filters ask against deny for the
   // same reason a deny is listed first here, a deny beating an ask.
   const ask: MatchedRule[] = [
-    ...(activeBundles.length > 0 && !activeBundles.includes('deploy')
+    ...(!activeBundles.includes('deploy')
       ? DEPLOY_FENCE.map(rule => ({ rule, source: 'deploy-fence' as const }))
       : []),
+    ...expandBundleAsks(activeBundles).map(rule => ({ rule, source: 'app-wide' as const })),
     ...(settings.permissionAskRules ?? []).map(rule => ({ rule, source: 'app-wide' as const })),
     ...(projectRules?.ask ?? []).map(rule => ({ rule, source: 'this-project' as const })),
     ...(chatRules?.ask ?? []).map(rule => ({ rule, source: 'this-chat' as const })),

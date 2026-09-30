@@ -1,8 +1,9 @@
 import { useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { ChatMessage } from '@shared/types'
 import { useUI } from '../context/UIContext'
-import { useMessages } from '../context/MessagesContext'
-import { useInstances } from '../context/InstancesContext'
+import { useMessagesSelector } from '../context/MessagesContext'
+import type { StreamingToolCall } from '../context/MessagesContext'
+import { useInstance } from '../context/InstancesContext'
 import { useAppDispatch } from '../context/AppDispatchContext'
 import { useVerbosity } from '../hooks/useVerbosity'
 import { useCompact } from '../context/CompactContext'
@@ -12,6 +13,8 @@ import { ToolCallBlock } from './ToolCallBlock'
 import { NestedToolCalls } from './NestedToolCalls'
 import { formatToolLabel, toolCallParts } from '../utils/toolFormat'
 import { looksLikeDenial } from '../utils/permissionMatch'
+import { useRenderCount } from '../utils/renderCount'
+import { isPlanFileWrite } from '../utils/planWrite'
 
 type ToolCallEntry = { type: 'tool-call'; toolId: string; toolName: string; input: string; parentToolUseId?: string }
 
@@ -42,6 +45,10 @@ type DisplayItem =
 // lifts the cap in place; maximizing or opening the chat shows everything as usual.
 const COMPACT_RENDER_CAP = 40
 
+// Stable empties, so a chat with nothing yet does not hand every memo a fresh [] each render.
+const EMPTY_MESSAGES: ChatMessage[] = []
+const EMPTY_CALLS: StreamingToolCall[] = []
+
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 function dayLabel(ts: number): string {
@@ -51,13 +58,18 @@ function dayLabel(ts: number): string {
 
 export function MessageList({ scrollKey }: { scrollKey?: boolean | string } = {}) {
   const { selectedInstanceId: instanceId } = useUI()
-  const { messages: allMessages, hasMore: allHasMore, streamingContent, streamingToolCalls, toolResults: liveResults } = useMessages()
-  const { instances } = useInstances()
+  useRenderCount(`list:${instanceId}`)
+  // This chat's entries only: another chat streaming, or a tool finishing in
+  // another chat, returns the same references here and does not re-render this list.
+  const messages: ChatMessage[] = useMessagesSelector(s => (instanceId ? s.messages[instanceId] : undefined)) ?? EMPTY_MESSAGES
+  const hasMore = useMessagesSelector(s => (instanceId ? (s.hasMore[instanceId] ?? false) : false))
+  const liveText = useMessagesSelector(s => (instanceId ? (s.streamingContent[instanceId] || '') : ''))
+  const liveToolCalls = useMessagesSelector(s => (instanceId ? s.streamingToolCalls[instanceId] : undefined)) ?? EMPTY_CALLS
+  const liveResults = useMessagesSelector(s => (instanceId ? s.toolResults[instanceId] : undefined))
+  const thisInstance = useInstance(instanceId)
   const { loadOlderMessages } = useAppDispatch()
   const verbosity = useVerbosity(instanceId)
   const compact = useCompact()
-  const messages: ChatMessage[] = instanceId ? (allMessages[instanceId] || []) : []
-  const hasMore = instanceId ? (allHasMore[instanceId] ?? false) : false
   const [loadingOlder, setLoadingOlder] = useState(false)
 
   const handleLoadOlder = useCallback(async () => {
@@ -70,12 +82,10 @@ export function MessageList({ scrollKey }: { scrollKey?: boolean | string } = {}
     }
   }, [instanceId, loadingOlder, loadOlderMessages])
 
-  const instance = instanceId ? instances.find(i => i.id === instanceId) : null
+  const instance = instanceId ? thisInstance : null
   const lastTurnMs = instance?.lastTurnMs
   const lastTurnMessageId = instance?.lastTurnMessageId
   const isAgentRunning = instance?.state === 'running'
-  const liveText = instanceId ? (streamingContent?.[instanceId] || '') : ''
-  const liveToolCalls = instanceId ? (streamingToolCalls?.[instanceId] || []) : []
 
   const showLiveTurn = isAgentRunning || !!liveText || liveToolCalls.length > 0
 
@@ -89,7 +99,7 @@ export function MessageList({ scrollKey }: { scrollKey?: boolean | string } = {}
   // source; message blocks stay first in case they are ever persisted.
   const toolResults = useMemo(() => {
     const map = new Map<string, { output: string; isError?: boolean }>()
-    for (const [toolId, r] of Object.entries(instanceId ? (liveResults?.[instanceId] ?? {}) : {})) {
+    for (const [toolId, r] of Object.entries(liveResults ?? {})) {
       map.set(toolId, r)
     }
     for (const msg of messages) {
@@ -100,7 +110,7 @@ export function MessageList({ scrollKey }: { scrollKey?: boolean | string } = {}
       }
     }
     return map
-  }, [messages, liveResults, instanceId])
+  }, [messages, liveResults])
 
   // Build display items: text messages, aggregated tool groups, and per-session summaries
   const items = useMemo(() => {
@@ -463,9 +473,7 @@ function LiveTurn({ verbosity, liveText, liveToolCalls, isAgentRunning }: LiveTu
   const isSpecial = (tc: { toolName: string; input?: string }) =>
     tc.toolName === 'AskUserQuestion' ||
     tc.toolName === 'ExitPlanMode' ||
-    (tc.toolName === 'Write' && (() => {
-      try { return JSON.parse(tc.input || '{}')?.file_path?.includes('.claude/plans/') } catch { return false }
-    })())
+    isPlanFileWrite(tc.toolName, tc.input)
 
   // Verbosity 1-2 (default / grid tiles): the live turn surfaces interactive cards that
   // need action, plus a small "typing" indicator (bouncing dots) in the chat while the
@@ -637,9 +645,7 @@ function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
   const hasSpecialTool = calls.some(tc =>
     tc.toolName === 'AskUserQuestion' ||
     tc.toolName === 'ExitPlanMode' ||
-    (tc.toolName === 'Write' && (() => {
-      try { return JSON.parse(tc.input)?.file_path?.includes('.claude/plans/') } catch { return false }
-    })())
+    isPlanFileWrite(tc.toolName, tc.input)
   )
   // A refusal opens its own group. At the default verbosity a tool group renders collapsed,
   // and the explanation for a refused call lives INSIDE it, so the answer to "why did that
@@ -684,7 +690,7 @@ function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
   // it once would otherwise lose the card with no way back.
   return (
     <div className={`tool-call-group${hasSpecialTool ? ' has-interactive' : ''}${hasDenial ? ' has-denial' : ''}`}>
-      <div className="tool-call-group-header" onClick={() => setExpanded(e => !e)}>
+      <button type="button" className="tool-call-group-header" aria-expanded={expanded} onClick={() => setExpanded(e => !e)}>
         <span className={`tool-call-group-chevron ${expanded ? 'expanded' : ''}`}>›</span>
         <span className="tool-call-group-labels">
           {groupedLabels.map((l, i) => (
@@ -696,7 +702,7 @@ function ToolCallGroup({ calls, toolResults, verbosity }: ToolCallGroupProps) {
             </span>
           ))}
         </span>
-      </div>
+      </button>
       {expanded && (
         <div className="tool-call-group-body">
           <NestedToolCalls

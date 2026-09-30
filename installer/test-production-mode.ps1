@@ -140,12 +140,30 @@ try {
     Check "loopback Host on a custom port is allowed" ($r.Status -eq 200) "got $($r.Status)"
 
     Write-Host "`n== WebSocket ==" -ForegroundColor Cyan
+    # The live feed needs the page's token. Get it the way the page does: a
+    # same-origin browser POST to /api/auth/session.
+    $token = ""
+    try {
+        $sess = Invoke-RestMethod -Method Post -Uri "http://localhost:$Port/api/auth/session" -ContentType 'application/json' -Body '{}' -Headers @{ Origin = "http://localhost:$Port"; 'Sec-Fetch-Site' = 'same-origin'; 'Sec-Fetch-Mode' = 'cors' } -UseBasicParsing
+        $token = [string]$sess.token
+    } catch { }
+    Check "the page gets its session token from /api/auth/session" ($token.Length -ge 32) "no token"
+    $bare = New-Object System.Net.WebSockets.ClientWebSocket
+    $bareOk = $false
+    try {
+        $bare.Options.SetRequestHeader("Origin", "http://localhost:$Port")
+        $ctsB = New-Object System.Threading.CancellationTokenSource(10000)
+        $bare.ConnectAsync([Uri]"ws://localhost:$Port/ws", $ctsB.Token).GetAwaiter().GetResult() | Out-Null
+        $bareOk = ($bare.State -eq [System.Net.WebSockets.WebSocketState]::Open)
+    } catch { }
+    try { $bare.Dispose() } catch { }
+    Check "WS /ws without the token is refused" (-not $bareOk) "a socket with no token was accepted"
     $ws = New-Object System.Net.WebSockets.ClientWebSocket
     $wsOk = $false; $wsErr = ""
     try {
         $ws.Options.SetRequestHeader("Origin", "http://localhost:$Port")
         $cts = New-Object System.Threading.CancellationTokenSource(10000)
-        $ws.ConnectAsync([Uri]"ws://localhost:$Port/ws", $cts.Token).GetAwaiter().GetResult() | Out-Null
+        $ws.ConnectAsync([Uri]("ws://localhost:$Port/ws?token=" + [Uri]::EscapeDataString($token)), $cts.Token).GetAwaiter().GetResult() | Out-Null
         $wsOk = ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open)
     } catch { $wsErr = $_.Exception.Message }
     Check "WS /ws upgrade succeeds on the single port" $wsOk $wsErr

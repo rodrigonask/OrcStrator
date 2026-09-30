@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { db } from '../db.js'
+import { LARGE_BODY_LIMIT } from '../services/limits.js'
 import * as taskManager from '../services/task-manager.js'
 import { MAX_DESCRIPTION_CHARS } from '../services/task-manager.js'
 import { PIPELINE_COLUMNS } from '@orcstrator/shared'
@@ -12,6 +13,92 @@ import {
   hasPrompt, rawPromptIsEmpty, NO_PROMPT_MESSAGE, EMPTY_RAW_PROMPT_MESSAGE,
 } from '../services/kickoff-prompt.js'
 import crypto from 'crypto'
+import { callerOf } from '../security.js'
+import { AGENT_FORBIDDEN_CARD_FIELDS } from '../services/api-auth.js'
+
+/**
+ * Who a card's history names for this change. An agent is stamped with its own chat (or
+ * "agent" for the script token) whatever it claims, so it cannot record a move as the user's
+ * or as another chat's.
+ */
+function actorOf(request: import('fastify').FastifyRequest, claimed: string | undefined): string | undefined {
+  const caller = callerOf(request)
+  if (caller.kind === 'agent') return caller.instanceId ?? 'agent'
+  return claimed
+}
+
+/**
+ * What an agent token may NOT do on the card routes it is allowed to reach. null
+ * means go ahead. An agent can file and edit cards, but it cannot pick a card's permission
+ * mode, and it cannot aim a card (or a start) at any chat but its own: that would put text
+ * of its choosing into another chat's input. The script token (no chat of its own) cannot
+ * aim at a chat at all.
+ */
+function agentScopeError(
+  request: import('fastify').FastifyRequest,
+  body: Record<string, unknown>,
+  existing?: { targetInstanceId?: string | null; permissionMode?: string | null },
+): string | null {
+  const caller = callerOf(request)
+  if (caller.kind !== 'agent') return null
+  for (const field of AGENT_FORBIDDEN_CARD_FIELDS) {
+    if (body[field] !== undefined) return `Agents cannot set ${field} on a card. Ask the user to choose it in the OrcStrator app.`
+  }
+  // A card the user gave its own permission mode (often bypass, for an unattended routine)
+  // runs under that mode. An agent rewriting or starting it would run text of its choosing
+  // under a mode it may not set.
+  if (existing?.permissionMode) return 'This card has its own permission mode, so only the user can change or start it.'
+  // A chat's token works on its own project's board only.
+  const { projectId } = (request.params ?? {}) as { projectId?: string }
+  if (caller.instanceId && projectId) {
+    const row = db.prepare('SELECT folder_id FROM instances WHERE id = ?').get(caller.instanceId) as { folder_id: string } | undefined
+    if (!row || row.folder_id !== projectId) return 'A chat can only file and change cards on its own project\'s board.'
+  }
+  const own = caller.instanceId
+  const aimed = [body.targetInstanceId, body.instanceId].filter(v => v !== undefined && v !== null && v !== '')
+  if (aimed.some(v => v !== own)) return 'Agents can only aim a card at their own chat.'
+  if (existing?.targetInstanceId && existing.targetInstanceId !== own) {
+    return 'This card is aimed at another chat, so only the user can change it.'
+  }
+  return null
+}
+
+/**
+ * A boolean off a request body, strictly. `!!value` read the string
+ * "false" as true, so a caller trying to PAUSE a routine armed it. Accepts true/false, "true"/
+ * "false" and 1/0; anything else is 'invalid' and the route answers 400.
+ */
+function toBool(v: unknown): boolean | 'invalid' {
+  if (v === true || v === 'true' || v === 1 || v === '1') return true
+  if (v === false || v === 'false' || v === 0 || v === '0' || v === null) return false
+  return 'invalid'
+}
+
+const BOOLEAN_FIELDS = ['silent', 'rawPrompt', 'scheduleEnabled', 'autoCompact', 'autoClose', 'selfClose'] as const
+
+/** The first boolean field that is neither a boolean nor an unambiguous spelling of one. */
+function checkBooleanFields(body: Record<string, unknown>): string | null {
+  for (const key of BOOLEAN_FIELDS) {
+    if (body[key] !== undefined && toBool(body[key]) === 'invalid') return `${key} must be true or false`
+  }
+  // Three states, not two: null puts the card back on AUTO (on for a task, off for a routine).
+  if (body.sendComments !== undefined && body.sendComments !== null && toBool(body.sendComments) === 'invalid') {
+    return 'sendComments must be true, false or null'
+  }
+  return null
+}
+
+/**
+ * True when a one-off has already fired at its CURRENT time. Compares the last run with the
+ * one-off's own instant, so a one-off that ran last week and was re-armed for next Tuesday is
+ * not "already run" (before this, every later save of such a card was
+ * refused, and a one-field edit silently disarmed it).
+ */
+function oneOffAlreadyRan(spec: { value: string; tz: string | null }, lastRunAt: number | null | undefined): boolean {
+  if (lastRunAt == null) return false
+  const instant = computeNextRunAt({ kind: 'once', value: spec.value, days: null, window: null, tz: spec.tz, until: null })
+  return instant != null && lastRunAt >= instant
+}
 
 /**
  * The schedule + run settings a card can carry, read off a request body.
@@ -28,9 +115,12 @@ function readTaskConfig(body: Record<string, unknown>): Record<string, unknown> 
     const v = body[key]
     out[key] = v === null || v === '' ? null : String(v)
   }
-  for (const key of ['silent', 'rawPrompt', 'scheduleEnabled', 'autoCompact', 'autoClose'] as const) {
-    if (body[key] !== undefined) out[key] = !!body[key]
+  // Strict, never `!!` (the string "false" is truthy). Invalid values are refused by
+  // checkBooleanFields before this runs.
+  for (const key of BOOLEAN_FIELDS) {
+    if (body[key] !== undefined) out[key] = toBool(body[key]) === true
   }
+  if (body.sendComments !== undefined) out.sendComments = body.sendComments === null ? null : toBool(body.sendComments) === true
   // A FLOOR OF ONE CENT, not just "greater than zero". A cap of 0.000000001 passes `n > 0`,
   // reaches the column, and then reads as "$0.0000" in every sentence that shows it: a limit
   // nobody can see, and one smaller than the rounding slack the scheduler allows itself. The
@@ -84,6 +174,8 @@ function readSchedule(
     scheduleWindow?: string | null
     scheduleTz?: string | null
     scheduleUntil?: string | null
+    scheduleEnabled?: boolean | null
+    lastRunAt?: number | null
   }
 ):
   | { error: string }
@@ -153,9 +245,34 @@ function readSchedule(
     spec.tz !== (existing.scheduleTz ?? null) ||
     spec.until !== (existing.scheduleUntil ?? null)
 
-  // Armed unless the caller said otherwise. A card given a schedule is one the user
-  // just asked to run; making them arm it in a second click is a step nobody wants.
-  const enabled = body.scheduleEnabled === undefined ? true : !!body.scheduleEnabled
+  // Armed unless the caller said otherwise, but "otherwise" includes the card itself.
+  //
+  // A card GIVEN a schedule (new, or one that had none) is armed: the user just asked it to run,
+  // and a second click to arm it is a step nobody wants. A card that ALREADY has a schedule keeps
+  // its armed state when the caller does not mention it. Defaulting to true here meant a PUT of
+  // one field, `{"scheduleTz":"UTC"}`, which is exactly what the brief tells agents to send,
+  // silently switched a paused routine back on.
+  const hadSchedule = !!existing.scheduleKind
+  let enabled = body.scheduleEnabled === undefined
+    ? (hadSchedule ? !!existing.scheduleEnabled : true)
+    : toBool(body.scheduleEnabled) === true
+
+  // A one-off that already ran does not run again at the same time. Its slot is in the past, and
+  // computeNextRunAt returns a one-off's instant as-is, so re-arming it unchanged would fire it
+  // on the next check and send its report or message a second time. A NEW time is fine.
+  // Keyed on the card's last run, not on its previous kind: switching a spent
+  // one-off to a repeating cadence and back kept its last_run_at, and the old test (previous kind
+  // must be 'once') let the round trip re-arm it at its spent slot. A one-off whose time is at or
+  // before the card's last run has already happened; a time AFTER it is a new run the user asked
+  // for, and a past one fires on the next check, exactly as the modal tells them.
+  const onceAlreadyRan = isOnce && oneOffAlreadyRan({ value: canonicalValue, tz: spec.tz }, existing.lastRunAt)
+  if (enabled && onceAlreadyRan) {
+    if (body.scheduleEnabled !== undefined && toBool(body.scheduleEnabled) === true) {
+      return { error: 'This one-off has already run. Pick a new time to run it again.' }
+    }
+    enabled = false
+  }
+
   return {
     fields: {
       scheduleKind: String(kind),
@@ -191,6 +308,26 @@ function readSchedule(
   }
 }
 
+/**
+ * Shape checks for the list fields. A card stored with `labels: "bug"` crashed the
+ * board on every load and made Block answer 500, because the value was written as-is. Returns
+ * an error string for a 400, or null when the body is fine. Absent fields are fine.
+ */
+function checkListFields(body: Record<string, unknown>): string | null {
+  if (body.labels !== undefined && body.labels !== null) {
+    if (!Array.isArray(body.labels) || body.labels.some(l => typeof l !== 'string')) {
+      return 'labels must be a list of text labels, for example ["bug"]'
+    }
+  }
+  if (body.attachments !== undefined && body.attachments !== null) {
+    if (!Array.isArray(body.attachments) || body.attachments.some(a =>
+      !a || typeof a !== 'object' || typeof (a as { dataUrl?: unknown }).dataUrl !== 'string')) {
+      return 'attachments must be a list of { name, dataUrl } objects'
+    }
+  }
+  return null
+}
+
 // A task id is globally unique, so every one of these routes used to work no matter
 // which :projectId you addressed it through. That meant a task could be edited, moved,
 // blocked, commented on or DELETED through an unrelated project's URL. Every handler
@@ -206,6 +343,34 @@ function resolveTask(projectId: string, taskId: string, reply: FastifyReply): Pi
 }
 
 export default async function pipelineRoutes(app: FastifyInstance): Promise<void> {
+  // A chat's own token reaches cards on its own project's board only, on every card route
+  // that changes something (move, block, comment... as well as create, edit and start).
+  app.addHook('preHandler', async (request, reply) => {
+    if (request.method === 'GET' || request.method === 'HEAD') return
+    const caller = callerOf(request)
+    if (caller.kind !== 'agent' || !caller.instanceId) return
+    const { projectId } = (request.params ?? {}) as { projectId?: string }
+    if (!projectId) return
+    const row = db.prepare('SELECT folder_id FROM instances WHERE id = ?').get(caller.instanceId) as { folder_id: string } | undefined
+    if (!row || row.folder_id !== projectId) {
+      return reply.code(403).send({ error: 'agent-forbidden', message: 'A chat can only file and change cards on its own project\'s board.' })
+    }
+  })
+  // Every card route that takes a task id (edit, start, run-now, move, block, unblock, comment)
+  // gets the same card checks. Comments were a second way in:
+  // they are pasted into the card's kickoff prompt, so a comment on a card
+  // aimed at another chat, or on a card with its own permission mode, is input to that run.
+  app.addHook('preHandler', async (request, reply) => {
+    if (request.method === 'GET' || request.method === 'HEAD') return
+    if (callerOf(request).kind !== 'agent') return
+    const { projectId, taskId } = (request.params ?? {}) as { projectId?: string; taskId?: string }
+    if (!projectId || !taskId) return
+    const card = taskManager.getTask(taskId)
+    if (!card || card.projectId !== projectId) return // the route answers 404
+    const err = agentScopeError(request, {}, card)
+    if (err) return reply.code(403).send({ error: 'agent-forbidden', message: err })
+  })
+
   // List all project pipelines. Always the lightweight shape (no history, no full
   // descriptions, no attachments): this feeds the all-projects board and the sidebar
   // badges, so it is fetched for every project at once and payload size matters.
@@ -240,9 +405,21 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
   })
 
   // Create task
-  app.post('/pipelines/:projectId/tasks', async (request, reply) => {
+  // Card attachments are images, so card writes keep the 20 MB ceiling.
+  app.post('/pipelines/:projectId/tasks', { bodyLimit: LARGE_BODY_LIMIT }, async (request, reply) => {
     const { projectId } = request.params as { projectId: string }
-    const body = request.body as Record<string, unknown>
+    const body = (request.body ?? {}) as Record<string, unknown>
+
+    // A card in a project that does not exist is invisible on every board and can never be
+    // opened, moved or deleted from the UI.
+    if (!db.prepare('SELECT id FROM folders WHERE id = ?').get(projectId)) {
+      reply.code(404)
+      return { error: 'Project not found' }
+    }
+    const scopeError = agentScopeError(request, body)
+    if (scopeError) { reply.code(403); return { error: 'agent-forbidden', message: scopeError } }
+    const listError = checkListFields(body) ?? checkBooleanFields(body)
+    if (listError) { reply.code(400); return { error: listError } }
 
     // Validation. Without this a task can be created with a null title (a blank,
     // unidentifiable card) or an unknown column, which the board silently drops on
@@ -293,7 +470,7 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       priority: body.priority as 1 | 2 | 3 | 4 | undefined,
       labels: body.labels as string[] | undefined,
       attachments: body.attachments as TaskAttachment[] | undefined,
-      createdBy: body.createdBy as string | undefined,
+      createdBy: actorOf(request, body.createdBy as string | undefined),
       ...config,
       ...schedule.fields,
     })
@@ -302,11 +479,15 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
   })
 
   // Update task
-  app.put('/pipelines/:projectId/tasks/:taskId', async (request, reply) => {
+  app.put('/pipelines/:projectId/tasks/:taskId', { bodyLimit: LARGE_BODY_LIMIT }, async (request, reply) => {
     const { projectId, taskId } = request.params as { projectId: string; taskId: string }
     const existing = resolveTask(projectId, taskId, reply)
     if (!existing) return { error: 'Task not found' }
-    const body = request.body as Record<string, unknown>
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const scopeError = agentScopeError(request, body, existing)
+    if (scopeError) { reply.code(403); return { error: 'agent-forbidden', message: scopeError } }
+    const listError = checkListFields(body) ?? checkBooleanFields(body)
+    if (listError) { reply.code(400); return { error: listError } }
     if (body.title !== undefined && !String(body.title).trim()) {
       reply.code(400)
       return { error: 'Task title cannot be empty' }
@@ -359,6 +540,16 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     const schedule = readSchedule(body, existing)
     if ('error' in schedule) { reply.code(400); return { error: schedule.error } }
 
+    // Arming a spent one-off with `{"scheduleEnabled": true}` alone skips readSchedule (no shape
+    // fields), and its slot is in the past, so it would fire again on the next check. Same answer
+    // as the modal path gets.
+    if (config.scheduleEnabled === true && schedule.fields.scheduleKind === undefined &&
+        existing.scheduleKind === 'once' && !existing.scheduleEnabled &&
+        oneOffAlreadyRan({ value: existing.scheduleValue ?? '', tz: existing.scheduleTz ?? null }, existing.lastRunAt)) {
+      reply.code(400)
+      return { error: 'This one-off has already run. Pick a new time to run it again.' }
+    }
+
     const updated = taskManager.updateTask(taskId, {
       title: body.title as string | undefined,
       description: body.description as string | undefined,
@@ -404,7 +595,7 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     // card therefore cleared nothing at all: the card came back armed, with next_run_at
     // set, still painted red, still at 3 of 3 failures, and a 'finished' one still at its
     // run limit so it fired once and immediately re-finished. Only a hand-written PUT hit
-    // the working path, which is exactly what the first B5 proof did.
+    // the working path, which is exactly what the first proof of this did.
     if (armedChanged && armedNow) {
       // run_count is reset ONLY for a card that has already used up its run limit. Without
       // that, arming a "Finished, 3 of 3 runs" card left the counter at 3, so it fired once
@@ -457,7 +648,10 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
   // Fire immediately. Does not consume the scheduled slot, unless that slot is already due.
   app.post('/pipelines/:projectId/tasks/:taskId/run-now', async (request, reply) => {
     const { projectId, taskId } = request.params as { projectId: string; taskId: string }
-    if (!resolveTask(projectId, taskId, reply)) return { error: 'Task not found' }
+    const card = resolveTask(projectId, taskId, reply)
+    if (!card) return { error: 'Task not found' }
+    const scopeError = agentScopeError(request, {}, card)
+    if (scopeError) { reply.code(403); return { error: 'agent-forbidden', message: scopeError } }
     const result = await runTaskNow(taskId)
     if (!result.ok && result.reason === 'not-found') { reply.code(404); return { error: 'That card has no schedule to run' } }
     if (!result.ok && result.reason === 'instance-busy') { reply.code(409); return { error: 'That chat is busy right now. Try again when its turn finishes.' } }
@@ -502,13 +696,18 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
   // Start an instance on this task (fresh instance, or an idle one the user picked)
   app.post('/pipelines/:projectId/tasks/:taskId/start', async (request, reply) => {
     const { projectId, taskId } = request.params as { projectId: string; taskId: string }
-    if (!resolveTask(projectId, taskId, reply)) return { error: 'Task not found' }
+    const startCard = resolveTask(projectId, taskId, reply)
+    if (!startCard) return { error: 'Task not found' }
+    const startScope = agentScopeError(request, {}, startCard)
+    if (startScope) { reply.code(403); return { error: 'agent-forbidden', message: startScope } }
     // startedBy is how the UI says "the user clicked this". Anything that does not say so is
     // treated as an agent, because that is the safe default: an agent's start is the one
     // that goes invisible. Advisory only (an agent could claim 'user'); it changes logging
     // and, for edit-session/summary, whether the chat surfaces. A card start surfaces
     // either way.
     const body = (request.body || {}) as { instanceId?: string; startedBy?: unknown }
+    const scopeError = agentScopeError(request, { instanceId: body.instanceId })
+    if (scopeError) { reply.code(403); return { error: 'agent-forbidden', message: scopeError } }
     const startedBy = body.startedBy === 'user' ? 'user' : 'agent'
     try {
       const { startTask } = await import('../services/task-runner.js')
@@ -532,7 +731,7 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
       reply.code(400)
       return { error: `Unknown column "${String(column)}". Expected one of: ${PIPELINE_COLUMNS.join(', ')}` }
     }
-    return taskManager.moveTask(taskId, column, agent || 'human')
+    return taskManager.moveTask(taskId, column, actorOf(request, agent) || 'human')
   })
 
   // Block task
@@ -540,7 +739,7 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     const { projectId, taskId } = request.params as { projectId: string; taskId: string }
     if (!resolveTask(projectId, taskId, reply)) return { error: 'Task not found' }
     const { reason, agent } = (request.body || {}) as { reason: string; agent?: string }
-    return taskManager.blockTask(taskId, reason, agent)
+    return taskManager.blockTask(taskId, reason, actorOf(request, agent))
   })
 
   // Unblock task
@@ -551,7 +750,7 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     // 500 that PipelineContext swallowed into console.error. Unblock has therefore never
     // worked from the UI.
     const { agent } = (request.body || {}) as { agent?: string }
-    return taskManager.unblockTask(taskId, agent)
+    return taskManager.unblockTask(taskId, actorOf(request, agent))
   })
 
   // Get comments for a task
@@ -576,13 +775,21 @@ export default async function pipelineRoutes(app: FastifyInstance): Promise<void
     // Without this the insert hits the task_comments foreign key and Fastify returns a
     // raw 500 with the SQLite constraint name in the body.
     if (!resolveTask(projectId, taskId, reply)) return { error: 'Task not found' }
-    const body = request.body as { author?: string; body: string }
+    const body = (request.body ?? {}) as { author?: string; body: string }
     if (!body.body?.trim()) {
       reply.code(400)
       return { error: 'Comment body is required' }
     }
     const now = Date.now()
-    const author = body.author?.trim() || 'human'
+    let author = (typeof body.author === 'string' ? body.author.trim() : '') || 'human'
+    // An agent cannot sign as the user: "human" comments are read into a card's kickoff prompt
+    // as the operator's words.
+    // An agent's name is plain text too (no newline, no zero-width character) and is compared
+    // after folding look-alikes, so "Hu​man" and "ＨＵＭＡＮ" do not pass.
+    if (callerOf(request).kind === 'agent') {
+      if (!/^[\w .-]{1,40}$/.test(author)) author = 'agent'
+      if (author.normalize('NFKC').replace(/[^a-z]/gi, '').toLowerCase() === 'human') author = 'agent'
+    }
     // Dedup guard 1: exact body match within 60s
     const exactDupe = db.prepare(
       'SELECT id FROM task_comments WHERE task_id = ? AND body = ? AND created_at > ?'

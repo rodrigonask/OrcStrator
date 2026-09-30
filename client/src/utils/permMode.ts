@@ -8,7 +8,9 @@ import type { PermissionMode } from '@shared/types'
  * on the user's behalf (plan approval, etc.) has to be told the mode explicitly, or it
  * will silently run under a different one than the UI is showing.
  */
-export const PERM_KEY = (id: string) => 'perm-' + id
+// The key lives with every other per-chat key, so deleting a chat can clean them all up.
+import { PERM_KEY } from './chatStorage'
+export { PERM_KEY }
 
 /** Resolve an instance's effective mode: per-instance pick → global default. */
 export function readPermMode(instanceId: string, fallback: PermissionMode): PermissionMode {
@@ -20,7 +22,8 @@ export function readPermMode(instanceId: string, fallback: PermissionMode): Perm
  * mode rides `--permission-mode`.
  *
  * EVERY turn this app starts has to carry one, and that is not a style preference.
- * `DEFAULT_SETTINGS.globalFlags` is `['--dangerously-skip-permissions']`, and the send route only
+ * `globalFlags` on an older install is often `['--dangerously-skip-permissions']` (new installs
+ * start on `--permission-mode=auto`), and the send route only
  * strips it when the message itself names a permission mode. So a turn started WITHOUT a mode flag
  * does not run in the chat's mode, it runs in BYPASS. For example, a refusal-card retry queued
  * through /btw with no flags would spawn with `--dangerously-skip-permissions` on a chat the

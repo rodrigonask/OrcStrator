@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import { onComposerFocus } from '../systems/composer-focus'
 import { useUI } from '../context/UIContext'
-import { useInstances } from '../context/InstancesContext'
+import { useInstance } from '../context/InstancesContext'
 import { useCompact } from '../context/CompactContext'
 import type { NativeTask } from '@orcstrator/shared'
 
@@ -131,7 +131,7 @@ const FALLBACK_ROWS = 8
 
 export function NativeTaskPanel({ dense }: { dense?: boolean } = {}) {
   const { selectedInstanceId, settings } = useUI()
-  const { instances } = useInstances()
+  const instance = useInstance(selectedInstanceId)
   // Dense variant for grid tiles, where vertical space is scarce (GridTile provides the
   // context). `dense` overrides it, so a MAXIMIZED tile can opt back out: the whole
   // rationale for compact is that tile height is scarce, and at 1416x1206 it is not.
@@ -152,7 +152,7 @@ export function NativeTaskPanel({ dense }: { dense?: boolean } = {}) {
     getCollapsedSnapshot,
   )
 
-  const instance = instances.find(i => i.id === selectedInstanceId)
+
   const instanceId = instance?.id
   const tasks = instance?.nativeTasks ?? []
   const allDone = tasks.length > 0 && tasks.every(t => t.status === 'completed')

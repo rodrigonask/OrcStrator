@@ -38,7 +38,11 @@ param(
     # payload, so both launcher copies trust the same things.
     [string]$ReleaseConfigPath = "",
     # Personal-string gate term list. Missing or empty = the build fails.
-    [string]$DenylistPath = ""
+    [string]$DenylistPath = "",
+    # Authenticode: @{ SignTool; Dlib; Metadata } from
+    # New-OrcCodeSigningSetup. When given, the starter, the setup exe and the
+    # uninstaller are all signed and checked. When absent they are not.
+    [hashtable]$CodeSign = $null
 )
 
 Set-StrictMode -Version Latest
@@ -101,6 +105,8 @@ if ($TestOnlyLauncherPublicKeyXml) {
 }
 [System.IO.File]::WriteAllText((Join-Path $launcher "installer\setup.ps1"), $setupText, (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item (Join-Path $InstallerDir "icon.ico") (Join-Path $launcher "installer\icon.ico")
+# Run by the uninstaller to stop the app's own server first.
+Copy-Item (Join-Path $InstallerDir "stop-server.ps1") (Join-Path $launcher "installer\stop-server.ps1")
 Copy-Item (Join-Path $InstallerDir "EULA.txt") (Join-Path $launcher "EULA.txt")
 if (Test-Path (Join-Path $RepoRoot "LICENSE")) { Copy-Item (Join-Path $RepoRoot "LICENSE") (Join-Path $launcher "LICENSE") }
 Copy-Item $ManifestPath (Join-Path $staging "manifest.json")
@@ -108,12 +114,8 @@ Copy-Item $ZipPath (Join-Path $staging ([System.IO.Path]::GetFileName($ZipPath))
 
 # The keys the SHIPPED launcher trusts, read from the staged file itself, so
 # the check below tests exactly what goes into the exe.
-$ast = [System.Management.Automation.Language.Parser]::ParseInput($setupText, [ref]$null, [ref]$null)
-$assign = $ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:ReleasePublicKeys'
-}, $true) | Select-Object -First 1
-if (-not $assign) { throw "Shipped setup.ps1 has no `$script:ReleasePublicKeys" }
-$shippedKeys = @(& ([scriptblock]::Create("$($assign.Right.Extent.Text)")))
+# Read as literals, never executed (Get-OrcLauncherTrust).
+$shippedKeys = @((Get-OrcLauncherTrust -SetupText $setupText).ReleasePublicKeys)
 if ($shippedKeys.Count -eq 0) { throw "Shipped setup.ps1 embeds no public key" }
 if (-not (Test-OrcSignedManifest -Envelope $envelope -PublicKeyXml $shippedKeys)) {
     throw "The staged manifest does NOT verify against the public key embedded in the shipped launcher. Refusing to build an installer that could never install."
@@ -133,6 +135,7 @@ $cscExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($cscExit -ne 0 -or -not (Test-Path $exeOut)) { throw "Starter compile failed: $($cscOut -join ' ')" }
 Write-Host "  compiled OrcStrator.exe starter"
+if ($CodeSign) { Invoke-OrcCodeSign -Setup $CodeSign -File $exeOut }
 
 # --- personal-string gate over everything the installer ships ----------------
 # The zip was already gated by Build-Release; this covers the launcher files
@@ -156,13 +159,19 @@ Write-Host "  PASS: 0 hits across $scanned launcher file(s)" -ForegroundColor Gr
 $numeric = ($Version -replace '[-+].*$', '')
 if ($numeric -notmatch '^\d+(\.\d+){0,3}$') { $numeric = "0.0.0" }
 $issPath = Join-Path $InstallerDir "OrcStrator.iss"
+$isccArgs = @('/Q', "/DAppVersion=$Version", "/DNumericVersion=$numeric", "/DStageDir=$work", "/DOutputDir=$OutDirFull")
+if ($CodeSign) {
+    # Inno signs the setup exe and the uninstaller it embeds with this tool.
+    $isccArgs += @("/SOrcSign=$(Get-OrcInnoSignToolCommand -Setup $CodeSign)", '/DCodeSign=1')
+}
 $ErrorActionPreference = 'Continue'
-$isccOut = & $iscc /Q "/DAppVersion=$Version" "/DNumericVersion=$numeric" "/DStageDir=$work" "/DOutputDir=$OutDirFull" $issPath 2>&1
+$isccOut = & $iscc @isccArgs $issPath 2>&1
 $isccExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($isccExit -ne 0) { throw "ISCC failed (exit $isccExit): $($isccOut -join ' | ')" }
 $exe = Join-Path $OutDirFull "OrcStrator-Setup-$Version.exe"
 if (-not (Test-Path $exe)) { throw "ISCC reported success but $exe is missing" }
+if ($CodeSign) { Assert-OrcCodeSigned -File $exe }
 Remove-Item $work -Recurse -Force
 
 $mb = [Math]::Round((Get-Item $exe).Length / 1MB, 1)

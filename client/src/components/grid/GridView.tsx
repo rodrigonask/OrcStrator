@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'rea
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable'
 import { useUI } from '../../context/UIContext'
-import { useInstances } from '../../context/InstancesContext'
+import { useInstancesSelector } from '../../context/InstancesContext'
+import { shallowEqual } from '../../context/store'
 import { useAppDispatch } from '../../context/AppDispatchContext'
 import { GridTile } from './GridTile'
+import { ErrorBoundary } from '../ErrorBoundary'
+import { useRenderCount } from '../../utils/renderCount'
 
 /** Tile count → column count, capped at `maxCols` (a user setting; default 6 for
  *  ultrawide). Chats are tall content, so prefer full-height columns: lay tiles out
@@ -17,8 +20,10 @@ function columnsFor(count: number, maxCols: number): number {
 }
 
 export function GridView() {
+  useRenderCount('GridView')
   const { gridInstanceIds, gridFocusedId, gridMaximizedId, gridNotice, settings } = useUI()
-  const { instances } = useInstances()
+  // Ids and names only: a running chat's progress updates do not re-render the grid.
+  const names = useInstancesSelector(s => Object.fromEntries(s.instances.map(i => [i.id, i.name])) as Record<string, string>, shallowEqual)
   const maxGridColumns = settings.maxGridColumns ?? 6
   const maxTiles = settings.maxGridTiles ?? 12
   // Width cap for a maximized tile. 0 = full bleed (the pre-reading-pane behaviour).
@@ -39,9 +44,9 @@ export function GridView() {
 
   // Only render tiles whose instance still exists (deletion race safety)
   const tileIds = useMemo(() => {
-    const existing = new Set(instances.map(i => i.id))
+    const existing = new Set(Object.keys(names))
     return gridInstanceIds.filter(id => existing.has(id))
-  }, [gridInstanceIds, instances])
+  }, [gridInstanceIds, names])
 
   const cols = columnsFor(tileIds.length, maxGridColumns)
   const rows = Math.ceil(tileIds.length / cols) || 1
@@ -134,7 +139,7 @@ export function GridView() {
   }, [gridFocusedId])
 
   const evictedName = gridNotice
-    ? (instances.find(i => i.id === gridNotice.evictedId)?.name ?? 'a chat')
+    ? (names[gridNotice.evictedId] ?? 'a chat')
     : null
 
   if (tileIds.length === 0) {
@@ -172,13 +177,15 @@ export function GridView() {
             }}
           >
             {tileIds.map(id => (
-              <GridTile
-                key={id}
-                instanceId={id}
-                focused={gridFocusedId === id}
-                maximized={maximizedId === id}
-                hidden={!!maximizedId && maximizedId !== id}
-              />
+              // One boundary per tile: a render error costs that tile, never the grid.
+              <ErrorBoundary key={id} variant="tile" label={names[id]} onRemove={() => dispatch({ type: 'GRID_REMOVE', payload: id })}>
+                <GridTile
+                  instanceId={id}
+                  focused={gridFocusedId === id}
+                  maximized={maximizedId === id}
+                  hidden={!!maximizedId && maximizedId !== id}
+                />
+              </ErrorBoundary>
             ))}
           </div>
         </SortableContext>

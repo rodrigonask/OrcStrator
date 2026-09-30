@@ -2,6 +2,8 @@ import fs from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { cwdToSlug } from './session-sanitizer.js'
+import { isValidSessionId } from './session-id.js'
+import { claudeProjectsDir } from './claude-paths.js'
 
 /**
  * Read Claude Code session JSONL files from ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
@@ -16,7 +18,8 @@ import { cwdToSlug } from './session-sanitizer.js'
  *      which never matches.
  */
 export function getLastAssistantMessage(cwd: string, sessionId: string): string | null {
-  const sessionFile = path.join(homedir(), '.claude', 'projects', cwdToSlug(cwd), `${sessionId}.jsonl`)
+  if (!isValidSessionId(sessionId)) return null
+  const sessionFile = path.join(claudeProjectsDir(), cwdToSlug(cwd), `${sessionId}.jsonl`)
 
   if (!fs.existsSync(sessionFile)) {
     return null

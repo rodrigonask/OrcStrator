@@ -21,6 +21,7 @@ import { dedupeRules, isAncestorPath, normalizeFolderPath } from '@orcstrator/sh
 import type { PermissionRuleSet } from '@orcstrator/shared'
 import { normalisePermissionRules, parsePermissionRules } from './permission-rule-sets.js'
 import { broadcastEvent } from '../ws/handler.js'
+import { isFilesystemRoot } from './safe-path.js'
 
 export interface FolderRuleSource {
   folderId: string
@@ -64,13 +65,17 @@ export function folderRuleChain(folderId: string | null | undefined): FolderRule
     const selfPath = (self.path ?? '').trim()
 
     const rows = db
-      .prepare('SELECT id, name, display_name, path, permission_rules FROM folders WHERE permission_rules IS NOT NULL')
-      .all() as FolderRow[]
+      .prepare('SELECT id, name, display_name, path, permission_rules, status, hidden FROM folders WHERE permission_rules IS NOT NULL')
+      .all() as Array<FolderRow & { status: string | null; hidden: number | null }>
 
     const chain: FolderRuleSource[] = []
     for (const row of rows) {
       const rowPath = (row.path ?? '').trim()
-      const applies = row.id === folderId || (!!rowPath && !!selfPath && isAncestorPath(rowPath, selfPath))
+      // An archived or hidden project hands its rules to nobody but itself, and a
+      // project stored as a drive root (a legacy row, or one written before paths were
+      // validated) never counts as the ancestor of every folder on that drive.
+      const inherits = !!rowPath && !!selfPath && !row.hidden && row.status !== 'archived' && !isFilesystemRoot(rowPath)
+      const applies = row.id === folderId || (inherits && isAncestorPath(rowPath, selfPath))
       if (!applies) continue
       const rules = parsePermissionRules(row.permission_rules)
       if (!rules) continue

@@ -11,8 +11,8 @@ function rowToTask(row: Record<string, unknown>): PipelineTask {
     description: (row.description as string) || '',
     column: (row.column as PipelineColumn) || 'backlog',
     priority: (row.priority as 1 | 2 | 3 | 4) || 4,
-    labels: safeJsonParse(row.labels as string, []),
-    attachments: safeJsonParse(row.attachments as string, []),
+    labels: readLabels(row.labels as string),
+    attachments: readAttachments(row.attachments as string),
     createdBy: (row.created_by as string) || 'human',
     history: safeJsonParse(row.history as string, []),
     completedAt: row.completed_at as number | undefined,
@@ -52,10 +52,12 @@ function rowToTask(row: Record<string, unknown>): PipelineTask {
     budgetCapUsd: (row.budget_cap_usd as number) ?? null,
     autoCompact: row.auto_compact ? true : false,
     autoClose: row.auto_close ? true : false,
+    selfClose: row.self_close ? true : false,
     resumeSessionId: (row.resume_session_id as string) ?? null,
     scheduleState: (row.schedule_state as PipelineTask['scheduleState']) ?? null,
     silent: row.silent ? true : false,
     rawPrompt: row.raw_prompt ? true : false,
+    sendComments: row.send_comments == null ? null : !!row.send_comments,
 
     // Run settings. null means inherit the global default, so null is preserved rather
     // than being collapsed to undefined or to today's default value.
@@ -85,6 +87,8 @@ export interface TaskConfigUpdates {
   targetInstanceId: string | null
   silent: boolean
   rawPrompt: boolean
+  /** null = auto (see PipelineTask.sendComments), so NOT in BOOLEAN_CONFIG. */
+  sendComments: boolean | null
   // Scheduler v2. See PipelineTask for what each null means.
   scheduleDays: string | null
   scheduleWindow: string | null
@@ -99,6 +103,7 @@ export interface TaskConfigUpdates {
   budgetCapUsd: number | null
   autoCompact: boolean
   autoClose: boolean
+  selfClose: boolean
   resumeSessionId: string | null
   scheduleState: string | null
   model: string | null
@@ -119,6 +124,7 @@ const CONFIG_COLUMNS: Record<keyof TaskConfigUpdates, string> = {
   targetInstanceId: 'target_instance_id',
   silent: 'silent',
   rawPrompt: 'raw_prompt',
+  sendComments: 'send_comments',
   scheduleDays: 'schedule_days',
   scheduleWindow: 'schedule_window',
   scheduleTz: 'schedule_tz',
@@ -132,6 +138,7 @@ const CONFIG_COLUMNS: Record<keyof TaskConfigUpdates, string> = {
   budgetCapUsd: 'budget_cap_usd',
   autoCompact: 'auto_compact',
   autoClose: 'auto_close',
+  selfClose: 'self_close',
   resumeSessionId: 'resume_session_id',
   scheduleState: 'schedule_state',
   model: 'model',
@@ -143,7 +150,7 @@ const CONFIG_COLUMNS: Record<keyof TaskConfigUpdates, string> = {
   language: 'language',
 }
 
-const BOOLEAN_CONFIG = new Set(['scheduleEnabled', 'silent', 'rawPrompt', 'autoCompact', 'autoClose'])
+const BOOLEAN_CONFIG = new Set(['scheduleEnabled', 'silent', 'rawPrompt', 'autoCompact', 'autoClose', 'selfClose'])
 
 /**
  * Columns declared NOT NULL in the schema. A null arriving for one of these means "put it
@@ -169,10 +176,28 @@ function configSets(updates: Partial<TaskConfigUpdates>): { sets: string[]; para
       params.push(value ? 1 : 0)
       continue
     }
+    if (typeof value === 'boolean') { params.push(value ? 1 : 0); continue }
     const blank = value === null || value === ''
     params.push(blank ? (NOT_NULL_CONFIG[key] ?? null) : value)
   }
   return { sets, params }
+}
+
+/**
+ * Labels off a stored row, always a string[]. A row written before the routes checked shapes
+ * can hold `"bug"` or `{}` here, and the board calls `.slice().map()` on this, so
+ * anything that is not a list of strings reads as the strings it does contain, or nothing.
+ */
+export function readLabels(raw: string | null | undefined): string[] {
+  const v = safeJsonParse<unknown>(raw, [])
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
+/** Attachments off a stored row, always a list of objects carrying a string dataUrl. */
+export function readAttachments(raw: string | null | undefined): TaskAttachment[] {
+  const v = safeJsonParse<unknown>(raw, [])
+  if (!Array.isArray(v)) return []
+  return v.filter((a): a is TaskAttachment => !!a && typeof a === 'object' && typeof (a as TaskAttachment).dataUrl === 'string')
 }
 
 export function safeJsonParse<T>(str: string | null | undefined, fallback: T): T {
@@ -312,7 +337,7 @@ export function blockTask(taskId: string, reason: string, agent?: string): Pipel
   const updated = db.transaction(() => {
     const now = Date.now()
     const row = db.prepare('SELECT labels, history, version FROM pipeline_tasks WHERE id = ?').get(taskId) as { labels: string; history: string; version: number }
-    const labels: string[] = safeJsonParse(row.labels, [])
+    const labels: string[] = readLabels(row.labels)
     if (!labels.includes('blocked')) labels.push('blocked')
 
     const history: TaskHistoryEntry[] = safeJsonParse(row.history, [])
@@ -338,7 +363,7 @@ export function unblockTask(taskId: string, agent?: string): PipelineTask {
   const updated = db.transaction(() => {
     const now = Date.now()
     const row = db.prepare('SELECT labels, history, version FROM pipeline_tasks WHERE id = ?').get(taskId) as { labels: string; history: string; version: number }
-    const labels: string[] = safeJsonParse(row.labels, [])
+    const labels: string[] = readLabels(row.labels)
     const filtered = labels.filter(l => l !== 'blocked')
 
     const history: TaskHistoryEntry[] = safeJsonParse(row.history, [])
@@ -443,7 +468,7 @@ export function getTasksForProjectLight(projectId: string, includeDone = false):
   // A card silently lost its model by being opened and saved. Omitting a field from a read
   // is only safe while nothing round-trips it, and something always ends up round-tripping
   // it, so they are all here: eleven more small scalars against a whole class of bug.
-  const COLS = 'id, project_id, title, "column", priority, labels, created_by, completed_at, created_at, updated_at, work_started_at, work_ended_at, total_input_tokens, total_output_tokens, total_cost_usd, instance_id, schedule_kind, schedule_value, schedule_enabled, next_run_at, last_run_at, queued_since, target_instance_id, silent, schedule_days, schedule_window, schedule_tz, schedule_until, schedule_max_runs, run_count, schedule_state, consecutive_failures, disarm_after_failures, budget_cap_usd, catchup_policy, max_run_minutes, auto_compact, auto_close, model, effort, permission_mode, max_budget_usd, fallback_model, output_style, language'
+  const COLS = 'id, project_id, title, "column", priority, labels, created_by, completed_at, created_at, updated_at, work_started_at, work_ended_at, total_input_tokens, total_output_tokens, total_cost_usd, instance_id, schedule_kind, schedule_value, schedule_enabled, next_run_at, last_run_at, queued_since, target_instance_id, silent, schedule_days, schedule_window, schedule_tz, schedule_until, schedule_max_runs, run_count, schedule_state, consecutive_failures, disarm_after_failures, budget_cap_usd, catchup_policy, max_run_minutes, auto_compact, auto_close, self_close, model, effort, permission_mode, max_budget_usd, fallback_model, output_style, language'
   const rows = db.prepare(
     includeDone
       ? `SELECT ${COLS} FROM pipeline_tasks WHERE project_id = ? ORDER BY priority ASC, created_at ASC`
@@ -456,7 +481,7 @@ export function getTasksForProjectLight(projectId: string, includeDone = false):
     description: '',
     column: (row.column as PipelineColumn) || 'backlog',
     priority: (row.priority as 1 | 2 | 3 | 4) || 4,
-    labels: safeJsonParse(row.labels as string, []),
+    labels: readLabels(row.labels as string),
     createdBy: (row.created_by as string) || 'human',
     completedAt: row.completed_at as number | undefined,
     createdAt: row.created_at as number,
@@ -496,6 +521,7 @@ export function getTasksForProjectLight(projectId: string, includeDone = false):
     maxRunMinutes: (row.max_run_minutes as number) ?? null,
     autoCompact: row.auto_compact ? true : false,
     autoClose: row.auto_close ? true : false,
+    selfClose: row.self_close ? true : false,
     model: (row.model as string) ?? null,
     effort: (row.effort as PipelineTask['effort']) ?? null,
     permissionMode: (row.permission_mode as PipelineTask['permissionMode']) ?? null,

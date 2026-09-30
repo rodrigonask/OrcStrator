@@ -17,6 +17,7 @@ import os from 'os'
 import path from 'path'
 import readline from 'readline'
 import { db } from '../db.js'
+import { claudeProjectsDir } from './claude-paths.js'
 
 const MAX_NAME_CHARS = 40
 const MAX_LINES_SCANNED = 40   // the real prompt is at the top or it isn't there at all
@@ -41,7 +42,7 @@ interface Orphan {
 
 /** session_id -> transcript path, across every project slug under ~/.claude/projects. */
 function indexTranscripts(): Map<string, string> {
-  const root = path.join(os.homedir(), '.claude', 'projects')
+  const root = claudeProjectsDir()
   const index = new Map<string, string>()
   let slugs: string[] = []
   try { slugs = fs.readdirSync(root) } catch { return index }

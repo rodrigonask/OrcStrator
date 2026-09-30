@@ -5,10 +5,13 @@ import path from 'path'
 import { db } from '../db.js'
 import { broadcastEvent } from '../ws/handler.js'
 import { startPolling } from '../services/usage-monitor.js'
-import { setMaxConcurrentProcesses } from '../services/process-registry.js'
-import { cloudSync } from '../services/cloud-sync.js'
+import { setMaxConcurrentProcesses, setAgentLimitEnforced } from '../services/process-registry.js'
 import { hasAnthropicKey, setAnthropicKey } from '../services/instance-namer.js'
 import { dedupeRules, survivesAutoMode } from '@orcstrator/shared'
+import { checkLocalPath, isInsideProject, isReallyInsideProject } from '../services/safe-path.js'
+
+/** Settings of removed features, refused by PUT /settings. */
+const REMOVED_SETTINGS = new Set(['cloudSyncUrl', 'cloudSyncKey'])
 
 function readAllSettings(): Record<string, unknown> {
   const rows = db.prepare('SELECT key, value FROM settings').all() as Array<{ key: string; value: string }>
@@ -68,8 +71,27 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   })
 
   // Partial merge update settings
-  app.put('/settings', async (request) => {
+  app.put('/settings', async (request, reply) => {
     const body = request.body as Record<string, unknown>
+    // `PUT /settings null` threw "Cannot convert undefined or null to object" as a
+    // raw 500. The body is an object of setting names to values, nothing else.
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      reply.code(400)
+      return { error: 'Send an object of setting names and values' }
+    }
+    // Setting names are plain identifiers (the store is not a free-form key-value bag).
+    const badKey = Object.keys(body).find(k => !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(k))
+    if (badKey !== undefined) {
+      reply.code(400)
+      return { error: `"${badKey.slice(0, 40)}" is not a setting name` }
+    }
+    // Cloud Sync was removed. Its URL and key are refused outright rather than
+    // stored, so no client can put a service key back into a store /api/state returns.
+    const removedKey = Object.keys(body).find(k => REMOVED_SETTINGS.has(k))
+    if (removedKey !== undefined) {
+      reply.code(400)
+      return { error: `"${removedKey}" belongs to Cloud Sync, which has been removed` }
+    }
     const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
     const remove = db.prepare('DELETE FROM settings WHERE key = ?')
 
@@ -105,10 +127,9 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     if ('maxConcurrentProcesses' in body && typeof body.maxConcurrentProcesses === 'number') {
       setMaxConcurrentProcesses(body.maxConcurrentProcesses)
     }
-
-    // If cloud sync settings changed, re-initialize the sync client
-    if ('cloudSyncUrl' in body || 'cloudSyncKey' in body || 'machineName' in body) {
-      cloudSync.initialize()
+    // ...and whether it is enforced at all (off unless switched on).
+    if ('maxConcurrentLimitOn' in body) {
+      setAgentLimitEnforced(body.maxConcurrentLimitOn === true)
     }
 
     return settings
@@ -120,7 +141,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   app.get('/settings/anthropic-key', async () => ({ set: hasAnthropicKey() }))
 
   app.put('/settings/anthropic-key', async (request) => {
-    const body = request.body as { key?: unknown }
+    const body = (request.body ?? {}) as { key?: unknown }
     setAnthropicKey(typeof body?.key === 'string' ? body.key : '')
     return { set: hasAnthropicKey() }
   })
@@ -128,10 +149,18 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   // Custom output styles the user (or a project) has written, so the picker shows the same
   // list /config would. Built-ins live in shared/constants; only the custom ones need disk.
   // `cwd` is optional and scopes the project-level lookup to one chat's folder.
-  app.get('/settings/output-styles', async (request) => {
+  app.get('/settings/output-styles', async (request, reply) => {
     const { cwd } = request.query as { cwd?: string }
     const dirs = [path.join(os.homedir(), '.claude', 'output-styles')]
-    if (cwd) dirs.push(path.join(cwd, '.claude', 'output-styles'))
+    if (cwd) {
+      // This was read from any folder a request named, a network share included,
+      // and any website could send that request. Now the path is checked as a string before
+      // any file call, and only a folder inside a registered project is read.
+      const checked = checkLocalPath(cwd)
+      if ('error' in checked) { reply.code(400); return { error: checked.error } }
+      if (!isInsideProject(checked.path) || !isReallyInsideProject(checked.path)) { reply.code(403); return { error: 'Only a project folder can be read here.' } }
+      dirs.push(path.join(checked.path, '.claude', 'output-styles'))
+    }
 
     const styles: Array<{ value: string; name: string; description: string; source: 'user' | 'project' }> = []
     const seen = new Set<string>()

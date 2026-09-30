@@ -47,6 +47,15 @@ function isPermissionFlag(flag: string): boolean {
 }
 
 /**
+ * The app-wide flags for a turn whose message names its own permission mode: the global
+ * permission flags are dropped so the message's pick is the only one the CLI sees. Bypass is a
+ * mode here like any other, spelled `--dangerously-skip-permissions`.
+ */
+export function messageModeWins(globalFlags: readonly string[], messageFlags: readonly string[]): string[] {
+  return messageFlags.some(isPermissionFlag) ? globalFlags.filter(f => !isPermissionFlag(f)) : [...globalFlags]
+}
+
+/**
  * Compose the CLI flags for a turn started from a task.
  *
  * Order, and why:
@@ -129,4 +138,55 @@ export function applyTaskCliSettings(instanceId: string, task: { output_style?: 
   } catch (err) {
     console.warn(`[turn-flags] could not apply per-task CLI settings to instance ${instanceId.slice(0, 8)}:`, err)
   }
+}
+
+const PERMISSION_MODE_VALUES = ['default', 'plan', 'acceptEdits', 'dontAsk', 'auto', 'bypassPermissions'] as const
+
+/**
+ * What a typed chat message may ask for, as the settings buildTurnFlags understands.
+ *
+ * POST /instances/:id/send used to build its own argv from globalFlags plus whatever the body
+ * sent, through an allowlist that let a request add `--mcp-config` (start any program as an
+ * MCP server) or `--system-prompt`. Now a message can pick only its permission mode (the typed
+ * `permissionMode` field, or the mode flag the client has always sent), its model, effort,
+ * budget and fallback model. Anything else is refused, and the turn's flags come from the one
+ * builder cards use.
+ */
+export function readMessageFlags(body: { flags?: unknown; permissionMode?: unknown }): { settings: TaskFlagSettings } | { error: string } {
+  const settings: TaskFlagSettings = {}
+  if (body.flags !== undefined && body.flags !== null && (!Array.isArray(body.flags) || body.flags.some(f => typeof f !== 'string'))) {
+    return { error: 'flags must be a list of text flags' }
+  }
+  const flags = (body.flags ?? []) as string[]
+  const setMode = (mode: string): string | null => {
+    if (!(PERMISSION_MODE_VALUES as readonly string[]).includes(mode)) return `Unknown permission mode "${mode.slice(0, 40)}"`
+    settings.permission_mode = mode
+    return null
+  }
+  if (body.permissionMode !== undefined && body.permissionMode !== null) {
+    if (typeof body.permissionMode !== 'string') return { error: 'permissionMode must be text' }
+    const err = setMode(body.permissionMode)
+    if (err) return { error: err }
+  }
+  for (const flag of flags) {
+    const [name, ...rest] = flag.split('=')
+    const value = rest.join('=').trim()
+    if (flag === '--dangerously-skip-permissions') { setMode('bypassPermissions'); continue }
+    if (name === '--permission-mode') {
+      const err = setMode(value)
+      if (err) return { error: err }
+      continue
+    }
+    if (name === '--model' && value) { settings.model = value; continue }
+    if (name === '--effort' && value) { settings.effort = value; continue }
+    if (name === '--fallback-model' && value) { settings.fallback_model = value; continue }
+    if (name === '--max-budget-usd' && value) {
+      const n = Number(value)
+      if (!Number.isFinite(n) || n <= 0) return { error: '--max-budget-usd needs a positive number' }
+      settings.max_budget_usd = n
+      continue
+    }
+    return { error: `The flag "${flag.slice(0, 60)}" cannot be set from a message` }
+  }
+  return { settings }
 }

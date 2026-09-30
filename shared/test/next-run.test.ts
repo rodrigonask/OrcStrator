@@ -309,7 +309,7 @@ function eqList(name: string, actual: string[], expected: string[]): void {
 // The grid restarts at every window opening, so a cadence longer than the window fires
 // exactly once per opening however large the number is. "Every 7 days" with no window is
 // therefore every night at midnight: seven times the fires, seven times the spend. The
-// engine's behaviour is correct and locked (D4); what must never come back is the engine
+// engine's behaviour is correct and locked; what must never come back is the engine
 // DESCRIBING it as anything else.
 // ─────────────────────────────────────────────────────────────────────────────
 {
@@ -379,10 +379,10 @@ function eqList(name: string, actual: string[], expected: string[]): void {
   const noKind = validateScheduleSpec({ kind: '', value: '300' })
   check('w6) a missing cadence gets a sentence, not "Unknown cadence undefined"', noKind != null && !/undefined/.test(noKind), `-> ${noKind}`)
 
-  // The until date is applied to the day the window OPENS, matching the days filter (D3).
-  // An overnight window opening on the until date therefore finishes its night. The plan's
-  // s4 pseudo-code reads as "every candidate's calendar day", which would cut the night in
-  // half at midnight. This pins the behaviour the code actually has and s3 D3 implies.
+  // The until date is applied to the day the window OPENS, matching the days filter.
+  // An overnight window opening on the until date therefore finishes its night. Reading it
+  // as "every candidate's calendar day" would cut the night in half at midnight. This pins
+  // the behaviour the code actually has.
   eqList(
     'w7) an overnight window opening on the until date finishes its night',
     runsAs({ kind: 'every', value: '120', window: '22:00-06:00', tz: LONDON, until: '2026-09-15' }, at(LONDON, '2026-09-15T21:00'), 6, LONDON),
@@ -583,8 +583,8 @@ function eqList(name: string, actual: string[], expected: string[]): void {
     )
   } else {
     // Honest rather than green: if the runtime refused to move, say so instead of
-    // claiming a pass the run did not earn. A7 proves this end to end on a real server.
-    check('z3) SKIPPED: this runtime ignored process.env.TZ, see A7 for the server-level proof', true, '(not a pass, a skip)')
+    // claiming a pass the run did not earn. A server-level test proves this end to end.
+    check('z3) SKIPPED: this runtime ignored process.env.TZ, see the server-level proof', true, '(not a pass, a skip)')
   }
 }
 
